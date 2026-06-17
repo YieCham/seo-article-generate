@@ -1,7 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { GenerateProgressEvent, QuickPicksConfig } from '../env.d'
-import { buildExtraInstructions, formatUserMessageContent } from '../utils/extraInstructions'
+import {
+  ARTICLE_TYPE_STORAGE_KEY,
+  REVIEW_SKILL_ID,
+  type ArticleType
+} from '../constants/articleTypes'
+import { type WriteMode } from '../constants/writeMode'
+import {
+  DEFAULT_OUTPUT_LANGUAGE,
+  OUTPUT_LANGUAGE_STORAGE_KEY,
+  isOutputLanguageCode,
+  type OutputLanguageCode
+} from '../constants/outputLanguage'
+import { syncReviewSkillForArticleType } from '../utils/writeModeSkills'
+import {
+  buildExtraInstructions,
+  formatOptimizeUserMessageContent,
+  formatUserMessageContent
+} from '../utils/extraInstructions'
 
 import ChatSidebar from './write/ChatSidebar'
 
@@ -9,7 +26,9 @@ import ChatThread from './write/ChatThread'
 
 import Composer from './write/Composer'
 
-import { createMessage, createSession, sessionTitleFromPrompt, type ChatSession } from './write/types'
+import WriteModePickerDialog from './write/WriteModePickerDialog'
+
+import { createMessage, createSession, getSessionDisplayTitle, sessionTitleFromPrompt, sessionTitleFromUrl, type ChatSession } from './write/types'
 
 
 
@@ -29,10 +48,16 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [draftTopic, setDraftTopic] = useState('')
 
   const [draftExtra, setDraftExtra] = useState('')
-  const [quickPicks, setQuickPicks] = useState<QuickPicksConfig>({ products: [], audiences: [] })
+  const [quickPicks, setQuickPicks] = useState<QuickPicksConfig>({
+    products: [],
+    defaultOutputLanguage: DEFAULT_OUTPUT_LANGUAGE
+  })
   const [selectedProductId, setSelectedProductId] = useState('')
-  const [selectedAudienceId, setSelectedAudienceId] = useState('')
+  const [outputLanguage, setOutputLanguage] = useState<OutputLanguageCode>(DEFAULT_OUTPUT_LANGUAGE)
+  const [articleType, setArticleType] = useState<ArticleType>('how-to')
+  const [modePickerOpen, setModePickerOpen] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
+  const [sectionEditing, setSectionEditing] = useState(false)
   const [runningSessionId, setRunningSessionId] = useState('')
 
   const [toast, setToast] = useState('')
@@ -46,6 +71,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const activeSession =
 
     sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null
+
+  const activeWriteMode: WriteMode = activeSession?.writeMode ?? 'create'
 
 
 
@@ -63,7 +90,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
       if (store.sessions.length > 0) {
 
-        setSessions(store.sessions)
+        setSessions(
+          store.sessions.map((session) => ({
+            ...session,
+            writeMode: session.writeMode === 'optimize' ? 'optimize' : 'create'
+          }))
+        )
 
         setActiveSessionId(store.activeSessionId || store.sessions[0].id)
 
@@ -96,12 +128,28 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   useEffect(() => {
     if (!hydrated) return
     void window.app.getConfig().then((config) => {
-      const picks = config.quickPicks ?? { products: [], audiences: [] }
+      const picks = config.quickPicks ?? { products: [], defaultOutputLanguage: DEFAULT_OUTPUT_LANGUAGE }
       setQuickPicks(picks)
       setSelectedProductId((prev) => (picks.products.some((item) => item.id === prev) ? prev : ''))
-      setSelectedAudienceId((prev) => (picks.audiences.some((item) => item.id === prev) ? prev : ''))
+      const storedLang = localStorage.getItem(OUTPUT_LANGUAGE_STORAGE_KEY)
+      const defaultLang = isOutputLanguageCode(picks.defaultOutputLanguage)
+        ? picks.defaultOutputLanguage
+        : DEFAULT_OUTPUT_LANGUAGE
+      setOutputLanguage(isOutputLanguageCode(storedLang) ? storedLang : defaultLang)
     })
   }, [hydrated, configRevision])
+
+  useEffect(() => {
+    if (!hydrated) return
+    const storedType = localStorage.getItem(ARTICLE_TYPE_STORAGE_KEY)
+    const initialType: ArticleType = storedType === 'review' ? 'review' : 'how-to'
+    setArticleType(initialType)
+  }, [hydrated])
+
+  useEffect(() => {
+    if (!hydrated || activeWriteMode !== 'create') return
+    void syncReviewSkillForArticleType(articleType)
+  }, [hydrated, activeWriteMode, articleType])
 
   useEffect(() => {
 
@@ -170,6 +218,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       if (event.type === 'reset') {
 
         resetAssistantContent()
+
+      }
+
+      if (event.type === 'prepend' && event.text) {
+
+        prependAssistantContent(event.text)
 
       }
 
@@ -382,6 +436,28 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
+  function prependAssistantContent(text: string): void {
+
+    updateSession(getTargetSessionId(), (session) => {
+
+      const messages = [...session.messages]
+
+      const filtered = messages.filter((item) => item.role !== 'status')
+
+      const last = filtered[filtered.length - 1]
+
+      if (last?.role === 'assistant' && last.status === 'streaming') {
+
+        filtered[filtered.length - 1] = { ...last, content: text + last.content }
+
+      }
+
+      return { ...session, messages: filtered, updatedAt: Date.now() }
+
+    })
+
+  }
+
 
 
   function markAssistantError(message: string): void {
@@ -435,8 +511,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
   function handleNewChat(): void {
+    setModePickerOpen(true)
+  }
 
-    const session = createSession()
+  async function handleModePick(mode: WriteMode): Promise<void> {
+    setModePickerOpen(false)
+
+    const session = createSession(mode)
 
     setSessions((prev) => [session, ...prev])
 
@@ -452,6 +533,27 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   function handleSelectSession(id: string): void {
     setActiveSessionId(id)
+  }
+
+  function handleClearSession(id: string): void {
+    if (generatingSessionIdRef.current === id) {
+      setToast('该对话正在生成，无法清空')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.id === id
+          ? { ...session, title: '新对话', messages: [], updatedAt: Date.now() }
+          : session
+      )
+    )
+
+    if (activeSessionId === id) {
+      setDraftTopic('')
+      setDraftExtra('')
+    }
   }
 
   function handleDeleteSession(id: string): void {
@@ -478,13 +580,31 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     })
   }
 
+  async function handleArticleTypeChange(type: ArticleType): Promise<void> {
+    setArticleType(type)
+    localStorage.setItem(ARTICLE_TYPE_STORAGE_KEY, type)
+    if (activeWriteMode === 'create') {
+      await window.app.setSkillEnabled(REVIEW_SKILL_ID, type === 'review', 'create')
+    }
+  }
+
+  function handleOutputLanguageChange(code: OutputLanguageCode): void {
+    setOutputLanguage(code)
+    localStorage.setItem(OUTPUT_LANGUAGE_STORAGE_KEY, code)
+  }
+
   async function handleSubmit(topic: string, manualExtra: string): Promise<void> {
     if (isRunning || !activeSession) return
 
+    await window.app.setSkillEnabled(REVIEW_SKILL_ID, articleType === 'review', 'create')
+
     const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
-    const audience = quickPicks.audiences.find((item) => item.id === selectedAudienceId)?.label
-    const extraInstructions = buildExtraInstructions({ product, audience, manual: manualExtra })
-    const userContent = formatUserMessageContent(topic, extraInstructions)
+    const extraInstructions = buildExtraInstructions({
+      product,
+      manual: manualExtra,
+      articleType
+    })
+    const userContent = formatUserMessageContent(topic, extraInstructions, articleType)
     const userMessage = createMessage('user', userContent)
 
     const assistantMessage = createMessage('assistant', '')
@@ -519,7 +639,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     const result = await window.app.generateArticle({
       topic,
-      extraInstructions: extraInstructions || undefined
+      extraInstructions: extraInstructions || undefined,
+      outputLanguage
     })
 
 
@@ -530,6 +651,51 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       setIsRunning(false)
       generatingSessionIdRef.current = ''
       setRunningSessionId('')
+    }
+  }
+
+  async function handleOptimizeSubmit(sourceUrl: string, manualExtra: string): Promise<void> {
+    if (isRunning || !activeSession) return
+
+    const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
+    const extraInstructions = buildExtraInstructions({ product, manual: manualExtra })
+    const userContent = formatOptimizeUserMessageContent(sourceUrl, extraInstructions)
+    const userMessage = createMessage('user', userContent)
+    const assistantMessage = createMessage('assistant', '')
+    const sessionId = activeSession.id
+
+    updateSession(sessionId, (session) => ({
+      ...session,
+      title: session.messages.length === 0 ? sessionTitleFromUrl(sourceUrl) : session.title,
+      messages: [...session.messages, userMessage, assistantMessage],
+      updatedAt: Date.now()
+    }))
+
+    setDraftTopic('')
+    setDraftExtra('')
+    setIsRunning(true)
+    generatingSessionIdRef.current = sessionId
+    setRunningSessionId(sessionId)
+
+    const result = await window.app.optimizeArticle({
+      sourceUrl,
+      extraInstructions: extraInstructions || undefined,
+      outputLanguage
+    })
+
+    if (!result.ok) {
+      markAssistantError(result.message ?? '优化失败')
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+    }
+  }
+
+  function handleComposerSubmit(input: string, manualExtra: string): void {
+    if (activeWriteMode === 'optimize') {
+      void handleOptimizeSubmit(input, manualExtra)
+    } else {
+      void handleSubmit(input, manualExtra)
     }
   }
 
@@ -552,6 +718,24 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     window.setTimeout(() => setToast(''), 1800)
 
   }
+
+  function handleSectionEditApply(messageId: string, content: string): void {
+    if (!activeSession) return
+
+    updateSession(activeSession.id, (session) => ({
+      ...session,
+      messages: session.messages.map((message) =>
+        message.id === messageId ? { ...message, content } : message
+      ),
+      updatedAt: Date.now()
+    }))
+
+    setToast('已更新文章片段')
+    window.setTimeout(() => setToast(''), 1800)
+  }
+
+  const sectionEditTopic =
+    activeSession?.messages.find((message) => message.role === 'user')?.content ?? ''
 
 
 
@@ -593,6 +777,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         runningSessionId={runningSessionId}
         onSelect={handleSelectSession}
         onNew={handleNewChat}
+        onClear={handleClearSession}
         onDelete={handleDeleteSession}
         onOpenSettings={onOpenSettings}
       />
@@ -602,40 +787,66 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       <main className="write-main">
 
         <header className="write-topbar">
-
-          <div>
-
-            <h1>{activeSession.title}</h1>
-
-            <p>{isRunning ? 'Pipeline 运行中…' : 'E-E-A-T · 差异化 · 分段撰写 Pipeline'}</p>
-
-          </div>
-
+          <h1>{getSessionDisplayTitle(activeSession)}</h1>
         </header>
 
 
 
-        <ChatThread messages={activeSession.messages} onCopy={(content) => void handleCopy(content)} onSuggest={handleSuggest} />
-
-
-
-        <Composer
-          disabled={isRunning}
-          quickPicks={quickPicks}
-          selectedProductId={selectedProductId}
-          selectedAudienceId={selectedAudienceId}
-          onProductChange={setSelectedProductId}
-          onAudienceChange={setSelectedAudienceId}
-          onSubmit={(topic, extra) => void handleSubmit(topic, extra)}
-          draftTopic={draftTopic}
-          draftExtra={draftExtra}
-          onDraftTopicChange={setDraftTopic}
-          onDraftExtraChange={setDraftExtra}
+        <ChatThread
+          messages={activeSession.messages}
+          onCopy={(content) => void handleCopy(content)}
+          onSuggest={handleSuggest}
+          sectionEditDisabled={isRunning || sectionEditing}
+          sectionEditTopic={sectionEditTopic}
+          outputLanguage={outputLanguage}
+          onSectionEditApply={handleSectionEditApply}
+          onSectionEditBusyChange={setSectionEditing}
         />
 
 
 
+        <div className="composer-area">
+          <Composer
+            disabled={isRunning || sectionEditing}
+            writeMode={activeWriteMode}
+            quickPicks={quickPicks}
+            selectedProductId={selectedProductId}
+            outputLanguage={outputLanguage}
+            articleType={articleType}
+            onProductChange={setSelectedProductId}
+            onOutputLanguageChange={handleOutputLanguageChange}
+            onArticleTypeChange={(type) => void handleArticleTypeChange(type)}
+            onSubmit={(input, extra) => handleComposerSubmit(input, extra)}
+            draftInput={draftTopic}
+            draftExtra={draftExtra}
+            onDraftInputChange={setDraftTopic}
+            onDraftExtraChange={setDraftExtra}
+          />
+
+          <footer className="write-statusbar">
+            <span className="write-status-label">
+              {activeWriteMode === 'optimize' ? '文章优化' : '文章创作'}
+            </span>
+            {isRunning ? (
+              <span className="write-status-running">
+                <span className="status-pill-dot" aria-hidden="true" />
+                Pipeline 运行中
+              </span>
+            ) : (
+              <span className="write-status-idle">就绪</span>
+            )}
+          </footer>
+        </div>
+
+
+
         {toast ? <div className="toast">{toast}</div> : null}
+
+        <WriteModePickerDialog
+          open={modePickerOpen}
+          onSelect={(mode) => void handleModePick(mode)}
+          onClose={() => setModePickerOpen(false)}
+        />
 
       </main>
 

@@ -1,15 +1,20 @@
+import type { ArticleType } from '../constants/articleTypes'
+
 export function buildExtraInstructions(options: {
   product?: string
-  audience?: string
   manual?: string
+  articleType?: ArticleType
 }): string {
   const lines: string[] = []
 
+  if (options.articleType === 'review') {
+    lines.push('Article type: Product Review')
+  } else if (options.articleType === 'how-to') {
+    lines.push('Article type: How-to Guide')
+  }
+
   if (options.product?.trim()) {
     lines.push(`Product name: ${options.product.trim()}`)
-  }
-  if (options.audience?.trim()) {
-    lines.push(`Target audience: ${options.audience.trim()}`)
   }
   if (options.manual?.trim()) {
     lines.push(options.manual.trim())
@@ -18,8 +23,27 @@ export function buildExtraInstructions(options: {
   return lines.join('\n')
 }
 
-export function formatUserMessageContent(topic: string, extraInstructions: string): string {
-  return extraInstructions.trim()
-    ? `${topic}\n\n**补充要求**\n${extraInstructions.trim()}`
-    : topic
+export function formatUserMessageContent(
+  topic: string,
+  extraInstructions: string,
+  articleType?: ArticleType
+): string {
+  const typeLabel = articleType === 'review' ? 'Review' : 'How to'
+  const header = `**文章类型：** ${typeLabel}`
+
+  if (!extraInstructions.trim()) {
+    return `${header}\n\n${topic}`
+  }
+
+  return `${header}\n\n${topic}\n\n**补充要求**\n${extraInstructions.trim()}`
+}
+
+export function formatOptimizeUserMessageContent(sourceUrl: string, extraInstructions: string): string {
+  const header = `**模式：** 文章优化\n**来源 URL：** ${sourceUrl.trim()}`
+
+  if (!extraInstructions.trim()) {
+    return header
+  }
+
+  return `${header}\n\n**补充要求**\n${extraInstructions.trim()}`
 }

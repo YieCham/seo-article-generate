@@ -27,7 +27,7 @@ export function detectTopicLanguage(text: string): TopicLanguageCode {
   return 'zh'
 }
 
-export function getArticleLanguageLock(code: TopicLanguageCode): string {
+export function getArticleLanguageLock(code: TopicLanguageCode, source: 'user' | 'detected' = 'detected'): string {
   const label = getLanguageLabel(code)
   const locks: Record<TopicLanguageCode, string> = {
     en: [
@@ -70,7 +70,7 @@ export function getArticleLanguageLock(code: TopicLanguageCode): string {
     ].join('\n')
   }
 
-  return `${locks[code]}\n（检测到的主题语言：${label}）`
+  return `${locks[code]}\n（${source === 'user' ? '用户指定输出语言' : '检测到的主题语言'}：${label}）`
 }
 
 export function getSearchQueryLanguageHint(code: TopicLanguageCode): string {
@@ -82,15 +82,15 @@ export function fallbackSearchQueries(topic: string, language: TopicLanguageCode
   const templates: Record<TopicLanguageCode, string[]> = {
     en: [
       topic,
-      `${topic} expert guide`,
-      `${topic} research evidence`,
-      `${topic} common mistakes`
+      `${topic} tutorial guide`,
+      `${topic} step by step blog`,
+      `${topic} how to guide`
     ],
-    zh: [topic, `${topic} 深度解析`, `${topic} 专家建议`, `${topic} 常见误区`],
-    ja: [topic, `${topic} 専門家`, `${topic} 研究`, `${topic} よくある誤解`],
-    de: [topic, `${topic} Ratgeber`, `${topic} Experten`, `${topic} Fehler`],
-    fr: [topic, `${topic} guide`, `${topic} experts`, `${topic} erreurs courantes`],
-    es: [topic, `${topic} guía`, `${topic} expertos`, `${topic} errores comunes`]
+    zh: [topic, `${topic} 教程 指南`, `${topic} 博客 详解`, `${topic} 步骤 方法`],
+    ja: [topic, `${topic} チュートリアル ガイド`, `${topic} やり方 ブログ`, `${topic} 手順`],
+    de: [topic, `${topic} Anleitung Tutorial`, `${topic} Schritt für Schritt`, `${topic} Ratgeber Blog`],
+    fr: [topic, `${topic} tutoriel guide`, `${topic} comment faire blog`, `${topic} étape par étape`],
+    es: [topic, `${topic} tutorial guía`, `${topic} cómo hacer blog`, `${topic} paso a paso`]
   }
   return templates[language].slice(0, 4)
 }

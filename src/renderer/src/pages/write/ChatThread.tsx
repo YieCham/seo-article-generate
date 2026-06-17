@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { ChatMessage } from './types'
 import ChatMessageItem from './ChatMessageItem'
-import { IconSparkles } from '../../components/Icons'
 
 interface ChatThreadProps {
   messages: ChatMessage[]
@@ -16,9 +15,23 @@ const SUGGESTIONS = [
 
 interface ChatThreadPropsWithSuggest extends ChatThreadProps {
   onSuggest: (text: string) => void
+  sectionEditDisabled?: boolean
+  sectionEditTopic?: string
+  outputLanguage?: string
+  onSectionEditApply?: (messageId: string, content: string) => void
+  onSectionEditBusyChange?: (busy: boolean) => void
 }
 
-export default function ChatThread({ messages, onCopy, onSuggest }: ChatThreadPropsWithSuggest) {
+export default function ChatThread({
+  messages,
+  onCopy,
+  onSuggest,
+  sectionEditDisabled,
+  sectionEditTopic,
+  outputLanguage,
+  onSectionEditApply,
+  onSectionEditBusyChange
+}: ChatThreadPropsWithSuggest) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -28,17 +41,11 @@ export default function ChatThread({ messages, onCopy, onSuggest }: ChatThreadPr
   if (messages.length === 0) {
     return (
       <div className="chat-empty">
-        <div className="empty-glow empty-glow-a" aria-hidden="true" />
-        <div className="empty-glow empty-glow-b" aria-hidden="true" />
-        <div className="empty-logo">
-          <IconSparkles size={22} />
-        </div>
         <h2>今天想写什么？</h2>
         <p>输入主题即可开始，Agent 会结合 Skills 与提示词模板为你创作。</p>
-        <div className="suggestion-grid">
+        <div className="suggestion-list">
           {SUGGESTIONS.map((item) => (
-            <button key={item} type="button" className="suggestion-chip" onClick={() => onSuggest(item)}>
-              <span className="chip-label">推荐主题</span>
+            <button key={item} type="button" className="suggestion-item" onClick={() => onSuggest(item)}>
               {item}
             </button>
           ))}
@@ -51,7 +58,16 @@ export default function ChatThread({ messages, onCopy, onSuggest }: ChatThreadPr
     <div className="chat-thread">
       <div className="chat-thread-inner">
         {messages.map((message) => (
-          <ChatMessageItem key={message.id} message={message} onCopy={onCopy} />
+          <ChatMessageItem
+            key={message.id}
+            message={message}
+            onCopy={onCopy}
+            sectionEditDisabled={sectionEditDisabled}
+            sectionEditTopic={sectionEditTopic}
+            outputLanguage={outputLanguage}
+            onSectionEditApply={onSectionEditApply}
+            onSectionEditBusyChange={onSectionEditBusyChange}
+          />
         ))}
         <div ref={bottomRef} />
       </div>

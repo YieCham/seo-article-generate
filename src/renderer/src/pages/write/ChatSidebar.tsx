@@ -1,5 +1,6 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatSession } from './types'
-import { IconPlus, IconSettings, IconSparkles, IconTrash } from '../../components/Icons'
+import { IconPlus, IconSettings } from '../../components/Icons'
 
 interface ChatSidebarProps {
   sessions: ChatSession[]
@@ -7,8 +8,15 @@ interface ChatSidebarProps {
   runningSessionId?: string
   onSelect: (id: string) => void
   onNew: () => void
+  onClear: (id: string) => void
   onDelete: (id: string) => void
   onOpenSettings: () => void
+}
+
+interface SessionContextMenuState {
+  sessionId: string
+  x: number
+  y: number
 }
 
 function formatTime(timestamp: number): string {
@@ -21,74 +29,205 @@ function formatTime(timestamp: number): string {
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
+function sortSessions(items: ChatSession[]): ChatSession[] {
+  return [...items].sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
 export default function ChatSidebar({
   sessions,
   activeSessionId,
   runningSessionId,
   onSelect,
   onNew,
+  onClear,
   onDelete,
   onOpenSettings
 }: ChatSidebarProps) {
-  const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+  const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null)
+  const [optimizeCollapsed, setOptimizeCollapsed] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const createSessions = useMemo(
+    () => sortSessions(sessions.filter((session) => session.writeMode !== 'optimize')),
+    [sessions]
+  )
+  const optimizeSessions = useMemo(
+    () => sortSessions(sessions.filter((session) => session.writeMode === 'optimize')),
+    [sessions]
+  )
+  const showDivider = createSessions.length > 0 && optimizeSessions.length > 0
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), [])
+
+  useEffect(() => {
+    const active = sessions.find((session) => session.id === activeSessionId)
+    if (active?.writeMode === 'optimize') setOptimizeCollapsed(false)
+  }, [activeSessionId, sessions])
+
+  useEffect(() => {
+    if (!contextMenu) return
+
+    function handlePointerDown(event: MouseEvent): void {
+      if (menuRef.current?.contains(event.target as Node)) return
+      closeContextMenu()
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') closeContextMenu()
+    }
+
+    function handleScroll(): void {
+      closeContextMenu()
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('scroll', handleScroll, true)
+    window.addEventListener('resize', closeContextMenu)
+
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('scroll', handleScroll, true)
+      window.removeEventListener('resize', closeContextMenu)
+    }
+  }, [contextMenu, closeContextMenu])
+
+  function handleContextMenu(event: React.MouseEvent, sessionId: string): void {
+    event.preventDefault()
+    event.stopPropagation()
+
+    const menuWidth = 168
+    const menuHeight = 88
+    const padding = 8
+    const x = Math.min(event.clientX, window.innerWidth - menuWidth - padding)
+    const y = Math.min(event.clientY, window.innerHeight - menuHeight - padding)
+
+    setContextMenu({ sessionId, x, y })
+  }
+
+  function handleMenuAction(action: 'clear' | 'delete'): void {
+    if (!contextMenu) return
+    const { sessionId } = contextMenu
+    closeContextMenu()
+    if (action === 'clear') onClear(sessionId)
+    else onDelete(sessionId)
+  }
+
+  function renderSessionItem(session: ChatSession) {
+    const isActive = session.id === activeSessionId
+    const isRunning = runningSessionId === session.id
+    return (
+      <button
+        key={session.id}
+        type="button"
+        className={['session-item', isActive ? 'active' : '', isRunning ? 'running' : '']
+          .filter(Boolean)
+          .join(' ')}
+        title={`${session.title} · ${formatTime(session.updatedAt)}`}
+        onClick={() => onSelect(session.id)}
+        onContextMenu={(event) => handleContextMenu(event, session.id)}
+      >
+        <span className="session-dot" aria-hidden="true" />
+        <span className="session-title">{session.title}</span>
+      </button>
+    )
+  }
+
+  const contextSession = contextMenu
+    ? sessions.find((session) => session.id === contextMenu.sessionId)
+    : null
+  const contextRunning = contextMenu ? runningSessionId === contextMenu.sessionId : false
 
   return (
     <aside className="chat-sidebar">
-      <div className="sidebar-brand">
-        <div className="brand-mark">
-          <IconSparkles size={16} />
+      <nav className="sidebar-nav" aria-label="侧栏导航">
+        <button type="button" className="sidebar-nav-item" onClick={onNew}>
+          <IconPlus size={14} />
+          <span>新对话</span>
+        </button>
+      </nav>
+
+      <div className="sidebar-section">
+        <div className="sidebar-section-head">
+          <span className="sidebar-section-title">对话记录</span>
         </div>
-        <div>
-          <strong>Article Agent</strong>
-          <span>智能写作工作台</span>
+        <div className="session-list">
+          {sessions.length === 0 ? (
+            <p className="sidebar-empty">暂无对话</p>
+          ) : (
+            <>
+              {createSessions.length > 0 ? (
+                <div className="session-group" data-group="create">
+                  {createSessions.map(renderSessionItem)}
+                </div>
+              ) : null}
+
+              {showDivider ? (
+                <button
+                  type="button"
+                  className="session-group-divider"
+                  aria-expanded={!optimizeCollapsed}
+                  aria-label={
+                    optimizeCollapsed ? '展开文章优化对话' : '收起文章优化对话'
+                  }
+                  title={optimizeCollapsed ? '展开文章优化' : '收起文章优化'}
+                  onClick={() => setOptimizeCollapsed((value) => !value)}
+                >
+                  <span className="session-group-divider-line" aria-hidden="true" />
+                </button>
+              ) : null}
+
+              {optimizeSessions.length > 0 ? (
+                <div
+                  className={`session-group${optimizeCollapsed ? ' is-collapsed' : ''}`}
+                  data-group="optimize"
+                >
+                  {!optimizeCollapsed ? optimizeSessions.map(renderSessionItem) : null}
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
       </div>
 
-      <button type="button" className="new-chat-btn" onClick={onNew}>
-        <IconPlus size={15} />
-        新对话
-      </button>
-
-      <div className="sidebar-section-label">最近对话</div>
-      <div className="session-list">
-        {sorted.length === 0 ? (
-          <p className="sidebar-empty">开始你的第一次创作</p>
-        ) : (
-          sorted.map((session) => {
-            const isRunning = runningSessionId === session.id
-            return (
-              <div key={session.id} className="session-row">
-                <button
-                  type="button"
-                  className={session.id === activeSessionId ? 'session-item active' : 'session-item'}
-                  onClick={() => onSelect(session.id)}
-                >
-                  <span className="session-dot" aria-hidden="true" />
-                  <span className="session-title">{session.title}</span>
-                  <span className="session-time">{formatTime(session.updatedAt)}</span>
-                </button>
-                <button
-                  type="button"
-                  className="session-delete-btn"
-                  aria-label={`删除对话：${session.title}`}
-                  title={isRunning ? '生成中无法删除' : '删除对话'}
-                  disabled={isRunning}
-                  onClick={() => onDelete(session.id)}
-                >
-                  <IconTrash size={14} />
-                </button>
-              </div>
-            )
-          })
-        )}
-      </div>
-
-      <div className="sidebar-footer">
-        <button type="button" className="sidebar-link" onClick={onOpenSettings}>
-          <IconSettings size={15} />
-          AI 配置
+      <div className="sidebar-bottom">
+        <button type="button" className="sidebar-nav-item" onClick={onOpenSettings}>
+          <IconSettings size={14} />
+          <span>AI 配置</span>
         </button>
       </div>
+
+      {contextMenu && contextSession ? (
+        <div
+          ref={menuRef}
+          className="session-context-menu"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          role="menu"
+          aria-label={`对话操作：${contextSession.title}`}
+        >
+          <button
+            type="button"
+            className="session-context-menu-item"
+            role="menuitem"
+            disabled={contextRunning}
+            title={contextRunning ? '生成中无法清空' : undefined}
+            onClick={() => handleMenuAction('clear')}
+          >
+            清空话题
+          </button>
+          <button
+            type="button"
+            className="session-context-menu-item danger"
+            role="menuitem"
+            disabled={contextRunning}
+            title={contextRunning ? '生成中无法删除' : undefined}
+            onClick={() => handleMenuAction('delete')}
+          >
+            删除话题
+          </button>
+        </div>
+      ) : null}
     </aside>
   )
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import WritePage from './pages/WritePage'
 import SettingsPage from './pages/SettingsPage'
-import { IconArrowLeft, IconSparkles } from './components/Icons'
+import { IconArrowLeft } from './components/Icons'
 
 type Page = 'write' | 'settings'
 
@@ -20,19 +20,11 @@ export default function App() {
 
       <div className={page === 'settings' ? 'settings-shell app-page app-page-active' : 'app-page app-page-hidden'}>
         <header className="settings-topbar">
-          <div className="settings-topbar-left">
-            <div className="brand-mark brand-mark-sm">
-              <IconSparkles size={14} />
-            </div>
-            <div>
-              <h1>AI 配置</h1>
-              <p>管理模型、快捷选项、提示词与 Skills</p>
-            </div>
-          </div>
-          <button type="button" className="ghost-btn" onClick={() => setPage('write')}>
-            <IconArrowLeft size={15} />
+          <button type="button" className="settings-back-btn" onClick={() => setPage('write')}>
+            <IconArrowLeft size={14} />
             返回创作
           </button>
+          <h1>AI 配置</h1>
         </header>
         <main className="settings-main">
           <SettingsPage

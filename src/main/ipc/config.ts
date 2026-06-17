@@ -1,10 +1,15 @@
 import { ipcMain } from 'electron'
 import { loadConfig, saveConfig } from '../config/configStore'
-import type { AppConfig, SkillItem } from '../config/types'
+import type { AppConfig, PipelineMode, SkillItem } from '../config/types'
 import { deleteSkillItem, listSkills, saveSkillItem, setSkillEnabled } from '../agent/skillManager'
 import { testLlmConnection } from '../agent/articleAgent'
 import { testFirecrawlConnection } from '../research/firecrawl'
 import { testTavilyConnection } from '../research/tavily'
+import {
+  clearTokenUsageLog,
+  loadTokenUsageLog,
+  summarizeTokenUsage
+} from '../token/tokenUsageStore'
 
 export function registerConfigIpc(): void {
   ipcMain.handle('config:get', async () => loadConfig())
@@ -17,15 +22,33 @@ export function registerConfigIpc(): void {
   ipcMain.handle('config:testTavily', async (_event, apiKey: string) => testTavilyConnection(apiKey))
   ipcMain.handle('config:testFirecrawl', async (_event, apiKey: string) => testFirecrawlConnection(apiKey))
 
-  ipcMain.handle('skills:list', async () => listSkills())
+  ipcMain.handle('tokenUsage:get', async () => {
+    const data = await loadTokenUsageLog()
+    return {
+      records: data.records,
+      summary: summarizeTokenUsage(data.records)
+    }
+  })
 
-  ipcMain.handle('skills:save', async (_event, skill: SkillItem) => saveSkillItem(skill))
+  ipcMain.handle('tokenUsage:clear', async () => {
+    await clearTokenUsageLog()
+    return { ok: true as const }
+  })
+
+  ipcMain.handle('skills:list', async (_event, mode?: PipelineMode) => listSkills(mode ?? 'create'))
+
+  ipcMain.handle('skills:save', async (_event, skill: SkillItem, mode?: PipelineMode) =>
+    saveSkillItem(skill, mode ?? 'create')
+  )
 
   ipcMain.handle('skills:delete', async (_event, id: string) => {
     await deleteSkillItem(id)
   })
 
-  ipcMain.handle('skills:setEnabled', async (_event, id: string, enabled: boolean) => {
-    await setSkillEnabled(id, enabled)
-  })
+  ipcMain.handle(
+    'skills:setEnabled',
+    async (_event, id: string, enabled: boolean, mode?: PipelineMode) => {
+      await setSkillEnabled(id, enabled, mode ?? 'create')
+    }
+  )
 }

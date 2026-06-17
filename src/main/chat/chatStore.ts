@@ -13,6 +13,7 @@ export interface StoredChatSession {
   id: string
   title: string
   messages: StoredChatMessage[]
+  writeMode?: 'create' | 'optimize'
   updatedAt: number
 }
 
@@ -61,6 +62,7 @@ export async function loadChatStore(): Promise<ChatStoreData> {
       .map((session) => ({
         id: session.id,
         title: session.title || '新对话',
+        writeMode: (session.writeMode === 'optimize' ? 'optimize' : 'create') as 'create' | 'optimize',
         updatedAt: session.updatedAt || Date.now(),
         messages: Array.isArray(session.messages) ? session.messages : []
       }))

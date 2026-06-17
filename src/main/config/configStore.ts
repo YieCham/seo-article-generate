@@ -1,7 +1,27 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { app } from 'electron'
 import { join } from 'path'
-import { DEFAULT_CONFIG, normalizeQuickPicks, normalizeResearchConfig, type AppConfig } from './types'
+import {
+  DEFAULT_CONFIG,
+  normalizeLlmMaxTokens,
+  normalizeLlmPresets,
+  normalizeModeEnabledSkills,
+  normalizeModePrompts,
+  normalizeQuickPicks,
+  normalizeResearchConfig,
+  resolveActiveLlmConfig,
+  type AppConfig,
+  type LlmConfig,
+  type ModeEnabledSkillsConfig,
+  type ModePromptsConfig
+} from './types'
+
+type ConfigPartial = Partial<AppConfig> & {
+  llm?: LlmConfig
+  llmTokenLimits?: unknown
+  prompts?: Partial<ModePromptsConfig> | AppConfig['prompts']
+  enabledSkills?: Partial<ModeEnabledSkillsConfig> | string[]
+}
 
 let cachedConfig: AppConfig | null = null
 
@@ -9,21 +29,31 @@ function getConfigPath(): string {
   return join(app.getPath('userData'), 'config.json')
 }
 
-function mergeWithDefaults(partial: Partial<AppConfig>): AppConfig {
+function mergeWithDefaults(partial: ConfigPartial): AppConfig {
+  const { presets, activePresetId } = normalizeLlmPresets(partial)
+
   return {
-    llm: { ...DEFAULT_CONFIG.llm, ...partial.llm },
-    prompts: { ...DEFAULT_CONFIG.prompts, ...partial.prompts },
+    llmPresets: presets,
+    activeLlmPresetId: activePresetId,
+    llmMaxTokens: normalizeLlmMaxTokens(partial.llmMaxTokens ?? partial.llmTokenLimits),
+    prompts: normalizeModePrompts(partial.prompts),
     research: normalizeResearchConfig(partial.research),
     quickPicks: normalizeQuickPicks(partial.quickPicks ?? DEFAULT_CONFIG.quickPicks),
-    enabledSkills: partial.enabledSkills ?? DEFAULT_CONFIG.enabledSkills,
+    enabledSkills: normalizeModeEnabledSkills(
+      partial.enabledSkills,
+      partial.skillEnablementInitialized ?? DEFAULT_CONFIG.skillEnablementInitialized
+    ),
     skillEnablementInitialized:
       partial.skillEnablementInitialized ?? DEFAULT_CONFIG.skillEnablementInitialized
   }
 }
 
-function mergeWithEnv(config: AppConfig): AppConfig {
+export type EffectiveAppConfig = AppConfig & { llm: LlmConfig }
+
+function mergeWithEnv(config: AppConfig): EffectiveAppConfig {
+  const activeLlm = resolveActiveLlmConfig(config)
   const apiKey =
-    config.llm.apiKey ||
+    activeLlm.apiKey ||
     process.env.LLM_API_KEY ||
     process.env.OPENAI_API_KEY ||
     process.env.CURSOR_API_KEY ||
@@ -32,10 +62,10 @@ function mergeWithEnv(config: AppConfig): AppConfig {
   return {
     ...config,
     llm: {
-      ...config.llm,
+      ...activeLlm,
       apiKey,
-      baseUrl: config.llm.baseUrl || process.env.LLM_BASE_URL || DEFAULT_CONFIG.llm.baseUrl,
-      model: config.llm.model || process.env.LLM_MODEL || DEFAULT_CONFIG.llm.model
+      baseUrl: activeLlm.baseUrl || process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
+      model: activeLlm.model || process.env.LLM_MODEL || 'gpt-4o'
     },
     research: {
       ...config.research,
@@ -50,7 +80,7 @@ export async function loadConfig(): Promise<AppConfig> {
 
   try {
     const raw = await readFile(getConfigPath(), 'utf-8')
-    cachedConfig = mergeWithDefaults(JSON.parse(raw) as Partial<AppConfig>)
+    cachedConfig = mergeWithDefaults(JSON.parse(raw) as ConfigPartial)
   } catch {
     cachedConfig = { ...DEFAULT_CONFIG }
   }
@@ -58,21 +88,60 @@ export async function loadConfig(): Promise<AppConfig> {
   return cachedConfig
 }
 
-export async function getEffectiveConfig(): Promise<AppConfig> {
+export async function getEffectiveConfig(): Promise<EffectiveAppConfig> {
   const config = await loadConfig()
   return mergeWithEnv(config)
 }
 
+function mergeModePrompts(
+  current: ModePromptsConfig,
+  partial?: Partial<ModePromptsConfig>
+): ModePromptsConfig {
+  if (!partial) return current
+  return {
+    create: { ...current.create, ...partial.create },
+    optimize: { ...current.optimize, ...partial.optimize }
+  }
+}
+
+function mergeModeEnabledSkills(
+  current: ModeEnabledSkillsConfig,
+  partial?: Partial<ModeEnabledSkillsConfig>
+): ModeEnabledSkillsConfig {
+  if (!partial) return current
+  return {
+    create: partial.create ?? current.create,
+    optimize: partial.optimize ?? current.optimize
+  }
+}
+
 export async function saveConfig(partial: Partial<AppConfig>): Promise<AppConfig> {
   const current = await loadConfig()
-  const next = mergeWithDefaults({
+  const mergedPartial: ConfigPartial = {
     ...current,
     ...partial,
-    llm: { ...current.llm, ...partial.llm },
-    prompts: { ...current.prompts, ...partial.prompts },
+    prompts: mergeModePrompts(current.prompts, partial.prompts),
     research: { ...current.research, ...partial.research },
-    quickPicks: partial.quickPicks ? normalizeQuickPicks({ ...current.quickPicks, ...partial.quickPicks }) : current.quickPicks
-  })
+    enabledSkills: mergeModeEnabledSkills(current.enabledSkills, partial.enabledSkills),
+    quickPicks: partial.quickPicks
+      ? normalizeQuickPicks({ ...current.quickPicks, ...partial.quickPicks })
+      : current.quickPicks
+  }
+
+  if (partial.llmPresets || partial.activeLlmPresetId) {
+    const normalized = normalizeLlmPresets({
+      llmPresets: partial.llmPresets ?? current.llmPresets,
+      activeLlmPresetId: partial.activeLlmPresetId ?? current.activeLlmPresetId
+    })
+    mergedPartial.llmPresets = normalized.presets
+    mergedPartial.activeLlmPresetId = normalized.activePresetId
+  }
+
+  if (typeof partial.llmMaxTokens === 'number') {
+    mergedPartial.llmMaxTokens = normalizeLlmMaxTokens(partial.llmMaxTokens)
+  }
+
+  const next = mergeWithDefaults(mergedPartial)
 
   await mkdir(app.getPath('userData'), { recursive: true })
   await writeFile(getConfigPath(), JSON.stringify(next, null, 2), 'utf-8')

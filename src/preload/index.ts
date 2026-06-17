@@ -3,6 +3,13 @@ import { contextBridge, ipcRenderer } from 'electron'
 export interface GenerateArticleRequest {
   topic: string
   extraInstructions?: string
+  outputLanguage?: string
+}
+
+export interface OptimizeArticleRequest {
+  sourceUrl: string
+  extraInstructions?: string
+  outputLanguage?: string
 }
 
 export interface ResearchSourcePreview {
@@ -15,7 +22,7 @@ export interface ResearchSourcePreview {
 }
 
 export interface GenerateProgressEvent {
-  type: 'chunk' | 'status' | 'error' | 'done' | 'research' | 'reset' | 'planning'
+  type: 'chunk' | 'status' | 'error' | 'done' | 'research' | 'reset' | 'planning' | 'prepend'
   text?: string
   message?: string
   step?: string
@@ -36,9 +43,30 @@ export interface LlmConfig {
   temperature: number
 }
 
+export interface LlmPreset {
+  id: string
+  name: string
+  apiKey: string
+  baseUrl: string
+  model: string
+  temperature: number
+}
+
 export interface PromptConfig {
   systemPrompt: string
   userPrompt: string
+}
+
+export type PipelineMode = 'create' | 'optimize'
+
+export interface ModePromptsConfig {
+  create: PromptConfig
+  optimize: PromptConfig
+}
+
+export interface ModeEnabledSkillsConfig {
+  create: string[]
+  optimize: string[]
 }
 
 export interface ResearchConfig {
@@ -58,15 +86,18 @@ export interface QuickPickOption {
 
 export interface QuickPicksConfig {
   products: QuickPickOption[]
-  audiences: QuickPickOption[]
+  defaultOutputLanguage: string
 }
 
 export interface AppConfig {
-  llm: LlmConfig
-  prompts: PromptConfig
+  llmPresets: LlmPreset[]
+  activeLlmPresetId: string
+  llmMaxTokens: number
+  prompts: ModePromptsConfig
   research: ResearchConfig
   quickPicks: QuickPicksConfig
-  enabledSkills: string[]
+  enabledSkills: ModeEnabledSkillsConfig
+  skillEnablementInitialized?: boolean
 }
 
 export interface SkillItem {
@@ -83,6 +114,57 @@ export interface ActionResult {
   message?: string
 }
 
+export interface TokenUsageRecord {
+  id: string
+  timestamp: number
+  runId: string
+  pipeline: 'create' | 'optimize' | 'sectionEdit' | 'test' | 'other'
+  step: string
+  label: string
+  model: string
+  topic?: string
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  maxTokensRequested?: number
+  estimated: boolean
+}
+
+export interface TokenUsageSummary {
+  totalPromptTokens: number
+  totalCompletionTokens: number
+  totalTokens: number
+  recordCount: number
+  runCount: number
+  todayTotalTokens: number
+  todayRecordCount: number
+  byPipeline: Record<string, number>
+}
+
+export interface TokenUsageLogResponse {
+  records: TokenUsageRecord[]
+  summary: TokenUsageSummary
+}
+
+export type SectionEditMode = 'rewrite' | 'insert'
+
+export interface RewriteArticleSectionRequest {
+  fullArticle: string
+  selectedText: string
+  selectionStart: number
+  selectionEnd: number
+  instruction: string
+  mode: SectionEditMode
+  topic?: string
+  outputLanguage?: string
+}
+
+export interface RewriteArticleSectionResult {
+  ok: boolean
+  message?: string
+  updatedArticle?: string
+}
+
 export interface ChatStoreData {
   activeSessionId: string
   sessions: Array<{
@@ -95,12 +177,18 @@ export interface ChatStoreData {
       status?: 'streaming' | 'done' | 'error'
     }>
     updatedAt: number
+    writeMode?: 'create' | 'optimize'
   }>
 }
 
 const api = {
   generateArticle: (request: GenerateArticleRequest): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:generate', request),
+  optimizeArticle: (request: OptimizeArticleRequest): Promise<GenerateArticleResult> =>
+    ipcRenderer.invoke('article:optimize', request),
+  rewriteArticleSection: (
+    request: RewriteArticleSectionRequest
+  ): Promise<RewriteArticleSectionResult> => ipcRenderer.invoke('article:rewriteSection', request),
   onProgress: (callback: (event: GenerateProgressEvent) => void): (() => void) => {
     const listener = (_: Electron.IpcRendererEvent, event: GenerateProgressEvent): void => {
       callback(event)
@@ -116,11 +204,14 @@ const api = {
     ipcRenderer.invoke('config:testTavily', apiKey),
   testFirecrawlConnection: (apiKey: string): Promise<ActionResult> =>
     ipcRenderer.invoke('config:testFirecrawl', apiKey),
-  listSkills: (): Promise<SkillItem[]> => ipcRenderer.invoke('skills:list'),
-  saveSkill: (skill: SkillItem): Promise<SkillItem> => ipcRenderer.invoke('skills:save', skill),
+  listSkills: (mode?: PipelineMode): Promise<SkillItem[]> => ipcRenderer.invoke('skills:list', mode),
+  saveSkill: (skill: SkillItem, mode?: PipelineMode): Promise<SkillItem> =>
+    ipcRenderer.invoke('skills:save', skill, mode),
   deleteSkill: (id: string): Promise<void> => ipcRenderer.invoke('skills:delete', id),
-  setSkillEnabled: (id: string, enabled: boolean): Promise<void> =>
-    ipcRenderer.invoke('skills:setEnabled', id, enabled),
+  setSkillEnabled: (id: string, enabled: boolean, mode?: PipelineMode): Promise<void> =>
+    ipcRenderer.invoke('skills:setEnabled', id, enabled, mode),
+  getTokenUsageLog: (): Promise<TokenUsageLogResponse> => ipcRenderer.invoke('tokenUsage:get'),
+  clearTokenUsageLog: (): Promise<{ ok: true }> => ipcRenderer.invoke('tokenUsage:clear'),
   loadChatStore: (): Promise<ChatStoreData> => ipcRenderer.invoke('chat:load'),
   saveChatStore: (data: ChatStoreData): Promise<{ ok: true }> => ipcRenderer.invoke('chat:save', data)
 }

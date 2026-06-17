@@ -32,20 +32,43 @@ export function mapRegionToTavilyCountry(region: string): string | undefined {
   return REGION_TO_TAVILY_COUNTRY[region] ?? REGION_TO_TAVILY_COUNTRY.us
 }
 
+/** Domains that rarely yield long-form blog/how-to reference material. */
+export const TAVILY_EXCLUDE_DOMAINS = [
+  'open.spotify.com',
+  'spotify.com',
+  'music.apple.com',
+  'audiomack.com',
+  'soundcloud.com',
+  'tidal.com',
+  'deezer.com',
+  'pandora.com',
+  'genius.com',
+  'youtube.com',
+  'youtu.be',
+  'facebook.com',
+  'twitter.com',
+  'x.com',
+  'instagram.com',
+  'tiktok.com',
+  'community.spotify.com'
+]
+
 export async function searchWeb(
   query: string,
   options: {
     apiKey: string
     num?: number
     region?: string
+    excludeDomains?: string[]
   }
 ): Promise<TavilySearchResult[]> {
   const country = mapRegionToTavilyCountry(options.region ?? 'us')
   const body: Record<string, unknown> = {
     query,
     max_results: options.num ?? 8,
-    search_depth: 'basic',
-    topic: 'general'
+    search_depth: 'advanced',
+    topic: 'general',
+    exclude_domains: options.excludeDomains ?? TAVILY_EXCLUDE_DOMAINS
   }
   if (country) body.country = country
 

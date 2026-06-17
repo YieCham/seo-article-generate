@@ -4,7 +4,6 @@ import type { QuickPickOption } from '../../env.d'
 interface QuickPickEditorProps {
   title: string
   description: string
-  placeholder: string
   items: QuickPickOption[]
   disabled?: boolean
   onAdd: (label: string) => void
@@ -14,7 +13,6 @@ interface QuickPickEditorProps {
 export default function QuickPickEditor({
   title,
   description,
-  placeholder,
   items,
   disabled,
   onAdd,
@@ -38,7 +36,6 @@ export default function QuickPickEditor({
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder={placeholder}
           disabled={disabled}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {

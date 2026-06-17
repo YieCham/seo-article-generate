@@ -21,17 +21,47 @@ export interface ResearchProgress {
   sources?: ResearchSource[]
 }
 
-const SKIP_HOST_PATTERN = /(?:youtube\.com|youtu\.be|facebook\.com|twitter\.com|x\.com|instagram\.com|linkedin\.com\/posts)/i
+const BLOCKED_HOST_PATTERN =
+  /(?:youtube\.com|youtu\.be|facebook\.com|twitter\.com|x\.com|instagram\.com|tiktok\.com|linkedin\.com\/posts|spotify\.com|audiomack\.com|soundcloud\.com|tidal\.com|deezer\.com|pandora\.com|genius\.com|music\.apple\.com)/i
 
-function filterSearchResults(results: TavilySearchResult[]): TavilySearchResult[] {
-  return results.filter((item) => {
+const LOW_VALUE_PATH_PATTERN = /\/(?:playlist|track|album|song|artist|listen|episode)\b/i
+
+const ARTICLE_SIGNAL_PATTERN =
+  /(?:how\s+to|guide|tutorial|step[\s-]by[\s-]step|tips|ways?\s+to|walkthrough|explained|blog)/i
+
+const ARTICLE_PATH_PATTERN = /\/(?:blog|article|guides?|how-to|posts?|tutorials?|learn)\b/i
+
+const STREAMING_PAGE_PATTERN =
+  /(?:listen\s+on|stream\s+now|official\s+(?:anthem|video|audio)|play\s+on\s+spotify|playlist\s*·|teams?\s+up\s+for|unite\s+on)/i
+
+function scoreSearchResult(item: TavilySearchResult): number {
+  let score = 10
+  const url = item.link.toLowerCase()
+  const title = item.title.toLowerCase()
+  const snippet = (item.snippet ?? '').toLowerCase()
+  const combined = `${title} ${snippet}`
+
+  if (ARTICLE_SIGNAL_PATTERN.test(combined)) score += 15
+  if (ARTICLE_PATH_PATTERN.test(url)) score += 12
+  if (snippet.length > 180) score += 5
+  if (LOW_VALUE_PATH_PATTERN.test(url)) score -= 20
+  if (STREAMING_PAGE_PATTERN.test(combined)) score -= 15
+  if (/community\./i.test(url)) score -= 10
+
+  return score
+}
+
+function filterAndRankSearchResults(results: TavilySearchResult[]): TavilySearchResult[] {
+  const filtered = results.filter((item) => {
     try {
       const host = new URL(item.link).hostname
-      return !SKIP_HOST_PATTERN.test(host)
+      return !BLOCKED_HOST_PATTERN.test(host)
     } catch {
       return false
     }
   })
+
+  return filtered.sort((a, b) => scoreSearchResult(b) - scoreSearchResult(a))
 }
 
 function dedupeResults(allResults: TavilySearchResult[]): TavilySearchResult[] {
@@ -45,12 +75,23 @@ function dedupeResults(allResults: TavilySearchResult[]): TavilySearchResult[] {
   return [...seen.values()]
 }
 
+function normalizeUrlKey(url: string): string {
+  try {
+    return new URL(url).href.replace(/\/$/, '').toLowerCase()
+  } catch {
+    return url.replace(/\/$/, '').toLowerCase()
+  }
+}
+
 export async function searchWithQueries(
   queries: string[],
   config: ResearchConfig,
-  onProgress: (event: ResearchProgress) => void
+  onProgress: (event: ResearchProgress) => void,
+  options?: { excludeUrls?: string[] }
 ): Promise<ResearchSource[]> {
-  const perQuery = Math.max(3, Math.ceil(config.maxSearchResults / queries.length))
+  const exclude = new Set((options?.excludeUrls ?? []).map(normalizeUrlKey))
+  // Fetch extra candidates so blog/how-to pages survive filtering and ranking.
+  const perQuery = Math.min(20, Math.max(5, Math.ceil((config.maxSearchResults * 2) / queries.length)))
   const merged: TavilySearchResult[] = []
 
   for (const query of queries) {
@@ -67,7 +108,9 @@ export async function searchWithQueries(
     merged.push(...results.map((item) => ({ ...item, position: merged.length + 1 })))
   }
 
-  const filtered = dedupeResults(filterSearchResults(merged)).slice(0, config.maxSearchResults)
+  const filtered = dedupeResults(filterAndRankSearchResults(merged))
+    .filter((item) => !exclude.has(normalizeUrlKey(item.link)))
+    .slice(0, config.maxSearchResults)
   if (filtered.length === 0) {
     throw new Error('未找到可用的搜索结果，请尝试更换主题或搜索参数。')
   }
@@ -115,12 +158,19 @@ export function buildResearchDisplayMarkdown(
   queries: string[],
   sources: ResearchSource[],
   config: ResearchConfig,
-  extras?: { extractedPreview?: string; outlinePreview?: string }
+  extras?: { intentSummary?: string; extractedPreview?: string; outlinePreview?: string }
 ): string {
   const lines = [
     `**主题：** ${topic}`,
     `**市场 / 语言：** ${getRegionLabel(config.searchRegion)} · ${getLanguageLabel(config.searchLanguage)}`,
-    '',
+    ''
+  ]
+
+  if (extras?.intentSummary) {
+    lines.push('**⓪ 搜索意图分析：**', extras.intentSummary, '')
+  }
+
+  lines.push(
     '**① 意图扩展（搜索词）：**',
     ...queries.map((q) => `- ${q}`),
     '',
@@ -129,13 +179,13 @@ export function buildResearchDisplayMarkdown(
       (item) =>
         `- [#${item.position}] [${item.title}](${item.url})${item.scrapeError ? ' _(抓取失败)_' : item.markdown ? ' ✓' : ''}`
     )
-  ]
+  )
 
   if (extras?.extractedPreview) {
-    lines.push('', '**③ E-E-A-T 萃取摘要：**', extras.extractedPreview.slice(0, 600))
+    lines.push('', '**③ E-E-A-T 萃取摘要：**', extras.extractedPreview)
   }
   if (extras?.outlinePreview) {
-    lines.push('', '**④ 差异化大纲：**', '```', extras.outlinePreview.slice(0, 800), '```')
+    lines.push('', '**④ 差异化大纲：**', '```markdown', extras.outlinePreview, '```')
   }
 
   return lines.join('\n')

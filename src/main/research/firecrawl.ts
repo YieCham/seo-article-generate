@@ -17,14 +17,19 @@ export interface ScrapedPage {
   markdown: string
 }
 
-const MAX_MARKDOWN_CHARS = 6000
+const DEFAULT_MAX_MARKDOWN_CHARS = 6000
+export const OPTIMIZE_MAX_MARKDOWN_CHARS = 28000
 
-function truncateMarkdown(text: string): string {
-  if (text.length <= MAX_MARKDOWN_CHARS) return text
-  return `${text.slice(0, MAX_MARKDOWN_CHARS)}\n\n…（内容已截断）`
+function truncateMarkdown(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, maxChars)}\n\n…（内容已截断）`
 }
 
-export async function scrapeToMarkdown(url: string, apiKey: string): Promise<ScrapedPage> {
+export async function scrapeToMarkdown(
+  url: string,
+  apiKey: string,
+  maxChars = DEFAULT_MAX_MARKDOWN_CHARS
+): Promise<ScrapedPage> {
   const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
     method: 'POST',
     headers: {
@@ -51,7 +56,7 @@ export async function scrapeToMarkdown(url: string, apiKey: string): Promise<Scr
   return {
     url,
     title: payload.data.metadata?.title ?? url,
-    markdown: truncateMarkdown(payload.data.markdown.trim())
+    markdown: truncateMarkdown(payload.data.markdown.trim(), maxChars)
   }
 }
 

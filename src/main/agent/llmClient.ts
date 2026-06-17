@@ -1,3 +1,5 @@
+import { recordLlmTokenUsage, type ApiTokenUsage } from '../token/tokenUsageRecorder'
+
 export interface LlmConfig {
   apiKey: string
   baseUrl: string
@@ -7,10 +9,27 @@ export interface LlmConfig {
 
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
+export interface LlmCallOptions {
+  temperature?: number
+  maxTokens?: number
+  step?: string
+  label?: string
+}
+
+type CompletionResponse = {
+  choices?: Array<{ message?: { content?: string } }>
+  usage?: ApiTokenUsage
+}
+
+type StreamChunk = {
+  choices?: Array<{ delta?: { content?: string } }>
+  usage?: ApiTokenUsage
+}
+
 export async function chatCompletion(
   config: LlmConfig,
   messages: ChatMessage[],
-  options?: { temperature?: number; maxTokens?: number }
+  options?: LlmCallOptions
 ): Promise<string> {
   const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -31,17 +50,27 @@ export async function chatCompletion(
     throw new Error(`LLM 请求失败 (${response.status})：${detail.slice(0, 200)}`)
   }
 
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>
-  }
-  return data.choices?.[0]?.message?.content?.trim() ?? ''
+  const data = (await response.json()) as CompletionResponse
+  const content = data.choices?.[0]?.message?.content?.trim() ?? ''
+
+  await recordLlmTokenUsage({
+    model: config.model,
+    messages,
+    completionText: content,
+    usage: data.usage,
+    maxTokensRequested: options?.maxTokens,
+    step: options?.step,
+    label: options?.label
+  })
+
+  return content
 }
 
 export async function streamChatCompletion(
   config: LlmConfig,
   messages: ChatMessage[],
   onChunk: (text: string) => void,
-  options?: { temperature?: number }
+  options?: LlmCallOptions
 ): Promise<void> {
   const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -53,7 +82,9 @@ export async function streamChatCompletion(
       model: config.model,
       messages,
       stream: true,
-      temperature: options?.temperature ?? config.temperature
+      stream_options: { include_usage: true },
+      temperature: options?.temperature ?? config.temperature,
+      max_tokens: options?.maxTokens
     })
   })
 
@@ -69,6 +100,8 @@ export async function streamChatCompletion(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let completionText = ''
+  let streamUsage: ApiTokenUsage | undefined
 
   while (true) {
     const { done, value } = await reader.read()
@@ -82,19 +115,33 @@ export async function streamChatCompletion(
       const trimmed = line.trim()
       if (!trimmed.startsWith('data:')) continue
       const payload = trimmed.slice(5).trim()
-      if (payload === '[DONE]') return
+      if (payload === '[DONE]') continue
 
       try {
-        const json = JSON.parse(payload) as {
-          choices?: Array<{ delta?: { content?: string } }>
+        const json = JSON.parse(payload) as StreamChunk
+        if (json.usage) {
+          streamUsage = json.usage
         }
         const text = json.choices?.[0]?.delta?.content
-        if (text) onChunk(text)
+        if (text) {
+          completionText += text
+          onChunk(text)
+        }
       } catch {
         // ignore malformed SSE chunks
       }
     }
   }
+
+  await recordLlmTokenUsage({
+    model: config.model,
+    messages,
+    completionText,
+    usage: streamUsage,
+    maxTokensRequested: options?.maxTokens,
+    step: options?.step,
+    label: options?.label
+  })
 }
 
 export function parseJsonArray(raw: string): string[] {

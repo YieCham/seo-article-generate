@@ -1,47 +1,58 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { QuickPicksConfig } from '../../env.d'
-import { IconSend } from '../../components/Icons'
+import { ARTICLE_TYPE_OPTIONS, type ArticleType } from '../../constants/articleTypes'
+import type { WriteMode } from '../../constants/writeMode'
+import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../../constants/outputLanguage'
+import { IconPlus, IconSend } from '../../components/Icons'
 
 interface ComposerProps {
   disabled: boolean
+  writeMode: WriteMode
   quickPicks: QuickPicksConfig
   selectedProductId: string
-  selectedAudienceId: string
+  outputLanguage: OutputLanguageCode
+  articleType: ArticleType
   onProductChange: (id: string) => void
-  onAudienceChange: (id: string) => void
-  onSubmit: (topic: string, extraInstructions: string) => void
-  draftTopic: string
+  onOutputLanguageChange: (code: OutputLanguageCode) => void
+  onArticleTypeChange: (type: ArticleType) => void
+  onSubmit: (input: string, extraInstructions: string) => void
+  draftInput: string
   draftExtra: string
-  onDraftTopicChange: (value: string) => void
+  onDraftInputChange: (value: string) => void
   onDraftExtraChange: (value: string) => void
 }
 
 export default function Composer({
   disabled,
+  writeMode,
   quickPicks,
   selectedProductId,
-  selectedAudienceId,
+  outputLanguage,
+  articleType,
   onProductChange,
-  onAudienceChange,
+  onOutputLanguageChange,
+  onArticleTypeChange,
   onSubmit,
-  draftTopic,
+  draftInput,
   draftExtra,
-  onDraftTopicChange,
+  onDraftInputChange,
   onDraftExtraChange
 }: ComposerProps) {
   const [showExtra, setShowExtra] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const isOptimize = writeMode === 'optimize'
+  const placeholder = isOptimize ? '粘贴要优化的页面 URL 或追问…' : '输入主题或追问…'
 
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-  }, [draftTopic])
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`
+  }, [draftInput])
 
   function handleSubmit(): void {
-    if (!draftTopic.trim() || disabled) return
-    onSubmit(draftTopic.trim(), draftExtra.trim())
+    if (!draftInput.trim() || disabled) return
+    onSubmit(draftInput.trim(), draftExtra.trim())
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
@@ -53,17 +64,17 @@ export default function Composer({
 
   return (
     <div className="composer-wrap">
-      <div className={`composer-box${disabled ? ' is-disabled' : ''}`}>
-        <div className="composer-quick-row">
-          <label className="composer-quick-field">
-            <span>产品名称</span>
+      <div className={`composer-panel${disabled ? ' is-disabled' : ''}`}>
+        <div className={`composer-options${isOptimize ? ' is-optimize' : ''}`}>
+          <label className="composer-option">
             <select
               value={selectedProductId}
               onChange={(e) => onProductChange(e.target.value)}
               disabled={disabled || quickPicks.products.length === 0}
+              aria-label="产品名称"
             >
               <option value="">
-                {quickPicks.products.length === 0 ? '请先在设置中添加产品' : '选择产品（可选）'}
+                {quickPicks.products.length === 0 ? '未配置产品' : '产品（可选）'}
               </option>
               {quickPicks.products.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -73,23 +84,37 @@ export default function Composer({
             </select>
           </label>
 
-          <label className="composer-quick-field">
-            <span>目标读者</span>
+          <label className="composer-option">
             <select
-              value={selectedAudienceId}
-              onChange={(e) => onAudienceChange(e.target.value)}
-              disabled={disabled || quickPicks.audiences.length === 0}
+              value={outputLanguage}
+              onChange={(e) => onOutputLanguageChange(e.target.value as OutputLanguageCode)}
+              disabled={disabled}
+              aria-label="文本语言"
             >
-              <option value="">
-                {quickPicks.audiences.length === 0 ? '请先在设置中添加读者' : '选择读者（可选）'}
-              </option>
-              {quickPicks.audiences.map((item) => (
-                <option key={item.id} value={item.id}>
+              {OUTPUT_LANGUAGE_OPTIONS.map((item) => (
+                <option key={item.value} value={item.value}>
                   {item.label}
                 </option>
               ))}
             </select>
           </label>
+
+          {!isOptimize ? (
+            <label className="composer-option">
+              <select
+                value={articleType}
+                onChange={(e) => onArticleTypeChange(e.target.value as ArticleType)}
+                disabled={disabled}
+                aria-label="文章类型"
+              >
+                {ARTICLE_TYPE_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
 
         {showExtra ? (
@@ -99,47 +124,43 @@ export default function Composer({
               className="composer-extra"
               value={draftExtra}
               onChange={(e) => onDraftExtraChange(e.target.value)}
-              placeholder="其他字数、风格、结构要求…"
               rows={2}
               disabled={disabled}
+              placeholder="风格、结构、关键词等额外说明…"
             />
           </div>
         ) : null}
 
-        <div className="composer-main">
+        <div className="composer-bar">
+          <button
+            type="button"
+            className={`composer-icon-btn${showExtra ? ' is-active' : ''}`}
+            onClick={() => setShowExtra((prev) => !prev)}
+            disabled={disabled}
+            aria-label={showExtra ? '收起补充要求' : '补充要求'}
+            title={showExtra ? '收起补充要求' : '补充要求'}
+          >
+            <IconPlus size={15} />
+          </button>
           <textarea
             ref={textareaRef}
             className="composer-input"
-            value={draftTopic}
-            onChange={(e) => onDraftTopicChange(e.target.value)}
+            value={draftInput}
+            onChange={(e) => onDraftInputChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="描述你想写的文章主题…"
             rows={1}
             disabled={disabled}
+            placeholder={placeholder}
           />
-          <div className="composer-toolbar">
-            <button
-              type="button"
-              className={`toolbar-btn${showExtra ? ' is-active' : ''}`}
-              onClick={() => setShowExtra((prev) => !prev)}
-              disabled={disabled}
-            >
-              {showExtra ? '收起要求' : '补充要求'}
-            </button>
-            <div className="composer-shortcuts">
-              <kbd>Enter</kbd>
-              <span>发送</span>
-            </div>
-            <button
-              type="button"
-              className="send-btn"
-              onClick={handleSubmit}
-              disabled={disabled || !draftTopic.trim()}
-              aria-label="发送"
-            >
-              <IconSend size={15} />
-            </button>
-          </div>
+          <button
+            type="button"
+            className="composer-send"
+            onClick={handleSubmit}
+            disabled={disabled || !draftInput.trim()}
+            aria-label="发送"
+          >
+            <IconSend size={14} />
+          </button>
         </div>
       </div>
     </div>

@@ -13,6 +13,9 @@ const PRODUCT_PATTERNS = [
   /(?:推广|介绍|使用|提及)\s*[:：]?\s*([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9\s\-]{1,30})/
 ]
 
+const WRITER_META_LINE =
+  /^(target\s*audience|目标读者|article\s*type|文章类型|product\s*name|产品名(?:称)?)\s*[:：]/i
+
 function extractProductName(raw: string): string | undefined {
   for (const pattern of PRODUCT_PATTERNS) {
     const match = raw.match(pattern)
@@ -31,6 +34,15 @@ function extractProductName(raw: string): string | undefined {
   return undefined
 }
 
+function stripWriterMetaLines(raw: string): string {
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !WRITER_META_LINE.test(line))
+    .join('\n')
+    .trim()
+}
+
 function buildMentionLock(raw: string, productName?: string): string {
   if (productName) {
     return [
@@ -42,31 +54,40 @@ function buildMentionLock(raw: string, productName?: string): string {
     ].join('\n')
   }
 
-  if (!raw) return ''
+  const contentBrief = stripWriterMetaLines(raw)
+  if (!contentBrief) return ''
 
   return [
     '【硬性要求 — 用户补充说明】',
-    '以下补充要求必须体现在终稿中（含产品、受众、结构等）：',
-    raw,
+    '以下补充要求必须体现在终稿中（含产品、结构等）：',
+    contentBrief,
     '若其中提到具体产品/工具名称，正文必须使用原名，不得泛化。'
   ].join('\n')
+}
+
+function buildBriefForPrompt(raw: string, productName?: string): string {
+  const contentBrief = stripWriterMetaLines(raw)
+  const parts = [
+    contentBrief ? `用户补充要求：\n${contentBrief}` : '',
+    productName ? `指定产品名称：${productName}` : ''
+  ].filter(Boolean)
+
+  return parts.join('\n')
+}
+
+export function getUserContextPromptBlocks(context: UserWritingContext): string {
+  return context.mentionLock
 }
 
 export function parseUserWritingContext(extraInstructions?: string): UserWritingContext {
   const raw = extraInstructions?.trim() ?? ''
   const productName = raw ? extractProductName(raw) : undefined
-  const mentionLock = buildMentionLock(raw, productName)
-
-  const briefParts = [
-    raw ? `用户补充要求：\n${raw}` : '',
-    productName ? `指定产品名称：${productName}` : ''
-  ].filter(Boolean)
 
   return {
     raw,
     productName,
-    mentionLock,
-    briefForPrompt: briefParts.join('\n')
+    mentionLock: buildMentionLock(raw, productName),
+    briefForPrompt: buildBriefForPrompt(raw, productName)
   }
 }
 

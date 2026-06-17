@@ -1,9 +1,32 @@
 import { useEffect, useState } from 'react'
-import type { AppConfig, QuickPickOption, SkillItem } from '../env.d'
+import type { AppConfig, LlmPreset, PipelineMode, QuickPickOption, SkillItem } from '../env.d'
 import { LANGUAGE_OPTIONS, REGION_OPTIONS } from '../constants/localeOptions'
 import QuickPickEditor from './settings/QuickPickEditor'
+import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../constants/outputLanguage'
+import LlmPresetPanel from './settings/LlmPresetPanel'
+import LlmMaxTokensPanel from './settings/LlmMaxTokensPanel'
+import TokenLogPanel from './settings/TokenLogPanel'
 
-type SettingsTab = 'llm' | 'research' | 'shortcuts' | 'prompts' | 'skills'
+type SettingsTab = 'llm' | 'tokenLog' | 'research' | 'shortcuts' | 'prompts' | 'skills'
+
+const DEFAULT_CREATE_PROMPTS = {
+  systemPrompt:
+    '你是一位专业内容创作者。请严格遵循以下 Skills 中的写作规范：\n\n{{skills}}\n\n{{research}}',
+  userPrompt:
+    '请围绕以下主题创作一篇完整文章（Markdown 格式）：\n\n主题：{{topic}}\n{{extraInstructions}}\n\n在动笔前，请结合上方竞品调研参考（如有），确保文章在观点、结构或深度上具备差异化。\n直接输出正文，不要解释你将如何写作。'
+}
+
+const DEFAULT_OPTIMIZE_PROMPTS = {
+  systemPrompt:
+    '你是一位资深 SEO/GEO 编辑。请严格遵循以下 Skills 中的优化规范：\n\n{{skills}}\n\n{{research}}',
+  userPrompt:
+    '请基于以下原文 URL 与抓取内容，输出优化后的完整文章（Markdown）：\n\n原文：{{sourceUrl}}\n{{extraInstructions}}\n\n在动笔前，请结合竞品调研与 E-E-A-T 萃取（如有），在保留原文骨架的前提下做增量优化。\n直接输出正文，不要解释你将如何优化。'
+}
+
+const PIPELINE_MODE_OPTIONS: Array<{ value: PipelineMode; label: string; hint: string }> = [
+  { value: 'create', label: '文章创作', hint: '用于从零生成新文章的 Pipeline' },
+  { value: 'optimize', label: '文章优化', hint: '用于抓取原页并做 E-E-A-T 增量优化' }
+]
 
 const EMPTY_SKILL: SkillItem = {
   id: '',
@@ -28,6 +51,8 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   const [testingTavily, setTestingTavily] = useState(false)
   const [testingFirecrawl, setTestingFirecrawl] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [pipelineMode, setPipelineMode] = useState<PipelineMode>('create')
+  const [editingPresetId, setEditingPresetId] = useState('')
 
   useEffect(() => {
     if (visible) void loadData()
@@ -35,9 +60,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
 
   useEffect(() => {
     if (visible && tab === 'skills') {
-      void window.app.listSkills().then(setSkills)
+      void window.app.listSkills(pipelineMode).then(setSkills)
     }
-  }, [visible, tab])
+  }, [visible, tab, pipelineMode])
 
   useEffect(() => {
     if (!status || status === '正在保存…' || status.startsWith('正在测试')) return
@@ -51,10 +76,39 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     setStatus('')
   }
 
-  async function loadData(): Promise<void> {
-    const [nextConfig, nextSkills] = await Promise.all([window.app.getConfig(), window.app.listSkills()])
+  async function loadData(mode: PipelineMode = pipelineMode): Promise<void> {
+    const [nextConfig, nextSkills] = await Promise.all([
+      window.app.getConfig(),
+      window.app.listSkills(mode)
+    ])
     setConfig(nextConfig)
     setSkills(nextSkills)
+    setEditingPresetId(nextConfig.activeLlmPresetId || nextConfig.llmPresets[0]?.id || '')
+  }
+
+  function renderPipelineModeTabs() {
+    return (
+      <div className="settings-pipeline-tabs" role="tablist" aria-label="Pipeline 类型">
+        {PIPELINE_MODE_OPTIONS.map((item) => (
+          <button
+            key={item.value}
+            type="button"
+            role="tab"
+            className={`settings-pipeline-tab${pipelineMode === item.value ? ' active' : ''}`}
+            aria-selected={pipelineMode === item.value}
+            title={item.hint}
+            onClick={() => {
+              setPipelineMode(item.value)
+              if (tab === 'skills') {
+                void window.app.listSkills(item.value).then(setSkills)
+              }
+            }}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    )
   }
 
   async function handleSaveConfig(partial: Partial<AppConfig>): Promise<void> {
@@ -102,7 +156,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   async function handleToggleSkill(id: string, enabled: boolean): Promise<void> {
     setSkills((prev) => prev.map((skill) => (skill.id === id ? { ...skill, enabled } : skill)))
     try {
-      await window.app.setSkillEnabled(id, enabled)
+      await window.app.setSkillEnabled(id, enabled, pipelineMode)
       setStatus(enabled ? 'Skill 已启用' : 'Skill 已禁用')
     } catch {
       await loadData()
@@ -111,13 +165,17 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   }
 
   async function handleSaveSkill(): Promise<void> {
+    if (editingSkill?.bundled) {
+      setStatus('内置 Skill 为只读，请使用列表开关启用或禁用')
+      return
+    }
     if (!editingSkill?.name.trim()) {
       setStatus('请填写 Skill 名称')
       return
     }
     setSaving(true)
     try {
-      await window.app.saveSkill(editingSkill)
+      await window.app.saveSkill(editingSkill, pipelineMode)
       setEditingSkill(null)
       await loadData()
       setStatus('Skill 已保存')
@@ -145,39 +203,101 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     }
   }
 
+  async function handleSaveLlmPresets(): Promise<void> {
+    if (!config) return
+    await handleSaveConfig({
+      llmPresets: config.llmPresets,
+      activeLlmPresetId: config.activeLlmPresetId
+    })
+  }
+
+  async function handleSaveTokenLimits(): Promise<void> {
+    if (!config) return
+    await handleSaveConfig({
+      llmMaxTokens: config.llmMaxTokens
+    })
+  }
+
+  async function handleSwitchActivePreset(id: string): Promise<void> {
+    if (!config) return
+    setConfig({ ...config, activeLlmPresetId: id })
+    setEditingPresetId(id)
+    await handleSaveConfig({ activeLlmPresetId: id })
+  }
+
+  function handleAddLlmPreset(): void {
+    if (!config) return
+    const preset: LlmPreset = {
+      id: crypto.randomUUID(),
+      name: '新预设',
+      apiKey: '',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      temperature: 0.7
+    }
+    setConfig({
+      ...config,
+      llmPresets: [...config.llmPresets, preset]
+    })
+    setEditingPresetId(preset.id)
+  }
+
+  async function handleDeleteLlmPreset(id: string): Promise<void> {
+    if (!config || config.llmPresets.length <= 1) return
+    if (!confirm('确定删除该 LLM 预设？')) return
+
+    const nextPresets = config.llmPresets.filter((item) => item.id !== id)
+    const nextActive =
+      config.activeLlmPresetId === id ? nextPresets[0].id : config.activeLlmPresetId
+
+    setConfig({
+      ...config,
+      llmPresets: nextPresets,
+      activeLlmPresetId: nextActive
+    })
+    setEditingPresetId(nextActive)
+    await handleSaveConfig({ llmPresets: nextPresets, activeLlmPresetId: nextActive })
+  }
+
   function handleResetPrompts(): void {
     if (!config) return
     void handleSaveConfig({
       prompts: {
-        systemPrompt:
-          '你是一位专业内容创作者。请严格遵循以下 Skills 中的写作规范：\n\n{{skills}}\n\n{{research}}',
-        userPrompt:
-          '请围绕以下主题创作一篇完整文章（Markdown 格式）：\n\n主题：{{topic}}\n{{extraInstructions}}\n\n在动笔前，请结合上方竞品调研参考（如有），确保文章在观点、结构或深度上具备差异化。\n直接输出正文，不要解释你将如何写作。'
+        ...config.prompts,
+        [pipelineMode]:
+          pipelineMode === 'optimize' ? DEFAULT_OPTIMIZE_PROMPTS : DEFAULT_CREATE_PROMPTS
       }
     })
   }
 
-  async function updateQuickPicks(
-    type: 'products' | 'audiences',
-    updater: (items: QuickPickOption[]) => QuickPickOption[]
-  ): Promise<void> {
+  async function updateQuickPicks(updater: (items: QuickPickOption[]) => QuickPickOption[]): Promise<void> {
     if (!config) return
-    const nextItems = updater(config.quickPicks[type])
+    const nextItems = updater(config.quickPicks.products)
     await handleSaveConfig({
       quickPicks: {
         ...config.quickPicks,
-        [type]: nextItems
+        products: nextItems
       }
     })
   }
 
-  function handleAddQuickPick(type: 'products' | 'audiences', label: string): void {
+  function handleAddQuickPick(label: string): void {
     const item: QuickPickOption = { id: crypto.randomUUID(), label: label.trim() }
-    void updateQuickPicks(type, (items) => [...items, item])
+    void updateQuickPicks((items) => [...items, item])
   }
 
-  function handleRemoveQuickPick(type: 'products' | 'audiences', id: string): void {
-    void updateQuickPicks(type, (items) => items.filter((item) => item.id !== id))
+  function handleRemoveQuickPick(id: string): void {
+    void updateQuickPicks((items) => items.filter((item) => item.id !== id))
+  }
+
+  async function handleDefaultOutputLanguageChange(code: OutputLanguageCode): Promise<void> {
+    if (!config) return
+    await handleSaveConfig({
+      quickPicks: {
+        ...config.quickPicks,
+        defaultOutputLanguage: code
+      }
+    })
   }
 
   if (!config) {
@@ -191,12 +311,12 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
 
   return (
     <div className="settings-page">
-      <nav className="settings-tabs" role="tablist">
+      <nav className="settings-nav" role="tablist" aria-label="配置分类">
         <button
           type="button"
           role="tab"
           aria-selected={tab === 'llm'}
-          className={tab === 'llm' ? 'tab active' : 'tab'}
+          className={tab === 'llm' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('llm')}
         >
           LLM 配置
@@ -204,8 +324,17 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         <button
           type="button"
           role="tab"
+          aria-selected={tab === 'tokenLog'}
+          className={tab === 'tokenLog' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('tokenLog')}
+        >
+          Token 日志
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === 'research'}
-          className={tab === 'research' ? 'tab active' : 'tab'}
+          className={tab === 'research' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('research')}
         >
           竞品调研
@@ -214,7 +343,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           type="button"
           role="tab"
           aria-selected={tab === 'shortcuts'}
-          className={tab === 'shortcuts' ? 'tab active' : 'tab'}
+          className={tab === 'shortcuts' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('shortcuts')}
         >
           快捷选项
@@ -223,7 +352,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           type="button"
           role="tab"
           aria-selected={tab === 'prompts'}
-          className={tab === 'prompts' ? 'tab active' : 'tab'}
+          className={tab === 'prompts' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('prompts')}
         >
           提示词
@@ -232,7 +361,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           type="button"
           role="tab"
           aria-selected={tab === 'skills'}
-          className={tab === 'skills' ? 'tab active' : 'tab'}
+          className={tab === 'skills' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('skills')}
         >
           Skill 管理
@@ -240,67 +369,43 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
       </nav>
 
       <div className="settings-content">
-      {tab === 'llm' && (
+      {tab === 'llm' && config && (
         <section className="panel">
-          <h2 className="section-title">LLM 配置</h2>
-          <p className="section-desc">配置 OpenAI 兼容接口，用于文章生成。</p>
+          <h2 className="section-title">LLM 预设</h2>
+          <p className="section-desc">
+            配置多个 OpenAI 兼容模型预设，通过「当前使用」快速切换。创作时将使用当前选中的预设。
+          </p>
 
-          <label htmlFor="apiKey">API Key</label>
-          <input
-            id="apiKey"
-            type="password"
-            value={config.llm.apiKey}
-            onChange={(e) => setConfig({ ...config, llm: { ...config.llm, apiKey: e.target.value } })}
-            placeholder="sk-..."
+          <LlmPresetPanel
+            config={config}
+            editingPresetId={editingPresetId}
+            saving={saving}
+            testing={testing}
+            onEditingPresetChange={setEditingPresetId}
+            onConfigChange={setConfig}
+            onSave={() => void handleSaveLlmPresets()}
+            onTest={() => void handleTestConnection()}
+            onSwitchActive={(id) => void handleSwitchActivePreset(id)}
+            onAddPreset={handleAddLlmPreset}
+            onDeletePreset={(id) => void handleDeleteLlmPreset(id)}
           />
 
-          <label htmlFor="baseUrl">Base URL</label>
-          <input
-            id="baseUrl"
-            value={config.llm.baseUrl}
-            onChange={(e) => setConfig({ ...config, llm: { ...config.llm, baseUrl: e.target.value } })}
-            placeholder="https://api.openai.com/v1"
-          />
-
-          <div className="form-row">
-            <div>
-              <label htmlFor="model">模型</label>
-              <input
-                id="model"
-                value={config.llm.model}
-                onChange={(e) => setConfig({ ...config, llm: { ...config.llm, model: e.target.value } })}
-                placeholder="gpt-4o"
-              />
-            </div>
-            <div>
-              <label htmlFor="temperature">Temperature ({config.llm.temperature})</label>
-              <input
-                id="temperature"
-                type="range"
-                min="0"
-                max="1"
-                step="0.1"
-                value={config.llm.temperature}
-                onChange={(e) =>
-                  setConfig({
-                    ...config,
-                    llm: { ...config.llm, temperature: Number(e.target.value) }
-                  })
-                }
-              />
-            </div>
-          </div>
-
-          <div className="actions">
-            <button type="button" disabled={saving} onClick={() => void handleSaveConfig({ llm: config.llm })}>
-              保存配置
-            </button>
-            <button type="button" className="secondary" disabled={testing} onClick={() => void handleTestConnection()}>
-              {testing ? '测试中…' : '测试连接'}
-            </button>
+          <div className="settings-subsection">
+            <h3 className="subsection-title">Token 用量</h3>
+            <p className="section-desc">
+              设置 Pipeline 每次 LLM 请求的 max_tokens 全局上限（创作规划、撰写、润色、优化等步骤统一生效）。
+            </p>
+            <LlmMaxTokensPanel
+              config={config}
+              saving={saving}
+              onConfigChange={setConfig}
+              onSave={() => void handleSaveTokenLimits()}
+            />
           </div>
         </section>
       )}
+
+      {tab === 'tokenLog' && <TokenLogPanel onStatus={setStatus} />}
 
       {tab === 'research' && (
         <section className="panel">
@@ -458,21 +563,31 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           <QuickPickEditor
             title="产品名称"
             description="创作页「产品名称」下拉选项。选中后会自动写入补充要求（Product name: …）。"
-            placeholder="例如：TuneFab Spotify Music Converter"
             items={config.quickPicks.products}
             disabled={saving}
-            onAdd={(label) => handleAddQuickPick('products', label)}
-            onRemove={(id) => handleRemoveQuickPick('products', id)}
+            onAdd={handleAddQuickPick}
+            onRemove={handleRemoveQuickPick}
           />
-          <QuickPickEditor
-            title="目标读者"
-            description="创作页「目标读者」下拉选项。选中后会自动写入补充要求（Target audience: …）。"
-            placeholder="例如：US music lovers who want offline Spotify playback"
-            items={config.quickPicks.audiences}
-            disabled={saving}
-            onAdd={(label) => handleAddQuickPick('audiences', label)}
-            onRemove={(id) => handleRemoveQuickPick('audiences', id)}
-          />
+          <section className="panel quick-pick-panel">
+            <h2 className="section-title">文本语言</h2>
+            <p className="section-desc">
+              创作页默认输出语言，仅规范 AI 终稿文本语言，不影响界面显示语言。
+            </p>
+            <label className="field-inline">
+              <span>默认语言</span>
+              <select
+                value={config.quickPicks.defaultOutputLanguage ?? 'en'}
+                disabled={saving}
+                onChange={(e) => void handleDefaultOutputLanguageChange(e.target.value as OutputLanguageCode)}
+              >
+                {OUTPUT_LANGUAGE_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </section>
         </>
       )}
 
@@ -480,17 +595,39 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         <section className="panel">
           <h2 className="section-title">提示词模板</h2>
           <p className="section-desc">
-            可用变量：<code>{'{{skills}}'}</code>、<code>{'{{research}}'}</code>、<code>{'{{topic}}'}</code>、
-            <code>{'{{extraInstructions}}'}</code>
+            文章创作与文章优化使用独立的提示词配置，分别作用于对应 Pipeline。
+          </p>
+          {renderPipelineModeTabs()}
+          <p className="section-desc">
+            {pipelineMode === 'optimize' ? (
+              <>
+                可用变量：<code>{'{{skills}}'}</code>、<code>{'{{research}}'}</code>、
+                <code>{'{{sourceUrl}}'}</code>、<code>{'{{extraInstructions}}'}</code>
+              </>
+            ) : (
+              <>
+                可用变量：<code>{'{{skills}}'}</code>、<code>{'{{research}}'}</code>、
+                <code>{'{{topic}}'}</code>、<code>{'{{extraInstructions}}'}</code>
+              </>
+            )}
           </p>
 
           <label htmlFor="systemPrompt">System 提示词</label>
           <textarea
             id="systemPrompt"
             rows={8}
-            value={config.prompts.systemPrompt}
+            value={config.prompts[pipelineMode].systemPrompt}
             onChange={(e) =>
-              setConfig({ ...config, prompts: { ...config.prompts, systemPrompt: e.target.value } })
+              setConfig({
+                ...config,
+                prompts: {
+                  ...config.prompts,
+                  [pipelineMode]: {
+                    ...config.prompts[pipelineMode],
+                    systemPrompt: e.target.value
+                  }
+                }
+              })
             }
           />
 
@@ -498,9 +635,18 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           <textarea
             id="userPrompt"
             rows={8}
-            value={config.prompts.userPrompt}
+            value={config.prompts[pipelineMode].userPrompt}
             onChange={(e) =>
-              setConfig({ ...config, prompts: { ...config.prompts, userPrompt: e.target.value } })
+              setConfig({
+                ...config,
+                prompts: {
+                  ...config.prompts,
+                  [pipelineMode]: {
+                    ...config.prompts[pipelineMode],
+                    userPrompt: e.target.value
+                  }
+                }
+              })
             }
           />
 
@@ -522,22 +668,26 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
               <div>
                 <h2 className="section-title">Skill 列表</h2>
                 <p className="section-desc">
-                  管理写作规范，启用的 Skill 会在创作时注入 Pipeline。内置 Skill 随应用打包，不可删除。
+                  文章创作列表不含 article-optimizer；文章优化仅展示 article-optimizer。切换上方标签后，开关仅影响对应 Pipeline。
                 </p>
               </div>
               <div className="section-actions">
                 <button type="button" className="secondary" onClick={() => void loadData()}>
                   刷新列表
                 </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => setEditingSkill({ ...EMPTY_SKILL })}
-                >
-                  新建 Skill
-                </button>
+                {pipelineMode === 'create' ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setEditingSkill({ ...EMPTY_SKILL })}
+                  >
+                    新建 Skill
+                  </button>
+                ) : null}
               </div>
             </div>
+
+            {renderPipelineModeTabs()}
 
             {skills.length === 0 ? (
               <p className="empty-hint">暂无 Skill，点击「新建 Skill」添加。</p>
@@ -580,12 +730,15 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
 
           {editingSkill && (
             <section className="panel">
-              <h2 className="section-title">{editingSkill.id ? '编辑 Skill' : '新建 Skill'}</h2>
+              <h2 className="section-title">
+                {editingSkill.bundled ? '查看 Skill' : editingSkill.id ? '编辑 Skill' : '新建 Skill'}
+              </h2>
 
               <label htmlFor="skillName">名称</label>
               <input
                 id="skillName"
                 value={editingSkill.name}
+                readOnly={editingSkill.bundled}
                 onChange={(e) => setEditingSkill({ ...editingSkill, name: e.target.value })}
                 placeholder="article-writing"
               />
@@ -595,6 +748,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
                 id="skillDesc"
                 rows={2}
                 value={editingSkill.description}
+                readOnly={editingSkill.bundled}
                 onChange={(e) => setEditingSkill({ ...editingSkill, description: e.target.value })}
                 placeholder="简要说明该 Skill 的用途"
               />
@@ -605,27 +759,34 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
                 rows={12}
                 className="code-area"
                 value={editingSkill.content}
+                readOnly={editingSkill.bundled}
                 onChange={(e) => setEditingSkill({ ...editingSkill, content: e.target.value })}
                 placeholder="# 写作规范&#10;&#10;1. ..."
               />
 
-              <label className="skill-toggle inline-toggle">
-                <input
-                  type="checkbox"
-                  className="toggle-input"
-                  checked={editingSkill.enabled}
-                  onChange={(e) => setEditingSkill({ ...editingSkill, enabled: e.target.checked })}
-                />
-                <span className="toggle-switch" aria-hidden="true" />
-                <span className="toggle-label">保存后启用此 Skill</span>
-              </label>
+              {!editingSkill.bundled ? (
+                <label className="skill-toggle inline-toggle">
+                  <input
+                    type="checkbox"
+                    className="toggle-input"
+                    checked={editingSkill.enabled}
+                    onChange={(e) => setEditingSkill({ ...editingSkill, enabled: e.target.checked })}
+                  />
+                  <span className="toggle-switch" aria-hidden="true" />
+                  <span className="toggle-label">保存后启用此 Skill</span>
+                </label>
+              ) : (
+                <p className="field-hint">内置 Skill 为只读；启用或禁用请使用上方列表中的开关。</p>
+              )}
 
               <div className="actions">
-                <button type="button" disabled={saving} onClick={() => void handleSaveSkill()}>
-                  保存 Skill
-                </button>
+                {!editingSkill.bundled ? (
+                  <button type="button" disabled={saving} onClick={() => void handleSaveSkill()}>
+                    保存 Skill
+                  </button>
+                ) : null}
                 <button type="button" className="secondary" onClick={() => setEditingSkill(null)}>
-                  取消
+                  {editingSkill.bundled ? '关闭' : '取消'}
                 </button>
               </div>
             </section>

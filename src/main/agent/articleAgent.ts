@@ -35,6 +35,7 @@ import {
   getArticleLengthPromptBlock,
   getSectionWordBudget,
   maxTokensForWordBudget,
+  resolveSectionDraftTokenPlan,
   MIN_ARTICLE_WORDS,
   MAX_ARTICLE_WORDS,
   getIntroConclusionSectionHint,
@@ -408,6 +409,17 @@ async function draftBySections(
         ? isProductPartSection
         : /how[\s-]?to|step|guide|tutorial|教程|步骤|使用/i.test(sectionContext))
 
+    const { wordBudget: tokenWordBudget, tier: draftTokenTier } = resolveSectionDraftTokenPlan(
+      section.title,
+      section.body,
+      sectionWordBudget,
+      {
+        isHowToSection,
+        isProductPartSection,
+        introConclusionHint
+      }
+    )
+
     emit({
       type: 'status',
       step: 'draft',
@@ -470,7 +482,7 @@ async function draftBySections(
             .join('\n')
         }
       ],
-      { temperature: 0.65, maxTokens: maxTokensForWordBudget(sectionWordBudget, globalMaxTokens) }
+      { temperature: 0.65, maxTokens: maxTokensForWordBudget(tokenWordBudget, globalMaxTokens, draftTokenTier) }
     )
 
     const block = `## ${section.title}\n\n${sectionText.trim()}\n\n`

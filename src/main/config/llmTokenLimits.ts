@@ -21,22 +21,33 @@ export type PipelineTokenStep =
   | 'optimizeLengthAdjust'
 
 export const STEP_TOKEN_CAPS: Record<PipelineTokenStep, number> = {
-  intentExpand: 4096,
-  eeatExtract: 8192,
-  writingBrief: 4096,
-  plan: 16384,
-  outline: 16384,
-  sectionDraft: 4096,
-  polish: 8192,
-  lengthAdjust: 8192,
-  seoMeta: 512,
-  sectionEdit: 8192,
-  optimizeAudit: 12288,
-  optimizeDraft: 16384,
-  optimizeSectionDraft: 8192,
-  optimizePolish: 16384,
-  optimizeLengthAdjust: 12288
+  intentExpand: 6144,
+  eeatExtract: 12288,
+  writingBrief: 6144,
+  plan: 24576,
+  outline: 24576,
+  sectionDraft: 12288,
+  polish: 12288,
+  lengthAdjust: 12288,
+  seoMeta: 2460,
+  sectionEdit: 12288,
+  optimizeAudit: 16384,
+  optimizeDraft: 24576,
+  optimizeSectionDraft: 12288,
+  optimizePolish: 24576,
+  optimizeLengthAdjust: 16384
 }
+
+const SECTION_DRAFT_RULES = {
+  /** Short sections: Quick Answer, Intro, Conclusion */
+  light: { multiplier: 3.6, floor: 1230 },
+  /** Standard Part / flex sections */
+  default: { multiplier: 5.0, floor: 4096 },
+  /** Step-by-step tutorials, product Part, workaround sections */
+  heavy: { multiplier: 5.5, floor: 6144 }
+} as const
+
+export type SectionDraftTier = keyof typeof SECTION_DRAFT_RULES
 
 /** @deprecated legacy multi-field token config */
 interface LegacyLlmTokenLimits {
@@ -83,11 +94,10 @@ export function resolveStepMaxTokens(
 
   if (wordBudget != null && Number.isFinite(wordBudget)) {
     const wordBasedSteps: Partial<Record<PipelineTokenStep, { multiplier: number; floor: number }>> = {
-      sectionDraft: { multiplier: 2.5, floor: 512 },
-      optimizeDraft: { multiplier: 2.8, floor: 2048 },
-      optimizeSectionDraft: { multiplier: 2.8, floor: 1024 },
-      optimizePolish: { multiplier: 2.6, floor: 2048 },
-      optimizeLengthAdjust: { multiplier: 2.6, floor: 2048 }
+      optimizeDraft: { multiplier: 3.5, floor: 4096 },
+      optimizeSectionDraft: { multiplier: 3.5, floor: 2048 },
+      optimizePolish: { multiplier: 3.2, floor: 4096 },
+      optimizeLengthAdjust: { multiplier: 3.2, floor: 4096 }
     }
     const rule = wordBasedSteps[step]
     if (rule) {
@@ -99,8 +109,16 @@ export function resolveStepMaxTokens(
   return Math.min(global, stepCap)
 }
 
-export function maxTokensForSectionDraft(words: number, globalMax: number): number {
-  return resolveStepMaxTokens('sectionDraft', globalMax, words)
+export function maxTokensForSectionDraft(
+  words: number,
+  globalMax: number,
+  tier: SectionDraftTier = 'default'
+): number {
+  const global = clampMaxTokens(globalMax)
+  const stepCap = STEP_TOKEN_CAPS.sectionDraft
+  const rule = SECTION_DRAFT_RULES[tier]
+  const estimated = Math.ceil(words * rule.multiplier)
+  return Math.min(global, stepCap, Math.max(rule.floor, estimated))
 }
 
 export function maxTokensForOptimizeSection(originalWords: number, globalMax: number): number {

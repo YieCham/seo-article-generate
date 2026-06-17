@@ -1,4 +1,4 @@
-import { maxTokensForSectionDraft } from '../config/llmTokenLimits'
+import { maxTokensForSectionDraft, type SectionDraftTier } from '../config/llmTokenLimits'
 
 export const MIN_ARTICLE_WORDS = 1000
 export const MAX_ARTICLE_WORDS = 1500
@@ -100,6 +100,44 @@ export function getSectionWordBudget(title: string, allTitles: string[]): number
   return flexCount > 0 ? Math.max(120, Math.floor(remaining / flexCount)) : 150
 }
 
-export function maxTokensForWordBudget(words: number, cap = 8192): number {
-  return maxTokensForSectionDraft(words, cap)
+export type { SectionDraftTier }
+
+export function resolveSectionDraftTokenPlan(
+  title: string,
+  body: string,
+  sectionWordBudget: number,
+  flags: {
+    isHowToSection: boolean
+    isProductPartSection: boolean
+    introConclusionHint: string
+  }
+): { wordBudget: number; tier: SectionDraftTier } {
+  const ctx = `${title} ${body}`
+  const normalized = title.trim().toLowerCase()
+
+  if (/^seo meta/i.test(normalized)) {
+    return { wordBudget: Math.min(sectionWordBudget, 120), tier: 'light' }
+  }
+  if (flags.introConclusionHint || /^quick answer|key takeaways/i.test(normalized)) {
+    return { wordBudget: sectionWordBudget, tier: 'light' }
+  }
+  if (
+    flags.isHowToSection ||
+    flags.isProductPartSection ||
+    /step[\s-]?by[\s-]?step|tutorial|how to use|official step|workaround|converter|better/i.test(ctx)
+  ) {
+    return { wordBudget: Math.max(sectionWordBudget, 420), tier: 'heavy' }
+  }
+  if (/pros|cons|value|experience|worth|feature|standout/i.test(ctx)) {
+    return { wordBudget: Math.max(sectionWordBudget, 320), tier: 'default' }
+  }
+  return { wordBudget: sectionWordBudget, tier: 'default' }
+}
+
+export function maxTokensForWordBudget(
+  words: number,
+  cap = 8192,
+  tier: SectionDraftTier = 'default'
+): number {
+  return maxTokensForSectionDraft(words, cap, tier)
 }

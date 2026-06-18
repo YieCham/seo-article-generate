@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import type { ChatMessage } from './types'
 import MarkdownContent from './MarkdownContent'
 import CollapsibleMarkdownCard from './CollapsibleMarkdownCard'
@@ -9,21 +9,27 @@ import { IconCopy, IconMessage } from '../../components/Icons'
 interface ChatMessageItemProps {
   message: ChatMessage
   onCopy?: (content: string) => void
+  onContextMenu?: (event: MouseEvent) => void
   sectionEditDisabled?: boolean
   sectionEditTopic?: string
   outputLanguage?: string
   onSectionEditApply?: (messageId: string, content: string) => void
   onSectionEditBusyChange?: (busy: boolean) => void
+  onApplyRevision?: (assistantMessageId: string) => void
+  onCancelRevision?: (assistantMessageId: string) => void
 }
 
 export default function ChatMessageItem({
   message,
   onCopy,
+  onContextMenu,
   sectionEditDisabled,
   sectionEditTopic,
   outputLanguage,
   onSectionEditApply,
-  onSectionEditBusyChange
+  onSectionEditBusyChange,
+  onApplyRevision,
+  onCancelRevision
 }: ChatMessageItemProps) {
   const articleRef = useRef<HTMLDivElement>(null)
   const [sectionEditOpen, setSectionEditOpen] = useState(false)
@@ -48,7 +54,7 @@ export default function ChatMessageItem({
 
   if (message.role === 'planning') {
     return (
-      <article className="chat-message is-planning">
+      <article className="chat-message is-planning" onContextMenu={onContextMenu}>
         <div className="workspace-card">
           <div className="workspace-card-head">
             <span className="workspace-card-title">创作规划</span>
@@ -65,7 +71,7 @@ export default function ChatMessageItem({
 
   if (message.role === 'research') {
     return (
-      <article className="chat-message is-research">
+      <article className="chat-message is-research" onContextMenu={onContextMenu}>
         <div className="workspace-card">
           <div className="workspace-card-head">
             <span className="workspace-card-title">竞品调研</span>
@@ -80,25 +86,49 @@ export default function ChatMessageItem({
 
   const isUser = message.role === 'user'
   const streaming = message.status === 'streaming'
+  const revising = message.status === 'revising'
+  const pendingApply = message.status === 'pendingApply'
   const canSectionEdit =
     !isUser && message.status === 'done' && Boolean(message.content.trim()) && Boolean(onSectionEditApply)
   const displayContent = sectionEditOpen ? editDraft : message.content
+  const showRevisionActions =
+    isUser &&
+    Boolean(message.content.startsWith('**修改说明**')) &&
+    Boolean(message.revisionTargetAssistantId)
 
   if (isUser) {
     return (
-      <article className="chat-message is-user">
+      <article className="chat-message is-user" onContextMenu={onContextMenu}>
         <div className="user-prompt-card">
           <span className="user-prompt-icon" aria-hidden="true">
             <IconMessage size={14} />
           </span>
           <p className="user-prompt-text">{message.content}</p>
         </div>
+        {showRevisionActions ? (
+          <div className="revision-action-bar">
+            <button
+              type="button"
+              className="revision-action-btn is-primary"
+              onClick={() => onApplyRevision?.(message.revisionTargetAssistantId!)}
+            >
+              应用修改
+            </button>
+            <button
+              type="button"
+              className="revision-action-btn"
+              onClick={() => onCancelRevision?.(message.revisionTargetAssistantId!)}
+            >
+              取消修改
+            </button>
+          </div>
+        ) : null}
       </article>
     )
   }
 
   return (
-    <article className="chat-message is-assistant">
+    <article className="chat-message is-assistant" onContextMenu={onContextMenu}>
       <div className="assistant-block">
         {message.content ? (
           <button
@@ -110,7 +140,16 @@ export default function ChatMessageItem({
             <IconCopy size={13} />
           </button>
         ) : null}
-        <div className={`assistant-card${sectionEditOpen ? ' is-section-editing' : ''}`}>
+        <div
+          className={[
+            'assistant-card',
+            sectionEditOpen ? 'is-section-editing' : '',
+            revising ? 'is-revising' : '',
+            pendingApply ? 'is-pending-apply' : ''
+          ]
+            .filter(Boolean)
+            .join(' ')}
+        >
           <div
             ref={articleRef}
             className={`section-editor-article${sectionEditOpen ? ' is-active' : ''}`}
@@ -122,6 +161,17 @@ export default function ChatMessageItem({
               editableSelection={sectionEditOpen}
             />
           </div>
+          {revising ? (
+            <div className="assistant-revising-overlay" aria-live="polite">
+              <span className="status-pill-dot" aria-hidden="true" />
+              正在修订…
+            </div>
+          ) : null}
+          {pendingApply ? (
+            <div className="assistant-pending-badge" aria-live="polite">
+              待确认修改
+            </div>
+          ) : null}
           {canSectionEdit ? (
             <ArticleSectionEditor
               content={message.content}

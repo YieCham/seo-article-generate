@@ -1,7 +1,13 @@
 import { MIN_ARTICLE_WORDS, MAX_ARTICLE_WORDS } from './articleLength'
 
 const GEO_SKILL_PATTERN =
-  /GEO|Quick Answer|Key Takeaways|seo-geo-streaming|流媒体音频|Spotify|Tidal|Apple Music|Audible|format limitations/i
+  /GEO|Quick Answer|Key Takeaways|seo-geo-streaming|seo-geo-ios|流媒体音频|iOS.*安全|iPhone.*fix|iOS security|Spotify|Tidal|Apple Music|Audible|format limitations/i
+
+const STREAMING_GEO_SKILL_PATTERN =
+  /seo-geo-streaming|流媒体音频|Spotify|Tidal|Apple Music|Audible|format limitations/i
+
+const IOS_GEO_SKILL_PATTERN =
+  /seo-geo-ios|iOS.*安全|iPhone.*fix|iOS security|故障修复|安全管理/i
 
 export function shouldApplyGeoSeoStructure(skillsText: string): boolean {
   return GEO_SKILL_PATTERN.test(skillsText)
@@ -10,6 +16,12 @@ export function shouldApplyGeoSeoStructure(skillsText: string): boolean {
 export const GEO_BANNED_TERMS_GUIDANCE = [
   'Never use: DRM, remove DRM, crack, bypass DRM, strip DRM.',
   'Use instead: format limitations, playback restrictions, unlock full access, convert for personal offline listening.'
+].join('\n')
+
+export const IOS_GEO_BANNED_TERMS_GUIDANCE = [
+  'Never use or instruct: jailbreak, jailbreaking, unlock bootloader, remove iCloud lock (on others\' devices), bypass Activation Lock, crack, pirate, stolen iPhone unlock.',
+  'Use instead: official restore, authorized repair, devices you own, Activation Lock on your own account, system repair, contact Apple Support.',
+  'Never claim the tool can fix stolen devices or remove someone else\'s Apple ID / Find My protection.'
 ].join('\n')
 
 export const GEO_PART_STRUCTURE = `
@@ -55,12 +67,27 @@ export const GEO_ARTICLE_STRUCTURE = `
 
 ${GEO_PART_STRUCTURE}
 
-Style: match user's output language; US English when English is selected. Geek-friend tone; empathy + technical terms (320kbps, lossless, ID3 tags, metadata, batch conversion).
+Style: match user's output language; US English when English is selected. Clear, helpful tone; empathy + accurate domain-specific technical terms.
 Length: **${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} English words** (programmatically verified).
 Do NOT mention AI identity or "As an expert…" in the final article.
 `.trim()
 
 export function getGeoSeoPromptBlock(skillsText: string): string {
   if (!shouldApplyGeoSeoStructure(skillsText)) return ''
-  return `${GEO_ARTICLE_STRUCTURE}\n\n${GEO_BANNED_TERMS_GUIDANCE}`
+
+  const extras: string[] = []
+  if (STREAMING_GEO_SKILL_PATTERN.test(skillsText)) {
+    extras.push(
+      'Domain style (streaming audio): geek-friendly tone; use accurate audio terms (bitrate, lossless, ID3 tags, metadata, batch conversion).'
+    )
+    extras.push(GEO_BANNED_TERMS_GUIDANCE)
+  }
+  if (IOS_GEO_SKILL_PATTERN.test(skillsText)) {
+    extras.push(
+      'Domain style (iOS repair/security): calm troubleshooting tone; cite Settings paths, iOS versions, and Apple official terms accurately; emphasize backup-first.'
+    )
+    extras.push(IOS_GEO_BANNED_TERMS_GUIDANCE)
+  }
+
+  return extras.length > 0 ? `${GEO_ARTICLE_STRUCTURE}\n\n${extras.join('\n\n')}` : GEO_ARTICLE_STRUCTURE
 }

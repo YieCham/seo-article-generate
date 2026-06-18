@@ -4,12 +4,18 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
   content: string
-  status?: 'streaming' | 'done' | 'error'
+  status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error'
+  /** Snapshot before a pending AI revision (assistant only). */
+  revisionBaseline?: string
+  revisionUserMessageId?: string
+  /** Links a revision request user message to its assistant article (user only). */
+  revisionTargetAssistantId?: string
 }
 
 export interface ChatSession {
   id: string
   title: string
+  customTitle?: string
   messages: ChatMessage[]
   writeMode: WriteMode
   updatedAt: number
@@ -57,6 +63,8 @@ export function extractArticleTitle(content: string): string | null {
 }
 
 export function getSessionDisplayTitle(session: ChatSession): string {
+  if (session.customTitle?.trim()) return session.customTitle.trim()
+
   const assistant = [...session.messages]
     .reverse()
     .find((message) => message.role === 'assistant' && message.content.trim())
@@ -72,4 +80,67 @@ export function getSessionDisplayTitle(session: ChatSession): string {
   }
 
   return session.title
+}
+
+export function getLatestDoneAssistantMessage(session: ChatSession): ChatMessage | null {
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index]
+    if (message.role === 'assistant' && message.status === 'done' && message.content.trim()) {
+      return message
+    }
+  }
+  return null
+}
+
+export function sessionHasCompletedArticle(session: ChatSession): boolean {
+  return getLatestDoneAssistantMessage(session) != null
+}
+
+export function sessionHasPendingRevision(session: ChatSession): boolean {
+  return session.messages.some(
+    (message) => message.role === 'assistant' && message.status === 'pendingApply'
+  )
+}
+
+export function getPendingRevisionAssistant(session: ChatSession): ChatMessage | null {
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index]
+    if (message.role === 'assistant' && message.status === 'pendingApply') {
+      return message
+    }
+  }
+  return null
+}
+
+export function canDeleteChatMessage(message: ChatMessage, isRunning: boolean): boolean {
+  if (message.role === 'status') return false
+  if (isRunning) return false
+  if (message.role === 'assistant') {
+    if (
+      message.status === 'streaming' ||
+      message.status === 'revising' ||
+      message.status === 'pendingApply'
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+/** True after the first article is generated, including while a revision is in progress. */
+export function sessionIsInFollowUpMode(session: ChatSession): boolean {
+  if (sessionHasCompletedArticle(session)) return true
+  if (sessionHasPendingRevision(session)) return true
+
+  if (session.messages.some((message) => message.role === 'assistant' && message.status === 'revising')) {
+    return true
+  }
+
+  const userMessages = session.messages.filter((message) => message.role === 'user')
+  const assistantMessages = session.messages.filter((message) => message.role === 'assistant')
+
+  if (assistantMessages.length === 0) return false
+  if (userMessages.length > 1) return true
+
+  return userMessages.some((message) => message.content.startsWith('**修改说明**'))
 }

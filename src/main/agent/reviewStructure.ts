@@ -108,6 +108,10 @@ export function getReviewPromptBlock(skillsText: string): string {
   return REVIEW_ARTICLE_STRUCTURE
 }
 
+export const REVIEW_OUTLINE_SKELETON = `
+Review 大纲骨架：Quick Answer → Introduction → 被测评产品 5 个 ## Part（各 3–4 bullets 角度）→ 对比表 Part（1 bullet 列维度）→ FAQ（仅问题）→ Conclusion（2–3 bullets）。禁止写段落与表格内容。
+`.trim()
+
 export const REVIEW_OUTLINE_GUIDANCE = `
 Review 大纲必须将被测评产品拆成 **至少 5 个独立 Part**（Overview、Pros & Cons、Features、How to Use、Value/Experience），每个 Part 单独成节并注明要点。
 对比表格 / Alternative 必须是 **最后一个正文 Part**（FAQ 之前），不得在前几节就大篇幅写我方产品或 Alternative。

@@ -17,6 +17,8 @@ export interface TokenUsageRecord {
   completionTokens: number
   totalTokens: number
   maxTokensRequested?: number
+  finishReason?: string
+  possiblyTruncated?: boolean
   estimated: boolean
 }
 

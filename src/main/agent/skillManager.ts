@@ -10,10 +10,14 @@ export const ARTICLE_WRITING_SKILL_ID = 'article-writing'
 export const REVIEW_SKILL_ID = 'product-review'
 export const OPTIMIZER_SKILL_ID = 'article-optimizer'
 export const SEO_GEO_SKILL_ID = 'seo-geo-streaming-audio'
+export const IOS_GEO_SKILL_ID = 'seo-geo-ios-security'
+export const STREAMING_TOP_SKILL_ID = 'seo-geo-streaming-top'
 
 export const BUNDLED_SKILL_IDS = new Set([
   ARTICLE_WRITING_SKILL_ID,
   SEO_GEO_SKILL_ID,
+  IOS_GEO_SKILL_ID,
+  STREAMING_TOP_SKILL_ID,
   REVIEW_SKILL_ID,
   OPTIMIZER_SKILL_ID
 ])
@@ -22,7 +26,9 @@ export const BUNDLED_SKILL_IDS = new Set([
 const SKILLS_DISABLED_BY_DEFAULT = new Set([
   ARTICLE_WRITING_SKILL_ID,
   REVIEW_SKILL_ID,
-  OPTIMIZER_SKILL_ID
+  OPTIMIZER_SKILL_ID,
+  IOS_GEO_SKILL_ID,
+  STREAMING_TOP_SKILL_ID
 ])
 
 interface SkillLocation {
@@ -239,6 +245,25 @@ export async function setSkillEnabled(
   await updateEnabledSkillIds(mode, (enabledSkills) => {
     if (enabled) enabledSkills.add(id)
     else enabledSkills.delete(id)
+  })
+}
+
+export type ArticleTypeSkillSync = 'how-to' | 'review' | 'top-rank'
+
+/** Atomically toggle create-mode skills tied to composer article type. */
+export async function syncCreateSkillsForArticleType(articleType: ArticleTypeSkillSync): Promise<void> {
+  await updateEnabledSkillIds('create', (enabledSkills) => {
+    enabledSkills.delete(REVIEW_SKILL_ID)
+    enabledSkills.delete(SEO_GEO_SKILL_ID)
+    enabledSkills.delete(STREAMING_TOP_SKILL_ID)
+
+    if (articleType === 'review') {
+      enabledSkills.add(REVIEW_SKILL_ID)
+    } else if (articleType === 'how-to') {
+      enabledSkills.add(SEO_GEO_SKILL_ID)
+    } else if (articleType === 'top-rank') {
+      enabledSkills.add(STREAMING_TOP_SKILL_ID)
+    }
   })
 }
 

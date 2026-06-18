@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatSession } from './types'
-import { IconPlus, IconSettings } from '../../components/Icons'
+import { getSessionDisplayTitle } from './types'
+import { IconPlus, IconSettings, IconRename, IconClear, IconDelete } from '../../components/Icons'
+import SessionRenameDialog from './SessionRenameDialog'
+import SessionConfirmDialog, { type SessionConfirmAction } from './SessionConfirmDialog'
 
 interface ChatSidebarProps {
   sessions: ChatSession[]
@@ -10,6 +13,7 @@ interface ChatSidebarProps {
   onNew: () => void
   onClear: (id: string) => void
   onDelete: (id: string) => void
+  onRename: (id: string, title: string) => void
   onOpenSettings: () => void
 }
 
@@ -41,9 +45,15 @@ export default function ChatSidebar({
   onNew,
   onClear,
   onDelete,
+  onRename,
   onOpenSettings
 }: ChatSidebarProps) {
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null)
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    sessionId: string
+    action: SessionConfirmAction
+  } | null>(null)
   const [optimizeCollapsed, setOptimizeCollapsed] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -97,8 +107,8 @@ export default function ChatSidebar({
     event.preventDefault()
     event.stopPropagation()
 
-    const menuWidth = 168
-    const menuHeight = 88
+    const menuWidth = 148
+    const menuHeight = 132
     const padding = 8
     const x = Math.min(event.clientX, window.innerWidth - menuWidth - padding)
     const y = Math.min(event.clientY, window.innerHeight - menuHeight - padding)
@@ -106,17 +116,21 @@ export default function ChatSidebar({
     setContextMenu({ sessionId, x, y })
   }
 
-  function handleMenuAction(action: 'clear' | 'delete'): void {
+  function handleMenuAction(action: 'rename' | 'clear' | 'delete'): void {
     if (!contextMenu) return
     const { sessionId } = contextMenu
     closeContextMenu()
-    if (action === 'clear') onClear(sessionId)
-    else onDelete(sessionId)
+    if (action === 'rename') {
+      setRenamingSessionId(sessionId)
+      return
+    }
+    setPendingConfirm({ sessionId, action })
   }
 
   function renderSessionItem(session: ChatSession) {
     const isActive = session.id === activeSessionId
     const isRunning = runningSessionId === session.id
+    const displayTitle = getSessionDisplayTitle(session)
     return (
       <button
         key={session.id}
@@ -124,18 +138,24 @@ export default function ChatSidebar({
         className={['session-item', isActive ? 'active' : '', isRunning ? 'running' : '']
           .filter(Boolean)
           .join(' ')}
-        title={`${session.title} · ${formatTime(session.updatedAt)}`}
+        title={`${displayTitle} · ${formatTime(session.updatedAt)}`}
         onClick={() => onSelect(session.id)}
         onContextMenu={(event) => handleContextMenu(event, session.id)}
       >
         <span className="session-dot" aria-hidden="true" />
-        <span className="session-title">{session.title}</span>
+        <span className="session-title">{displayTitle}</span>
       </button>
     )
   }
 
   const contextSession = contextMenu
     ? sessions.find((session) => session.id === contextMenu.sessionId)
+    : null
+  const renamingSession = renamingSessionId
+    ? sessions.find((session) => session.id === renamingSessionId)
+    : null
+  const confirmSession = pendingConfirm
+    ? sessions.find((session) => session.id === pendingConfirm.sessionId)
     : null
   const contextRunning = contextMenu ? runningSessionId === contextMenu.sessionId : false
 
@@ -210,11 +230,21 @@ export default function ChatSidebar({
             type="button"
             className="session-context-menu-item"
             role="menuitem"
+            onClick={() => handleMenuAction('rename')}
+          >
+            <IconRename size={14} className="session-context-menu-icon" />
+            <span>重命名</span>
+          </button>
+          <button
+            type="button"
+            className="session-context-menu-item"
+            role="menuitem"
             disabled={contextRunning}
             title={contextRunning ? '生成中无法清空' : undefined}
             onClick={() => handleMenuAction('clear')}
           >
-            清空话题
+            <IconClear size={14} className="session-context-menu-icon" />
+            <span>清空话题</span>
           </button>
           <button
             type="button"
@@ -224,10 +254,34 @@ export default function ChatSidebar({
             title={contextRunning ? '生成中无法删除' : undefined}
             onClick={() => handleMenuAction('delete')}
           >
-            删除话题
+            <IconDelete size={14} className="session-context-menu-icon" />
+            <span>删除话题</span>
           </button>
         </div>
       ) : null}
+
+      <SessionRenameDialog
+        open={renamingSession != null}
+        initialTitle={renamingSession ? getSessionDisplayTitle(renamingSession) : ''}
+        onClose={() => setRenamingSessionId(null)}
+        onConfirm={(title) => {
+          if (renamingSessionId) onRename(renamingSessionId, title)
+          setRenamingSessionId(null)
+        }}
+      />
+
+      <SessionConfirmDialog
+        open={confirmSession != null}
+        action={pendingConfirm?.action ?? null}
+        sessionTitle={confirmSession ? getSessionDisplayTitle(confirmSession) : ''}
+        onClose={() => setPendingConfirm(null)}
+        onConfirm={() => {
+          if (!pendingConfirm) return
+          if (pendingConfirm.action === 'clear') onClear(pendingConfirm.sessionId)
+          else onDelete(pendingConfirm.sessionId)
+          setPendingConfirm(null)
+        }}
+      />
     </aside>
   )
 }

@@ -8,7 +8,7 @@ export interface ResearchSourcePreview {
 }
 
 export interface GenerateProgressEvent {
-  type: 'chunk' | 'status' | 'error' | 'done' | 'research' | 'reset' | 'planning' | 'prepend'
+  type: 'chunk' | 'status' | 'error' | 'done' | 'cancelled' | 'replace' | 'research' | 'reset' | 'planning' | 'prepend'
   text?: string
   message?: string
   step?: string
@@ -100,11 +100,12 @@ export interface ChatStoreData {
   sessions: Array<{
     id: string
     title: string
+    customTitle?: string
     messages: Array<{
       id: string
       role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
       content: string
-      status?: 'streaming' | 'done' | 'error'
+      status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error'
     }>
     updatedAt: number
     writeMode?: 'create' | 'optimize'
@@ -180,6 +181,13 @@ declare global {
         extraInstructions?: string
         outputLanguage?: string
       }) => Promise<GenerateArticleResult>
+      cancelArticle: () => Promise<{ ok: boolean }>
+      reviseArticle: (request: {
+        article: string
+        instruction: string
+        outputLanguage?: string
+        pipeline?: 'create' | 'optimize'
+      }) => Promise<GenerateArticleResult>
       rewriteArticleSection: (request: RewriteArticleSectionRequest) => Promise<RewriteArticleSectionResult>
       onProgress: (callback: (event: GenerateProgressEvent) => void) => () => void
       getConfig: () => Promise<AppConfig>
@@ -191,10 +199,18 @@ declare global {
       saveSkill: (skill: SkillItem, mode?: PipelineMode) => Promise<SkillItem>
       deleteSkill: (id: string) => Promise<void>
       setSkillEnabled: (id: string, enabled: boolean, mode?: PipelineMode) => Promise<void>
+      syncArticleTypeSkills: (articleType: 'how-to' | 'review' | 'top-rank') => Promise<void>
       getTokenUsageLog: () => Promise<TokenUsageLogResponse>
       clearTokenUsageLog: () => Promise<{ ok: true }>
       loadChatStore: () => Promise<ChatStoreData>
       saveChatStore: (data: ChatStoreData) => Promise<{ ok: true }>
+      platform: NodeJS.Platform
+      windowMinimize: () => void
+      windowMaximize: () => void
+      windowClose: () => void
+      windowIsMaximized: () => Promise<boolean>
+      popupAppMenu: (label: string, x: number, y: number) => Promise<void>
+      onWindowMaximized: (callback: (maximized: boolean) => void) => () => void
     }
   }
 }

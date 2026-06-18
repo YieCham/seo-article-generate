@@ -101,6 +101,34 @@ function createSourceMappingComponents(): Components {
 
 const sourceMappingComponents = createSourceMappingComponents()
 
+function createLinkComponent(): Components['a'] {
+  return ({ href, children, ...props }) => {
+    const isExternal =
+      typeof href === 'string' &&
+      (/^https?:\/\//i.test(href) || /^mailto:/i.test(href))
+
+    return (
+      <a
+        {...props}
+        href={href}
+        target={isExternal ? '_blank' : undefined}
+        rel={isExternal ? 'noopener noreferrer' : undefined}
+      >
+        {children}
+      </a>
+    )
+  }
+}
+
+const linkComponent = createLinkComponent()
+
+function mergeMarkdownComponents(base?: Components): Components {
+  return {
+    ...base,
+    a: linkComponent
+  }
+}
+
 export default function MarkdownContent({
   content,
   streaming,
@@ -132,7 +160,7 @@ export default function MarkdownContent({
     <div className={bodyClass}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={sourceMapping ? sourceMappingComponents : undefined}
+        components={mergeMarkdownComponents(sourceMapping ? sourceMappingComponents : undefined)}
       >
         {content}
       </ReactMarkdown>

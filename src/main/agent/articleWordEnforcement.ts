@@ -1,7 +1,6 @@
 import { streamChatCompletion, type LlmConfig } from './llmClient'
 import {
-  MIN_ARTICLE_WORDS,
-  MAX_ARTICLE_WORDS,
+  getArticleLengthBounds,
   countArticleWords,
   getArticleLengthPromptBlock
 } from './articleLength'
@@ -29,7 +28,7 @@ async function runWordCountAdjustment(
   maxTokens: number,
   emit: (event: GenerateProgressEvent) => void,
   onChunk: (text: string) => void,
-  options?: { optimizeMode?: boolean; sourcePreview?: string }
+  options?: { optimizeMode?: boolean; sourcePreview?: string; skillsText?: string }
 ): Promise<string> {
   let result = article.trim()
   let count = countArticleWords(result)
@@ -61,7 +60,7 @@ async function runWordCountAdjustment(
               ? '你是文章长度编辑。在**保守优化**前提下微调词数：保留原有结构与绝大部分原句，禁止整篇重写。'
               : '你是文章长度编辑。根据程序测定的词数，将 Markdown 文章调整到指定区间。',
             articleLang.lock,
-            options?.optimizeMode ? getOptimizePromptBlocks() : getArticleLengthPromptBlock()
+            options?.optimizeMode ? getOptimizePromptBlocks() : getArticleLengthPromptBlock(options?.skillsText)
           ].join('\n\n')
         },
         {
@@ -107,17 +106,20 @@ export async function enforceArticleWordCount(
   articleLang: ArticleLanguageContext,
   maxTokens: number,
   emit: (event: GenerateProgressEvent) => void,
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  skillsText?: string
 ): Promise<string> {
+  const bounds = getArticleLengthBounds(skillsText)
   return runWordCountAdjustment(
     llm,
     article,
     topicLabel,
     articleLang,
-    { min: MIN_ARTICLE_WORDS, max: MAX_ARTICLE_WORDS, label: `${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS}` },
+    { min: bounds.min, max: bounds.max, label: bounds.label },
     maxTokens,
     emit,
-    onChunk
+    onChunk,
+    { skillsText }
   )
 }
 

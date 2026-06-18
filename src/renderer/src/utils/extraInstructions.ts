@@ -9,6 +9,8 @@ export function buildExtraInstructions(options: {
 
   if (options.articleType === 'review') {
     lines.push('Article type: Product Review')
+  } else if (options.articleType === 'top-rank') {
+    lines.push('Article type: Top Rank / Best-of List')
   } else if (options.articleType === 'how-to') {
     lines.push('Article type: How-to Guide')
   }
@@ -28,7 +30,8 @@ export function formatUserMessageContent(
   extraInstructions: string,
   articleType?: ArticleType
 ): string {
-  const typeLabel = articleType === 'review' ? 'Review' : 'How to'
+  const typeLabel =
+    articleType === 'review' ? 'Review' : articleType === 'top-rank' ? 'Top rank' : 'How to'
   const header = `**文章类型：** ${typeLabel}`
 
   if (!extraInstructions.trim()) {
@@ -46,4 +49,8 @@ export function formatOptimizeUserMessageContent(sourceUrl: string, extraInstruc
   }
 
   return `${header}\n\n**补充要求**\n${extraInstructions.trim()}`
+}
+
+export function formatReviseUserMessageContent(instruction: string): string {
+  return `**修改说明**\n${instruction.trim()}`
 }

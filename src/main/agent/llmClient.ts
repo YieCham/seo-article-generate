@@ -1,3 +1,4 @@
+import { getAbortSignal } from './abortContext'
 import { recordLlmTokenUsage, type ApiTokenUsage } from '../token/tokenUsageRecorder'
 
 export interface LlmConfig {
@@ -17,12 +18,12 @@ export interface LlmCallOptions {
 }
 
 type CompletionResponse = {
-  choices?: Array<{ message?: { content?: string } }>
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
   usage?: ApiTokenUsage
 }
 
 type StreamChunk = {
-  choices?: Array<{ delta?: { content?: string } }>
+  choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
   usage?: ApiTokenUsage
 }
 
@@ -31,6 +32,7 @@ export async function chatCompletion(
   messages: ChatMessage[],
   options?: LlmCallOptions
 ): Promise<string> {
+  const signal = getAbortSignal()
   const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -42,7 +44,8 @@ export async function chatCompletion(
       messages,
       temperature: options?.temperature ?? config.temperature,
       max_tokens: options?.maxTokens
-    })
+    }),
+    signal
   })
 
   if (!response.ok) {
@@ -52,6 +55,7 @@ export async function chatCompletion(
 
   const data = (await response.json()) as CompletionResponse
   const content = data.choices?.[0]?.message?.content?.trim() ?? ''
+  const finishReason = data.choices?.[0]?.finish_reason
 
   await recordLlmTokenUsage({
     model: config.model,
@@ -59,6 +63,7 @@ export async function chatCompletion(
     completionText: content,
     usage: data.usage,
     maxTokensRequested: options?.maxTokens,
+    finishReason,
     step: options?.step,
     label: options?.label
   })
@@ -72,6 +77,7 @@ export async function streamChatCompletion(
   onChunk: (text: string) => void,
   options?: LlmCallOptions
 ): Promise<void> {
+  const signal = getAbortSignal()
   const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -85,7 +91,8 @@ export async function streamChatCompletion(
       stream_options: { include_usage: true },
       temperature: options?.temperature ?? config.temperature,
       max_tokens: options?.maxTokens
-    })
+    }),
+    signal
   })
 
   if (!response.ok) {
@@ -102,8 +109,14 @@ export async function streamChatCompletion(
   let buffer = ''
   let completionText = ''
   let streamUsage: ApiTokenUsage | undefined
+  let finishReason: string | undefined
 
   while (true) {
+    if (signal?.aborted) {
+      await reader.cancel().catch(() => undefined)
+      throw new DOMException('The operation was aborted.', 'AbortError')
+    }
+
     const { done, value } = await reader.read()
     if (done) break
 
@@ -122,6 +135,10 @@ export async function streamChatCompletion(
         if (json.usage) {
           streamUsage = json.usage
         }
+        const reason = json.choices?.[0]?.finish_reason
+        if (reason) {
+          finishReason = reason
+        }
         const text = json.choices?.[0]?.delta?.content
         if (text) {
           completionText += text
@@ -139,6 +156,7 @@ export async function streamChatCompletion(
     completionText,
     usage: streamUsage,
     maxTokensRequested: options?.maxTokens,
+    finishReason,
     step: options?.step,
     label: options?.label
   })

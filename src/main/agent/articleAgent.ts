@@ -1,11 +1,13 @@
 import type { WebContents } from 'electron'
+import { throwIfAborted } from './abortContext'
+import { isAbortError } from './articleRunRegistry'
 import { getEffectiveConfig } from '../config/configStore'
 import {
   createTokenRunContext,
   runWithTokenContext,
   updateTokenUsageContext
 } from '../token/tokenUsageContext'
-import { resolveStepMaxTokens } from '../config/llmTokenLimits'
+import { maxTokensForFullArticleOutput, maxTokensForOutlineSkeleton, maxTokensForPlanning, resolveStepMaxTokens } from '../config/llmTokenLimits'
 import type { ResearchConfig } from '../config/types'
 import { getEnabledSkillsText } from './skillManager'
 import {
@@ -30,16 +32,37 @@ import {
 import { normalizeOutputLanguage, type OutputLanguageCode } from './outputLanguage'
 import { analyzeAndExpandSearchQueries } from './searchIntent'
 import { getGeoSeoPromptBlock } from './geoSeoStructure'
-import { getReviewPromptBlock, getReviewSectionDraftHint, getReviewSectionWordBudget, isReviewAlternativeSection, REVIEW_OUTLINE_GUIDANCE, REVIEW_PLAN_GUIDANCE } from './reviewStructure'
 import {
+  getTopListPromptBlock,
+  parseTopListCount,
+  TOP_LIST_OUTLINE_SKELETON,
+  TOP_LIST_PLAN_GUIDANCE
+} from './topListStructure'
+import {
+  getReviewPromptBlock,
+  getReviewSectionDraftHint,
+  getReviewSectionWordBudget,
+  isReviewAlternativeSection,
+  REVIEW_OUTLINE_SKELETON,
+  REVIEW_PLAN_GUIDANCE
+} from './reviewStructure'
+import {
+  buildOutlineSkeletonRules,
+  buildPlanSkeletonRules,
+  compactInternalPlan,
+  enforceOutlineSkeleton,
+  estimateOutlineSectionCount
+} from './outlineSkeleton'
+import {
+  countArticleWords,
   getArticleLengthPromptBlock,
+  getArticleLengthBounds,
   getSectionWordBudget,
   maxTokensForWordBudget,
   resolveSectionDraftTokenPlan,
-  MIN_ARTICLE_WORDS,
-  MAX_ARTICLE_WORDS,
   getIntroConclusionSectionHint,
-  getIntroConclusionPolishHint
+  getIntroConclusionPolishHint,
+  type ArticleLengthBounds
 } from './articleLength'
 import { enforceArticleWordCount } from './articleWordEnforcement'
 import { formatSeoMetaBlock, generateSeoMeta } from './seoMeta'
@@ -86,7 +109,7 @@ export type PipelineStep =
   | 'meta'
 
 export interface GenerateProgressEvent {
-  type: 'chunk' | 'status' | 'error' | 'done' | 'research' | 'reset' | 'planning' | 'prepend'
+  type: 'chunk' | 'status' | 'error' | 'done' | 'cancelled' | 'replace' | 'research' | 'reset' | 'planning' | 'prepend'
   text?: string
   message?: string
   step?: PipelineStep
@@ -112,20 +135,29 @@ export function mapSources(sources: ResearchSource[]): ResearchSourcePreview[] {
   }))
 }
 
-function getStructurePromptBlocks(skillsText: string): {
+function getStructurePromptBlocks(
+  skillsText: string,
+  productName?: string
+): {
   combined: string
   geoBlock: string
   reviewBlock: string
+  topListBlock: string
   lengthBlock: string
+  wordBounds: ArticleLengthBounds
 } {
-  const geoBlock = getGeoSeoPromptBlock(skillsText)
+  const topListBlock = getTopListPromptBlock(skillsText, productName)
+  const geoBlock = topListBlock ? '' : getGeoSeoPromptBlock(skillsText)
   const reviewBlock = getReviewPromptBlock(skillsText)
-  const lengthBlock = getArticleLengthPromptBlock()
+  const wordBounds = getArticleLengthBounds(skillsText)
+  const lengthBlock = getArticleLengthPromptBlock(skillsText)
   return {
     geoBlock,
     reviewBlock,
+    topListBlock,
     lengthBlock,
-    combined: [lengthBlock, geoBlock, reviewBlock].filter(Boolean).join('\n\n')
+    wordBounds,
+    combined: [lengthBlock, topListBlock, geoBlock, reviewBlock].filter(Boolean).join('\n\n')
   }
 }
 
@@ -227,17 +259,20 @@ async function generateArticlePlan(
   userContext: UserWritingContext,
   maxTokens: number
 ): Promise<string> {
-  const { combined, geoBlock, reviewBlock } = getStructurePromptBlocks(skillsText)
+  const { reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
+    skillsText,
+    userContext.productName
+  )
   const raw = await chatCompletion(
     llm,
     [
       {
         role: 'system',
         content: [
-          '你是 SEO/GEO 内容策略师。完成内部分析与规划，不要撰写正文。',
-          getWritingPromptBlocks(getUserContextPromptBlocks(userContext), topic),
-          skillsText ? `Skills：\n${skillsText}` : '',
-          combined
+          '你是 SEO/GEO 内容策略师。完成内部分析与规划，不要撰写正文或章节大纲。',
+          articleLang.lock,
+          buildPlanSkeletonRules(),
+          getWritingPromptBlocks(getUserContextPromptBlocks(userContext), topic)
         ]
           .filter(Boolean)
           .join('\n\n')
@@ -250,37 +285,34 @@ async function generateArticlePlan(
           userContext.briefForPrompt,
           userContext.productName
             ? reviewBlock
-              ? `规划须为被测评产品（主题）分配主要篇幅：Overview、Pros & Cons、Features、How to Use、Value/Experience 五个模块各成 Part；最后再规划与「${userContext.productName}」的对比表及 FAQ。`
-              : `规划须包含「${userContext.productName}」的分步 How-to 章节位置与 FAQ 是否涉及该产品。`
-            : reviewBlock
-              ? '规划须为被测评产品分配主要篇幅：五个独立 Part + 对比表 + FAQ。'
-              : '',
+              ? `规划须为被测评产品分配五个 Part + 对比表 + FAQ 的顺序与目的（各 1 句）。`
+              : topListBlock
+                ? `规划 Top ${parseTopListCount(topic)} 榜单结构；判断「${userContext.productName}」准入与排位。`
+                : `规划通用 Part 与「${userContext.productName}」产品 Part 的位置（各 1 句目的）。`
+            : '',
           reviewBlock ? REVIEW_PLAN_GUIDANCE : '',
+          topListBlock ? TOP_LIST_PLAN_GUIDANCE : '',
           '',
           '在 <thinking> 与 </thinking> 标签内输出内部规划，包含：',
-          '1. 搜索意图分析与读者痛点',
-          '2. 竞品/行业高价值知识点如何整合',
-          '3. 至少 5 个 FAQ 设想（合法性、安全、音质、场景、兼容性）',
-          '4. 完整大纲结构（含 Quick Answer、FAQ、结论）',
+          '1. 搜索意图与读者痛点（≤5 bullet）',
+          '2. 竞品/行业要点如何整合（≤5 bullet）',
+          '3. ≥5 个 FAQ **问题句**（无答案）',
+          '4. 各 Part 名称 + 差异化策略（**不要**输出 ## 大纲或正文段落）',
           '',
-          'E-E-A-T 写作简报：',
+          '写作简报（摘要）：',
           formatWritingBriefForPrompt(writingBrief),
-          '',
-          geoBlock
-            ? '若 Skill 要求 GEO 结构：大纲先规划 **2–3 个通用 Part**（吸收调研/竞品要点，无产品名），再定 **产品 Part 位置**（Part 2–4 均可；该 Part 内 ### 推荐+教程合一）、FAQ（≥5 问）、图片占位。'
-            : reviewBlock
-              ? '大纲须明确：被测评产品五个独立 Part（Overview、Pros & Cons、Features、How to Use、Value/Experience）、Markdown 对比表格、FAQ、Conclusion；禁止合并成 1–2 个敷衍 Part。'
-              : '按 Skills 规范构建差异化结构。',
           reviewBlock
-            ? `全文英文词数须在 ${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} 词之间（程序计数校验）；被测评产品各 Part 须充实，对比/Alternative 仅保留一个紧凑 Part。`
-            : `全文英文词数须在 ${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} 词之间（程序计数校验）；大纲 Part 不宜过多（建议 2–4 个 Part）。`,
-          `终稿语言：${articleLang.label}`
+            ? `终稿 ${wordBounds.min}–${wordBounds.max} 词；被测评产品占正文主体。`
+            : topListBlock
+              ? `终稿 ${wordBounds.min}–${wordBounds.max} 词；榜单 Part 只规划 N 个产品席位名称。`
+              : `终稿 ${wordBounds.min}–${wordBounds.max} 词；建议 2–4 个 Part。`,
+          `语言：${articleLang.label}`
         ]
           .filter(Boolean)
           .join('\n')
       }
     ],
-    { temperature: 0.45, maxTokens: maxTokens }
+    { temperature: 0.35, maxTokens: maxTokens }
   )
 
   if (raw.includes('<thinking>')) return raw.trim()
@@ -297,18 +329,29 @@ async function generateDifferentiatedOutline(
   articleLang: ArticleLanguageContext,
   maxTokens: number
 ): Promise<string> {
-  const { combined, geoBlock, reviewBlock } = getStructurePromptBlocks(skillsText)
-  return chatCompletion(
+  const { geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
+    skillsText,
+    userContext.productName
+  )
+
+  const structureSkeleton = topListBlock
+    ? TOP_LIST_OUTLINE_SKELETON
+    : reviewBlock
+      ? REVIEW_OUTLINE_SKELETON
+      : geoBlock
+        ? 'GEO 骨架：Quick Answer → Introduction → 2–3 个通用 Part（各 3–4 bullets）→ 1 个产品 Part（### 推荐 + ### Steps stub）→ FAQ（仅问题）→ Conclusion（2–3 bullets）。'
+        : '骨架：Introduction → 2–4 个 Part（各 3–4 bullets）→ FAQ（仅问题）→ Conclusion。'
+
+  const raw = await chatCompletion(
     llm,
     [
       {
         role: 'system',
         content: [
-          '你是内容策略主编，擅长在竞品红海中找差异化切入点。',
+          '你是内容策略主编。只输出**文章结构骨架**，不要写正文。',
           articleLang.lock,
-          getWritingPromptBlocks(getUserContextPromptBlocks(userContext), topic),
-          skillsText ? `Skills 规范：\n${skillsText}` : '',
-          combined
+          buildOutlineSkeletonRules(wordBounds),
+          getPrimaryKeywordOutlineHint(topic)
         ]
           .filter(Boolean)
           .join('\n\n')
@@ -317,35 +360,20 @@ async function generateDifferentiatedOutline(
         role: 'user',
         content: [
           `主题：${topic}`,
-          getPrimaryKeywordOutlineHint(topic),
           userContext.briefForPrompt,
-          userContext.productName
-            ? reviewBlock
-              ? `大纲必须将被测评产品拆成至少 5 个独立 Part（Overview、Pros & Cons、Features、How to Use、Value/Experience），每节写清要点；「${userContext.productName}」仅出现在最后的对比表 Part，之前不要大段 Alternative。`
-              : `大纲必须包含独立章节：分步演示如何使用「${userContext.productName}」（至少 4 步）。`
-            : reviewBlock
-              ? '大纲必须将被测评产品拆成至少 5 个独立 Part，再写对比表格；禁止 Overview + Pros 后直接 Alternative。'
+          userContext.productName && topListBlock
+            ? `用户产品「${userContext.productName}」：符合 Topic 则 ### 1；否则单独 Also Worth Considering Part。`
+            : userContext.productName && !reviewBlock && !topListBlock
+              ? `须规划独立产品 Part，含 ### Step-by-Step stub（≥4 步标题，无步骤正文）。`
               : '',
           '',
-          '基于以下内部规划与 E-E-A-T 萃取要点，生成正式文章大纲（Markdown，## 为一级节）。',
-          '大纲必须全部使用与主题一致的语言。',
-          geoBlock
-            ? '必须包含：Quick Answer、Introduction（≤150 词、≤3 段）、若干 **通用 Part**（调研驱动、无产品名）→ **一个产品 Part**（推广+Step-by-Step 同一 Part、### 分节、位置由大纲决定）、FAQ（≥5 问）、Conclusion（≤150 词、≤3 段）、[Image: …]。'
-            : reviewBlock
-              ? '必须包含：Quick Answer、Introduction、被测评产品 5 个独立 Part、对比表 Part、FAQ、Conclusion。'
-              : '',
-          reviewBlock ? REVIEW_OUTLINE_GUIDANCE : '',
-          reviewBlock ? '对比表格须为独立 Part，且位于被测评产品五个 Part 之后、FAQ 之前。' : '',
-          reviewBlock
-            ? `全文英文词数须在 ${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} 词之间（程序计数校验）；被测评产品各 Part 分配充实篇幅，勿压缩成简介 + 优缺点就结束。`
-            : `全文英文词数须在 ${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} 词之间（程序计数校验）；控制 Part 数量（2–4 个），每节要点精简。`,
-          '要求：',
-          '- 必须包含作者的独立观点与论证路径',
-          '- 避免复刻竞品结构',
-          '- 每节注明要覆盖的核心论点',
+          structureSkeleton,
           '',
-          '--- 内部规划 ---',
-          plan,
+          '输出 Markdown：## 为一级节；每节仅 bullets / ### 产品 stub，**禁止段落与成稿文案**。',
+          '',
+          '--- 内部规划（摘要）---',
+          compactInternalPlan(plan),
+          '',
           '--- 写作简报 ---',
           formatWritingBriefForPrompt(writingBrief)
         ]
@@ -353,8 +381,10 @@ async function generateDifferentiatedOutline(
           .join('\n')
       }
     ],
-    { temperature: 0.5, maxTokens: maxTokens }
+    { temperature: 0.35, maxTokens: maxTokens }
   )
+
+  return enforceOutlineSkeleton(raw)
 }
 
 async function draftBySections(
@@ -369,7 +399,10 @@ async function draftBySections(
   emit: (event: GenerateProgressEvent) => void
 ): Promise<string> {
   const sections = parseOutlineSections(outline)
-  const { combined, geoBlock, reviewBlock } = getStructurePromptBlocks(skillsText)
+  const { combined, geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
+    skillsText,
+    userContext.productName
+  )
   const sectionTitles = sections.map((section) => section.title)
   let fullDraft = `# ${topic}\n\n`
 
@@ -382,7 +415,7 @@ async function draftBySections(
     const sectionWordBudget =
       reviewSectionBudget > 0
         ? reviewSectionBudget
-        : getSectionWordBudget(section.title, sectionTitles)
+        : getSectionWordBudget(section.title, sectionTitles, wordBounds.target)
     const introConclusionHint = getIntroConclusionSectionHint(section.title)
     const isComparisonSection =
       reviewBlock && isReviewAlternativeSection(section.title, section.body)
@@ -402,8 +435,14 @@ async function draftBySections(
       !introConclusionHint &&
       !isProductPartSection &&
       !/^quick answer|faq|key takeaways/i.test(section.title.trim())
+    const isTopListMode = Boolean(topListBlock)
+    const isTopListEntriesSection =
+      isTopListMode && /top\s*\d+|best\s+\d+|downloaders?|converters?|榜单/i.test(sectionContext)
+    const isAlsoWorthSection =
+      isTopListMode && /also worth considering|补充推荐|额外推荐/i.test(sectionContext)
     const isHowToSection =
       !reviewBlock &&
+      !isTopListMode &&
       Boolean(productName) &&
       (isGeoMode
         ? isProductPartSection
@@ -452,6 +491,10 @@ async function draftBySections(
               ? introConclusionHint
               : reviewSectionHint
                 ? reviewSectionHint
+                : isTopListEntriesSection
+                  ? `本节为 Top N 榜单：按大纲为每个产品写独立 ### 编号条目（含简介、**Pros**、**Cons**、**Best for**、关键参数）。用户产品若符合 Topic 须为 ### 1 且篇幅略长。禁止合并成一段话带过。`
+                  : isAlsoWorthSection && productName
+                    ? `本节为榜单外补充：说明「${productName}」的适用场景、与 Topic 的差异，以及为何未进入主榜；客观不硬塞进 Top 列表。`
                 : isGenericGeoSection
                   ? `本节为通用/调研驱动内容：展开大纲要点，优先使用 E-E-A-T 参考中的行业与竞品洞察（深度改写）。**禁止出现产品名「${productName}」及推销语气。**`
                   : isComparisonSection && productName
@@ -472,7 +515,7 @@ async function draftBySections(
             getPrimaryKeywordSectionHint(topic, section.title),
             section.body.trim() ? `本节要点：\n${section.body.trim()}` : '',
             '',
-            `本节英文词数目标约 ${sectionWordBudget} 词${reviewSectionHint ? '（被测评产品章节须写足，勿压缩）' : ''}；全文须在 ${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} 词之间（程序计数）。`,
+            `本节英文词数目标约 ${sectionWordBudget} 词${reviewSectionHint ? '（被测评产品章节须写足，勿压缩）' : isTopListEntriesSection ? '（Top 榜单须写足每条产品）' : ''}；全文须在 ${wordBounds.min}–${wordBounds.max} 词之间（程序计数）。`,
             reviewSectionHint
               ? '要求：具体、可验证、有场景细节；段落连贯自然，必要时用 bullet 或 ### 组织信息。'
               : '要求：融入具体场景/案例、专业术语，段落连贯可读，避免空泛套话与机械拆段。',
@@ -507,7 +550,10 @@ async function polishDraft(
   emit({ type: 'status', step: 'polish', message: '⑧ 润色并降低 AI 味…' })
   emit({ type: 'reset' })
 
-  const { combined, geoBlock, reviewBlock } = getStructurePromptBlocks(skillsText)
+  const { combined, geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
+    skillsText,
+    userContext.productName
+  )
   let polished = ''
 
   await streamChatCompletion(
@@ -533,7 +579,9 @@ async function polishDraft(
           userContext.productName
             ? reviewBlock
               ? `- 必须保留并强化产品「${userContext.productName}」的提及、对比表格及推荐结论，润色时不得删除对比表或改成泛称`
-              : `- 必须保留并强化产品「${userContext.productName}」的提及与 How-to，润色时不得删除或改成泛称`
+              : topListBlock
+                ? `- 必须保留 Top N 榜单结构与「${userContext.productName}」的排位规则（符合则 #1，不符合则保留 Also Worth Considering Part），润色时不得删除榜单条目或改成泛称`
+                : `- 必须保留并强化产品「${userContext.productName}」的提及与 How-to，润色时不得删除或改成泛称`
             : userContext.raw
               ? '- 润色时必须保留用户补充要求中的关键信息（含产品/工具名称）'
               : '',
@@ -544,12 +592,14 @@ async function polishDraft(
           '- 正文中禁止出现 "Target audience"、"for US reader"、"目标读者" 等来自写作 brief 的标签或元信息',
           '- 保持段落连贯自然，勿为凑字数而机械拆段、重复或堆砌空话',
           '- 若草稿混入了其它语言，润色时全部改为主题语言',
-          geoBlock
+          topListBlock
+            ? `- 保留 Quick Answer、Introduction、选型标准 Part、Top N 榜单（### 1…N 每条含 Pros/Cons）、可选对比表、FAQ（≥5 问）、Conclusion；移除 <thinking>`
+            : geoBlock
             ? '- 保留 Quick Answer、Introduction（≤150 词、≤3 段）、通用 Part（无产品硬广）+ **单一产品 Part**（推广与教程合一，禁止拆成两个 Part）、FAQ（≥5 问）、[Image: …]；Conclusion ≤150 词、≤3 段；移除 <thinking>'
             : reviewBlock
               ? '- 保留对被测评产品的充分描述（Overview、Pros & Cons、Features、How to Use、Value/Experience 各 Part 不可删减合并）；保留对比表格与 FAQ；移除任何 <thinking> 标签'
               : '',
-          `- 终稿英文词数须在 ${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} 之间；不足时补充与主题相关、对读者有帮助的实质内容，禁止水字数`,
+          `- 终稿英文词数须在 ${wordBounds.min}–${wordBounds.max} 之间；不足时补充与主题相关、对读者有帮助的实质内容，禁止水字数`,
           getIntroConclusionPolishHint(),
           getPrimaryKeywordPolishHint(topic),
           '- 直接输出最终 Markdown 正文，不要解释修改过程',
@@ -582,10 +632,6 @@ export async function generateArticle(
     intentExpand: resolveStepMaxTokens('intentExpand', globalMaxTokens),
     eeatExtract: resolveStepMaxTokens('eeatExtract', globalMaxTokens),
     writingBrief: resolveStepMaxTokens('writingBrief', globalMaxTokens),
-    plan: resolveStepMaxTokens('plan', globalMaxTokens),
-    outline: resolveStepMaxTokens('outline', globalMaxTokens),
-    polish: resolveStepMaxTokens('polish', globalMaxTokens),
-    lengthAdjust: resolveStepMaxTokens('lengthAdjust', globalMaxTokens),
     seoMeta: resolveStepMaxTokens('seoMeta', globalMaxTokens)
   }
 
@@ -651,6 +697,7 @@ export async function generateArticle(
       })
 
       sources = await searchWithQueries(searchQueries, research, (progress) => {
+        throwIfAborted()
         emit({
           type: 'status',
           step: progress.phase === 'scrape' ? 'scrape' : 'search',
@@ -717,7 +764,7 @@ export async function generateArticle(
       skillsText,
       articleLang,
       userContext,
-      stepTokens.plan
+      maxTokensForPlanning(globalMaxTokens)
     )
     emit({
       type: 'planning',
@@ -739,7 +786,7 @@ export async function generateArticle(
       skillsText,
       userContext,
       articleLang,
-      stepTokens.outline
+      maxTokensForOutlineSkeleton(globalMaxTokens, estimateOutlineSectionCount(topic, skillsText))
     )
 
     if (sources.length > 0) {
@@ -780,7 +827,7 @@ export async function generateArticle(
       skillsText,
       userContext,
       articleLang,
-      stepTokens.polish,
+      maxTokensForFullArticleOutput(countArticleWords(draft), globalMaxTokens, 'polish'),
       emit,
       (text) => {
         emit({ type: 'chunk', text, step: 'polish' })
@@ -792,9 +839,10 @@ export async function generateArticle(
       polished,
       topic,
       articleLang,
-      stepTokens.lengthAdjust,
+      maxTokensForFullArticleOutput(countArticleWords(polished), globalMaxTokens, 'lengthAdjust'),
       emit,
-      (text) => emit({ type: 'chunk', text, step: 'length' })
+      (text) => emit({ type: 'chunk', text, step: 'length' }),
+      skillsText
     )
 
     emit({ type: 'status', step: 'meta', message: '⑩ 生成 SEO Meta Title & Description…' })
@@ -811,6 +859,10 @@ export async function generateArticle(
     emit({ type: 'done' })
     return { ok: true }
   } catch (error) {
+    if (isAbortError(error)) {
+      emit({ type: 'cancelled', message: '已中止生成' })
+      return { ok: false, message: '已中止生成' }
+    }
     const message = error instanceof Error ? error.message : '未知错误'
     emit({ type: 'error', message })
     return { ok: false, message }

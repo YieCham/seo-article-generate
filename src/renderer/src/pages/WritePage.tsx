@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { GenerateProgressEvent, QuickPicksConfig } from '../env.d'
 import {
   ARTICLE_TYPE_STORAGE_KEY,
-  REVIEW_SKILL_ID,
+  isArticleType,
   type ArticleType
 } from '../constants/articleTypes'
 import { type WriteMode } from '../constants/writeMode'
@@ -13,10 +13,11 @@ import {
   isOutputLanguageCode,
   type OutputLanguageCode
 } from '../constants/outputLanguage'
-import { syncReviewSkillForArticleType } from '../utils/writeModeSkills'
+import { syncSkillsForArticleType } from '../utils/writeModeSkills'
 import {
   buildExtraInstructions,
   formatOptimizeUserMessageContent,
+  formatReviseUserMessageContent,
   formatUserMessageContent
 } from '../utils/extraInstructions'
 
@@ -28,7 +29,7 @@ import Composer from './write/Composer'
 
 import WriteModePickerDialog from './write/WriteModePickerDialog'
 
-import { createMessage, createSession, getSessionDisplayTitle, sessionTitleFromPrompt, sessionTitleFromUrl, type ChatSession } from './write/types'
+import { createMessage, createSession, getLatestDoneAssistantMessage, getSessionDisplayTitle, sessionHasPendingRevision, sessionIsInFollowUpMode, sessionTitleFromPrompt, sessionTitleFromUrl, type ChatSession } from './write/types'
 
 
 
@@ -63,6 +64,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [toast, setToast] = useState('')
 
   const generatingSessionIdRef = useRef<string>('')
+
+  const revisionBaselineRef = useRef<{
+    messageId: string
+    content: string
+    userMessageId: string
+  } | null>(null)
 
   const saveTimerRef = useRef<number | null>(null)
 
@@ -142,13 +149,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   useEffect(() => {
     if (!hydrated) return
     const storedType = localStorage.getItem(ARTICLE_TYPE_STORAGE_KEY)
-    const initialType: ArticleType = storedType === 'review' ? 'review' : 'how-to'
-    setArticleType(initialType)
+    setArticleType(isArticleType(storedType) ? storedType : 'how-to')
   }, [hydrated])
 
   useEffect(() => {
     if (!hydrated || activeWriteMode !== 'create') return
-    void syncReviewSkillForArticleType(articleType)
+    void syncSkillsForArticleType(articleType)
   }, [hydrated, activeWriteMode, articleType])
 
   useEffect(() => {
@@ -233,16 +239,42 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
       }
 
+      if (event.type === 'replace' && event.text) {
+
+        replaceAssistantContent(event.text)
+
+      }
+
+      if (event.type === 'cancelled') {
+        if (!abortRevisionAttempt()) {
+          finalizeAssistantMessage()
+        }
+        setIsRunning(false)
+        generatingSessionIdRef.current = ''
+        setRunningSessionId('')
+        setToast('已中止生成')
+        window.setTimeout(() => setToast(''), 1800)
+      }
+
       if (event.type === 'error' && event.message) {
 
-        markAssistantError(event.message)
+        if (abortRevisionAttempt()) {
+          setToast(event.message)
+          window.setTimeout(() => setToast(''), 2200)
+        } else {
+          markAssistantError(event.message)
+        }
         setIsRunning(false)
         setRunningSessionId('')
         generatingSessionIdRef.current = ''
       }
 
       if (event.type === 'done') {
-        finalizeAssistantMessage()
+        if (revisionBaselineRef.current) {
+          finalizePendingRevision()
+        } else {
+          finalizeAssistantMessage()
+        }
         setIsRunning(false)
         generatingSessionIdRef.current = ''
         setRunningSessionId('')
@@ -418,16 +450,15 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     updateSession(getTargetSessionId(), (session) => {
 
-      const messages = [...session.messages]
+      const filtered = session.messages.filter((item) => item.role !== 'status')
 
-      const filtered = messages.filter((item) => item.role !== 'status')
+      const index = filtered.findIndex(
+        (item) => item.role === 'assistant' && item.status === 'streaming'
+      )
 
-      const last = filtered[filtered.length - 1]
-
-      if (last?.role === 'assistant' && last.status === 'streaming') {
-
-        filtered[filtered.length - 1] = { ...last, content: last.content + text }
-
+      if (index >= 0) {
+        const current = filtered[index]
+        filtered[index] = { ...current, content: current.content + text }
       }
 
       return { ...session, messages: filtered, updatedAt: Date.now() }
@@ -436,20 +467,167 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
+  function replaceAssistantContent(text: string): void {
+
+    updateSession(getTargetSessionId(), (session) => ({
+
+      ...session,
+
+      messages: session.messages
+
+        .filter((item) => item.role !== 'status')
+
+        .map((item) =>
+
+          item.role === 'assistant' && (item.status === 'revising' || item.status === 'streaming')
+
+            ? { ...item, content: text }
+
+            : item
+
+        ),
+
+      updatedAt: Date.now()
+
+    }))
+
+  }
+
+  function removeMessageById(messageId: string): void {
+
+    updateSession(getTargetSessionId(), (session) => ({
+
+      ...session,
+
+      messages: session.messages.filter(
+
+        (item) => item.role === 'status' || item.id !== messageId
+
+      ),
+
+      updatedAt: Date.now()
+
+    }))
+
+  }
+
+  function abortRevisionAttempt(): boolean {
+
+    const baseline = revisionBaselineRef.current
+
+    if (!baseline) return false
+
+    restoreRevisionBaseline()
+
+    removeMessageById(baseline.userMessageId)
+
+    revisionBaselineRef.current = null
+
+    return true
+
+  }
+
+  function restoreRevisionBaseline(): boolean {
+
+    const baseline = revisionBaselineRef.current
+
+    if (!baseline) return false
+
+    updateSession(getTargetSessionId(), (session) => ({
+
+      ...session,
+
+      messages: session.messages
+
+        .filter((item) => item.role !== 'status')
+
+        .map((item) =>
+
+          item.id === baseline.messageId
+
+            ? { ...item, content: baseline.content, status: 'done' as const }
+
+            : item
+
+        ),
+
+      updatedAt: Date.now()
+
+    }))
+
+    return true
+
+  }
+
+  function finalizePendingRevision(): void {
+
+    const baseline = revisionBaselineRef.current
+
+    if (!baseline) {
+
+      finalizeAssistantMessage()
+
+      return
+
+    }
+
+    updateSession(getTargetSessionId(), (session) => ({
+
+      ...session,
+
+      messages: session.messages
+
+        .filter((item) => item.role !== 'status')
+
+        .map((item) => {
+
+          if (item.id === baseline.messageId) {
+
+            return {
+
+              ...item,
+
+              status: 'pendingApply' as const,
+
+              revisionBaseline: baseline.content,
+
+              revisionUserMessageId: baseline.userMessageId
+
+            }
+
+          }
+
+          if (item.id === baseline.userMessageId) {
+
+            return { ...item, revisionTargetAssistantId: baseline.messageId }
+
+          }
+
+          return item
+
+        }),
+
+      updatedAt: Date.now()
+
+    }))
+
+    revisionBaselineRef.current = null
+
+  }
+
   function prependAssistantContent(text: string): void {
 
     updateSession(getTargetSessionId(), (session) => {
 
-      const messages = [...session.messages]
+      const filtered = session.messages.filter((item) => item.role !== 'status')
 
-      const filtered = messages.filter((item) => item.role !== 'status')
+      const index = filtered.findIndex(
+        (item) => item.role === 'assistant' && item.status === 'streaming'
+      )
 
-      const last = filtered[filtered.length - 1]
-
-      if (last?.role === 'assistant' && last.status === 'streaming') {
-
-        filtered[filtered.length - 1] = { ...last, content: text + last.content }
-
+      if (index >= 0) {
+        const current = filtered[index]
+        filtered[index] = { ...current, content: text + current.content }
       }
 
       return { ...session, messages: filtered, updatedAt: Date.now() }
@@ -498,7 +676,11 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
         .map((item) =>
 
-          item.role === 'assistant' && item.status === 'streaming' ? { ...item, status: 'done' as const } : item
+          item.role === 'assistant' && (item.status === 'streaming' || item.status === 'revising')
+
+            ? { ...item, status: 'done' as const }
+
+            : item
 
         ),
 
@@ -545,7 +727,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     setSessions((prev) =>
       prev.map((session) =>
         session.id === id
-          ? { ...session, title: '新对话', messages: [], updatedAt: Date.now() }
+          ? { ...session, title: '新对话', customTitle: undefined, messages: [], updatedAt: Date.now() }
           : session
       )
     )
@@ -554,6 +736,20 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       setDraftTopic('')
       setDraftExtra('')
     }
+  }
+
+  function handleRenameSession(id: string, nextTitle: string): void {
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.id === id
+          ? {
+              ...session,
+              customTitle: nextTitle || undefined,
+              updatedAt: Date.now()
+            }
+          : session
+      )
+    )
   }
 
   function handleDeleteSession(id: string): void {
@@ -584,7 +780,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     setArticleType(type)
     localStorage.setItem(ARTICLE_TYPE_STORAGE_KEY, type)
     if (activeWriteMode === 'create') {
-      await window.app.setSkillEnabled(REVIEW_SKILL_ID, type === 'review', 'create')
+      await syncSkillsForArticleType(type)
     }
   }
 
@@ -593,10 +789,158 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     localStorage.setItem(OUTPUT_LANGUAGE_STORAGE_KEY, code)
   }
 
+  async function handleReviseSubmit(instruction: string): Promise<void> {
+    if (isRunning || !activeSession) return
+
+    if (sessionHasPendingRevision(activeSession)) {
+      setToast('请先应用或取消当前修改')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    const articleMessage = getLatestDoneAssistantMessage(activeSession)
+    if (!articleMessage) return
+
+    const userMessage = createMessage('user', formatReviseUserMessageContent(instruction))
+    const sessionId = activeSession.id
+    const articleContent = articleMessage.content
+
+    revisionBaselineRef.current = {
+      messageId: articleMessage.id,
+      content: articleContent,
+      userMessageId: userMessage.id
+    }
+
+    updateSession(sessionId, (session) => {
+      const filtered = session.messages.filter((item) => item.role !== 'status')
+      const messages = filtered.map((item) =>
+        item.id === articleMessage.id ? { ...item, status: 'revising' as const } : item
+      )
+
+      return {
+        ...session,
+        messages: [...messages, userMessage],
+        updatedAt: Date.now()
+      }
+    })
+
+    setDraftTopic('')
+    setDraftExtra('')
+    setIsRunning(true)
+    generatingSessionIdRef.current = sessionId
+    setRunningSessionId(sessionId)
+
+    const result = await window.app.reviseArticle({
+      article: articleContent,
+      instruction,
+      outputLanguage,
+      pipeline: activeWriteMode
+    })
+
+    if (!result.ok && result.message !== '已中止生成') {
+      if (!abortRevisionAttempt()) {
+        markAssistantError(result.message ?? '修订失败')
+      } else {
+        setToast(result.message ?? '修订失败')
+        window.setTimeout(() => setToast(''), 2200)
+      }
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+    }
+  }
+
+  function handleApplyRevision(assistantMessageId: string): void {
+    if (!activeSession) return
+
+    updateSession(activeSession.id, (session) => {
+      const assistant = session.messages.find(
+        (message) => message.id === assistantMessageId && message.status === 'pendingApply'
+      )
+      if (!assistant) return session
+
+      const userMessageId = assistant.revisionUserMessageId
+
+      return {
+        ...session,
+        messages: session.messages
+          .filter((message) => message.role === 'status' || message.id !== userMessageId)
+          .map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  status: 'done' as const,
+                  revisionBaseline: undefined,
+                  revisionUserMessageId: undefined
+                }
+              : message
+          ),
+        updatedAt: Date.now()
+      }
+    })
+
+    setToast('已应用修改')
+    window.setTimeout(() => setToast(''), 1800)
+  }
+
+  function handleCancelRevision(assistantMessageId: string): void {
+    if (!activeSession) return
+
+    updateSession(activeSession.id, (session) => {
+      const assistant = session.messages.find(
+        (message) => message.id === assistantMessageId && message.status === 'pendingApply'
+      )
+      if (!assistant?.revisionBaseline) return session
+
+      const userMessageId = assistant.revisionUserMessageId
+
+      return {
+        ...session,
+        messages: session.messages
+          .filter((message) => message.role === 'status' || message.id !== userMessageId)
+          .map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  content: assistant.revisionBaseline ?? message.content,
+                  status: 'done' as const,
+                  revisionBaseline: undefined,
+                  revisionUserMessageId: undefined
+                }
+              : message
+          ),
+        updatedAt: Date.now()
+      }
+    })
+
+    setToast('已取消修改')
+    window.setTimeout(() => setToast(''), 1800)
+  }
+
+  function handleDeleteMessage(messageId: string): void {
+    if (!activeSession || isRunning) return
+
+    const linkedAssistant = activeSession.messages.find(
+      (message) => message.status === 'pendingApply' && message.revisionUserMessageId === messageId
+    )
+    if (linkedAssistant) {
+      handleCancelRevision(linkedAssistant.id)
+      return
+    }
+
+    updateSession(activeSession.id, (session) => ({
+      ...session,
+      messages: session.messages.filter(
+        (message) => message.role === 'status' || message.id !== messageId
+      ),
+      updatedAt: Date.now()
+    }))
+  }
+
   async function handleSubmit(topic: string, manualExtra: string): Promise<void> {
     if (isRunning || !activeSession) return
 
-    await window.app.setSkillEnabled(REVIEW_SKILL_ID, articleType === 'review', 'create')
+    await syncSkillsForArticleType(articleType)
 
     const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
     const extraInstructions = buildExtraInstructions({
@@ -645,8 +989,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
 
-    if (!result.ok) {
-
+    if (!result.ok && result.message !== '已中止生成') {
       markAssistantError(result.message ?? '生成失败')
       setIsRunning(false)
       generatingSessionIdRef.current = ''
@@ -683,7 +1026,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       outputLanguage
     })
 
-    if (!result.ok) {
+    if (!result.ok && result.message !== '已中止生成') {
       markAssistantError(result.message ?? '优化失败')
       setIsRunning(false)
       generatingSessionIdRef.current = ''
@@ -692,11 +1035,21 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   }
 
   function handleComposerSubmit(input: string, manualExtra: string): void {
+    if (activeSession && sessionIsInFollowUpMode(activeSession)) {
+      void handleReviseSubmit(input)
+      return
+    }
+
     if (activeWriteMode === 'optimize') {
       void handleOptimizeSubmit(input, manualExtra)
     } else {
       void handleSubmit(input, manualExtra)
     }
+  }
+
+  function handleStopGeneration(): void {
+    if (!isRunning) return
+    void window.app.cancelArticle()
   }
 
 
@@ -736,6 +1089,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   const sectionEditTopic =
     activeSession?.messages.find((message) => message.role === 'user')?.content ?? ''
+
+  const composerShowOptions = activeSession ? !sessionIsInFollowUpMode(activeSession) : true
+  const hasPendingRevision = activeSession ? sessionHasPendingRevision(activeSession) : false
 
 
 
@@ -779,6 +1135,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         onNew={handleNewChat}
         onClear={handleClearSession}
         onDelete={handleDeleteSession}
+        onRename={handleRenameSession}
         onOpenSettings={onOpenSettings}
       />
 
@@ -796,18 +1153,24 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           messages={activeSession.messages}
           onCopy={(content) => void handleCopy(content)}
           onSuggest={handleSuggest}
-          sectionEditDisabled={isRunning || sectionEditing}
+          isRunning={isRunning}
+          sectionEditDisabled={isRunning || sectionEditing || hasPendingRevision}
           sectionEditTopic={sectionEditTopic}
           outputLanguage={outputLanguage}
           onSectionEditApply={handleSectionEditApply}
           onSectionEditBusyChange={setSectionEditing}
+          onDeleteMessage={handleDeleteMessage}
+          onApplyRevision={handleApplyRevision}
+          onCancelRevision={handleCancelRevision}
         />
 
 
 
         <div className="composer-area">
           <Composer
-            disabled={isRunning || sectionEditing}
+            disabled={sectionEditing || hasPendingRevision}
+            isGenerating={isRunning}
+            showOptions={composerShowOptions}
             writeMode={activeWriteMode}
             quickPicks={quickPicks}
             selectedProductId={selectedProductId}
@@ -817,6 +1180,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             onOutputLanguageChange={handleOutputLanguageChange}
             onArticleTypeChange={(type) => void handleArticleTypeChange(type)}
             onSubmit={(input, extra) => handleComposerSubmit(input, extra)}
+            onStop={handleStopGeneration}
             draftInput={draftTopic}
             draftExtra={draftExtra}
             onDraftInputChange={setDraftTopic}
@@ -830,10 +1194,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             {isRunning ? (
               <span className="write-status-running">
                 <span className="status-pill-dot" aria-hidden="true" />
-                Pipeline 运行中
+                {composerShowOptions ? 'Pipeline 运行中' : '正在修订文章…'}
               </span>
+            ) : hasPendingRevision ? (
+              <span className="write-status-running">待确认修改</span>
             ) : (
-              <span className="write-status-idle">就绪</span>
+              <span className="write-status-idle">{composerShowOptions ? '就绪' : '继续对话修改文章'}</span>
             )}
           </footer>
         </div>

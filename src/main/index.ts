@@ -1,22 +1,27 @@
 import { config as loadEnv } from 'dotenv'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 import { registerArticleIpc } from './ipc/article'
 import { registerChatIpc } from './ipc/chat'
 import { registerConfigIpc } from './ipc/config'
+import { registerWindowIpc, attachWindowStateListeners, attachExternalLinkHandlers } from './ipc/window'
 
-loadEnv({ path: join(__dirname, '../../.env') })
+if (!app.isPackaged) {
+  loadEnv({ path: join(__dirname, '../../.env') })
+}
 
 const isDev = !app.isPackaged
+let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1100,
     height: 780,
     minWidth: 900,
     minHeight: 640,
     show: false,
-    autoHideMenuBar: true,
+    frame: false,
+    backgroundColor: '#f3f3f4',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -26,7 +31,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+    mainWindow?.show()
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
@@ -34,9 +39,14 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  attachWindowStateListeners(mainWindow)
+  attachExternalLinkHandlers(mainWindow)
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null)
+  registerWindowIpc()
   registerArticleIpc()
   registerChatIpc()
   registerConfigIpc()

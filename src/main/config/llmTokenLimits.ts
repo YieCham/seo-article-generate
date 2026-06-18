@@ -2,6 +2,12 @@ export const DEFAULT_LLM_MAX_TOKENS = 32768
 export const MIN_LLM_MAX_TOKENS = 1024
 export const MAX_LLM_MAX_TOKENS = 128000
 
+/**
+ * When false, every pipeline step uses global llmMaxTokens only.
+ * Set to true to re-enable per-step caps (STEP_TOKEN_CAPS) and word-budget estimates.
+ */
+export const USE_STEP_TOKEN_CAPS = false
+
 /** Per-step output caps; each request uses min(stepCap, global llmMaxTokens). */
 export type PipelineTokenStep =
   | 'intentExpand'
@@ -14,6 +20,7 @@ export type PipelineTokenStep =
   | 'lengthAdjust'
   | 'seoMeta'
   | 'sectionEdit'
+  | 'articleRevise'
   | 'optimizeAudit'
   | 'optimizeDraft'
   | 'optimizeSectionDraft'
@@ -24,13 +31,14 @@ export const STEP_TOKEN_CAPS: Record<PipelineTokenStep, number> = {
   intentExpand: 6144,
   eeatExtract: 12288,
   writingBrief: 6144,
-  plan: 24576,
-  outline: 24576,
+  plan: 8192,
+  outline: 6144,
   sectionDraft: 12288,
-  polish: 12288,
-  lengthAdjust: 12288,
+  polish: 49152,
+  lengthAdjust: 49152,
   seoMeta: 2460,
   sectionEdit: 12288,
+  articleRevise: 49152,
   optimizeAudit: 16384,
   optimizeDraft: 24576,
   optimizeSectionDraft: 12288,
@@ -84,12 +92,18 @@ export function normalizeLlmMaxTokens(partial?: unknown): number {
   return DEFAULT_LLM_MAX_TOKENS
 }
 
+/** Normalized global max_tokens for a single LLM request. */
+export function resolveLlmMaxTokens(globalMax: number): number {
+  return clampMaxTokens(globalMax)
+}
+
 export function resolveStepMaxTokens(
   step: PipelineTokenStep,
   globalMax: number,
   wordBudget?: number
 ): number {
   const global = clampMaxTokens(globalMax)
+  if (!USE_STEP_TOKEN_CAPS) return global
   const stepCap = STEP_TOKEN_CAPS[step]
 
   if (wordBudget != null && Number.isFinite(wordBudget)) {
@@ -97,7 +111,10 @@ export function resolveStepMaxTokens(
       optimizeDraft: { multiplier: 3.5, floor: 4096 },
       optimizeSectionDraft: { multiplier: 3.5, floor: 2048 },
       optimizePolish: { multiplier: 3.2, floor: 4096 },
-      optimizeLengthAdjust: { multiplier: 3.2, floor: 4096 }
+      optimizeLengthAdjust: { multiplier: 3.2, floor: 4096 },
+      articleRevise: { multiplier: 4.0, floor: 8192 },
+      polish: { multiplier: 4.0, floor: 8192 },
+      lengthAdjust: { multiplier: 4.0, floor: 8192 }
     }
     const rule = wordBasedSteps[step]
     if (rule) {
@@ -115,6 +132,7 @@ export function maxTokensForSectionDraft(
   tier: SectionDraftTier = 'default'
 ): number {
   const global = clampMaxTokens(globalMax)
+  if (!USE_STEP_TOKEN_CAPS) return global
   const stepCap = STEP_TOKEN_CAPS.sectionDraft
   const rule = SECTION_DRAFT_RULES[tier]
   const estimated = Math.ceil(words * rule.multiplier)
@@ -135,4 +153,29 @@ export function maxTokensForOptimizePolish(draftWords: number, globalMax: number
 
 export function maxTokensForOptimizeLengthAdjust(articleWords: number, globalMax: number): number {
   return resolveStepMaxTokens('optimizeLengthAdjust', globalMax, Math.max(articleWords, 600))
+}
+
+/** Full-article rewrite steps (polish / length / revise) need higher output headroom for Top-N listicles. */
+export function maxTokensForFullArticleOutput(
+  articleWords: number,
+  globalMax: number,
+  step: 'polish' | 'lengthAdjust' | 'articleRevise'
+): number {
+  const global = clampMaxTokens(globalMax)
+  if (!USE_STEP_TOKEN_CAPS) return global
+  const words = Math.max(articleWords, 600)
+  const estimated = Math.ceil(words * 6.5) + 2048
+  const stepCap = STEP_TOKEN_CAPS[step]
+  return Math.min(global, stepCap, Math.max(12288, estimated))
+}
+
+export function maxTokensForPlanning(globalMax: number): number {
+  if (!USE_STEP_TOKEN_CAPS) return clampMaxTokens(globalMax)
+  return Math.min(clampMaxTokens(globalMax), STEP_TOKEN_CAPS.plan, 4096)
+}
+
+export function maxTokensForOutlineSkeleton(globalMax: number, sectionEstimate = 8): number {
+  if (!USE_STEP_TOKEN_CAPS) return clampMaxTokens(globalMax)
+  const estimated = Math.ceil(sectionEstimate * 90) + 700
+  return Math.min(clampMaxTokens(globalMax), STEP_TOKEN_CAPS.outline, Math.max(2048, estimated))
 }

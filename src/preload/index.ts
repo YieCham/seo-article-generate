@@ -22,13 +22,20 @@ export interface ResearchSourcePreview {
 }
 
 export interface GenerateProgressEvent {
-  type: 'chunk' | 'status' | 'error' | 'done' | 'research' | 'reset' | 'planning' | 'prepend'
+  type: 'chunk' | 'status' | 'error' | 'done' | 'cancelled' | 'replace' | 'research' | 'reset' | 'planning' | 'prepend'
   text?: string
   message?: string
   step?: string
   researchSummary?: string
   planningSummary?: string
   sources?: ResearchSourcePreview[]
+}
+
+export interface ReviseArticleRequest {
+  article: string
+  instruction: string
+  outputLanguage?: string
+  pipeline?: 'create' | 'optimize'
 }
 
 export interface GenerateArticleResult {
@@ -170,11 +177,12 @@ export interface ChatStoreData {
   sessions: Array<{
     id: string
     title: string
+    customTitle?: string
     messages: Array<{
       id: string
       role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
       content: string
-      status?: 'streaming' | 'done' | 'error'
+      status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error'
     }>
     updatedAt: number
     writeMode?: 'create' | 'optimize'
@@ -186,6 +194,9 @@ const api = {
     ipcRenderer.invoke('article:generate', request),
   optimizeArticle: (request: OptimizeArticleRequest): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:optimize', request),
+  cancelArticle: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('article:cancel'),
+  reviseArticle: (request: ReviseArticleRequest): Promise<GenerateArticleResult> =>
+    ipcRenderer.invoke('article:revise', request),
   rewriteArticleSection: (
     request: RewriteArticleSectionRequest
   ): Promise<RewriteArticleSectionResult> => ipcRenderer.invoke('article:rewriteSection', request),
@@ -210,10 +221,26 @@ const api = {
   deleteSkill: (id: string): Promise<void> => ipcRenderer.invoke('skills:delete', id),
   setSkillEnabled: (id: string, enabled: boolean, mode?: PipelineMode): Promise<void> =>
     ipcRenderer.invoke('skills:setEnabled', id, enabled, mode),
+  syncArticleTypeSkills: (articleType: 'how-to' | 'review' | 'top-rank'): Promise<void> =>
+    ipcRenderer.invoke('skills:syncArticleType', articleType),
   getTokenUsageLog: (): Promise<TokenUsageLogResponse> => ipcRenderer.invoke('tokenUsage:get'),
   clearTokenUsageLog: (): Promise<{ ok: true }> => ipcRenderer.invoke('tokenUsage:clear'),
   loadChatStore: (): Promise<ChatStoreData> => ipcRenderer.invoke('chat:load'),
-  saveChatStore: (data: ChatStoreData): Promise<{ ok: true }> => ipcRenderer.invoke('chat:save', data)
+  saveChatStore: (data: ChatStoreData): Promise<{ ok: true }> => ipcRenderer.invoke('chat:save', data),
+  platform: process.platform,
+  windowMinimize: (): void => ipcRenderer.send('window:minimize'),
+  windowMaximize: (): void => ipcRenderer.send('window:maximize'),
+  windowClose: (): void => ipcRenderer.send('window:close'),
+  windowIsMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
+  popupAppMenu: (label: string, x: number, y: number): Promise<void> =>
+    ipcRenderer.invoke('window:popupMenu', label, x, y),
+  onWindowMaximized: (callback: (maximized: boolean) => void): (() => void) => {
+    const listener = (_: Electron.IpcRendererEvent, maximized: boolean): void => {
+      callback(maximized)
+    }
+    ipcRenderer.on('window:maximized', listener)
+    return () => ipcRenderer.removeListener('window:maximized', listener)
+  }
 }
 
 contextBridge.exposeInMainWorld('app', api)

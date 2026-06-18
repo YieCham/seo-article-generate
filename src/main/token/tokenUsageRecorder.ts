@@ -58,6 +58,7 @@ export async function recordLlmTokenUsage(input: {
   completionText: string
   usage?: ApiTokenUsage
   maxTokensRequested?: number
+  finishReason?: string
   step?: string
   label?: string
 }): Promise<void> {
@@ -65,6 +66,11 @@ export async function recordLlmTokenUsage(input: {
   if (!context) return
 
   const normalized = normalizeApiUsage(input.usage, input.messages, input.completionText)
+  const possiblyTruncated =
+    input.finishReason === 'length' ||
+    (input.maxTokensRequested != null &&
+      input.maxTokensRequested > 0 &&
+      normalized.completionTokens >= Math.floor(input.maxTokensRequested * 0.97))
 
   try {
     await appendTokenUsageRecord({
@@ -78,6 +84,8 @@ export async function recordLlmTokenUsage(input: {
       completionTokens: normalized.completionTokens,
       totalTokens: normalized.totalTokens,
       maxTokensRequested: input.maxTokensRequested,
+      finishReason: input.finishReason,
+      possiblyTruncated,
       estimated: normalized.estimated
     })
   } catch {

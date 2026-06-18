@@ -1,5 +1,5 @@
 import type { AppConfig } from '../../env.d'
-import { DEFAULT_LLM_MAX_TOKENS, STEP_TOKEN_CAPS } from '../../constants/llmTokenLimits'
+import { DEFAULT_LLM_MAX_TOKENS, STEP_TOKEN_CAPS, USE_STEP_TOKEN_CAPS } from '../../constants/llmTokenLimits'
 
 interface LlmMaxTokensPanelProps {
   config: AppConfig
@@ -32,11 +32,12 @@ export default function LlmMaxTokensPanel({
         }
       />
       <p className="field-hint">
-        全局上限：创作/优化 Pipeline 中每次 LLM 请求的实际 max_tokens 为 min(步骤上限, 全局上限)。默认{' '}
-        {DEFAULT_LLM_MAX_TOKENS.toLocaleString()}；模型上下文较小时请适当调低。
+        {USE_STEP_TOKEN_CAPS
+          ? `当前启用分段上限：每次 LLM 请求的 max_tokens 为 min(步骤上限, 全局上限)。默认 ${DEFAULT_LLM_MAX_TOKENS.toLocaleString()}；模型上下文较小时请适当调低。`
+          : `当前仅使用全局上限：Pipeline 中每次 LLM 请求的 max_tokens 均等于下方全局值（默认 ${DEFAULT_LLM_MAX_TOKENS.toLocaleString()}）。模型上下文较小时请适当调低。`}
       </p>
       <details className="field-hint" style={{ marginTop: '0.5rem' }}>
-        <summary>各步骤默认输出上限</summary>
+        <summary>{USE_STEP_TOKEN_CAPS ? '各步骤默认输出上限' : '各步骤默认输出上限（已停用，仅供后续启用参考）'}</summary>
         <ul style={{ margin: '0.5rem 0 0', paddingLeft: '1.25rem', fontSize: '0.9em' }}>
           {Object.entries(STEP_TOKEN_CAPS).map(([step, cap]) => (
             <li key={step}>

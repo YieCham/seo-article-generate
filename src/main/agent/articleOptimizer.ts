@@ -15,6 +15,8 @@ import {
   type ResearchSource
 } from '../research/researchService'
 import { getLanguageLabel } from '../research/localeOptions'
+import { throwIfAborted } from './abortContext'
+import { isAbortError } from './articleRunRegistry'
 import { mapSources, type GenerateProgressEvent } from './articleAgent'
 import {
   analyzeAndExpandSearchQueries,
@@ -615,6 +617,7 @@ export async function optimizeArticle(
           searchQueries,
           research,
           (progress) => {
+            throwIfAborted()
             emit({
               type: 'status',
               step: progress.phase === 'scrape' ? 'scrape' : 'search',
@@ -796,6 +799,10 @@ export async function optimizeArticle(
     emit({ type: 'done' })
     return { ok: true }
   } catch (error) {
+    if (isAbortError(error)) {
+      emit({ type: 'cancelled', message: '已中止生成' })
+      return { ok: false, message: '已中止生成' }
+    }
     const message = error instanceof Error ? error.message : '优化失败'
     emit({ type: 'error', message })
     return { ok: false, message }

@@ -6,58 +6,65 @@ export type OutlineSection = { title: string; body: string }
 export { countWords }
 
 export const INCREMENTAL_UPDATE_GUIDANCE = `
-【Incremental Update — Editor MUST Act Proactively】
-Conservative edit ≠ passive proofreading. You are an expert editor who **improves** the page.
+【Content-Aware Optimization — Evaluate First, Then Edit】
+Optimization is **not** "always add more." Judge each passage/section on its own merits:
 
-**ADD (from audit + competitor analysis):**
-- Actively **incorporate** high-value points from competitor pages that the source lacks (steps, tips, FAQ angles, data, use cases)
-- Insert into the **most relevant existing section** as new sentences, bullets, or a short paragraph
-- When the **audit explicitly recommends a new H2** (marked [新增 H2] / [NEW H2] / in the diagnosis outline skeleton), **add that section** at the position the audit specifies — do not fold mandatory new modules only into FAQ
-- Prefer **specific, actionable** additions the reader can use immediately
+**KEEP + ENHANCE (excellent / accurate / EEAT-strong):**
+- Preserve helpful, current, experience-rich sentences and the existing H2/H3 structure
+- **Incrementally add** competitor/diagnosis gaps that strengthen already-good sections (new bullets, short paragraphs, missing FAQ angles)
+- Do not rewrite strong passages for style alone
 
-**REMOVE or REPLACE (stale / harmful content):**
-- **Delete** steps, tools, UI paths, version numbers, or methods that are **outdated, deprecated, broken, or no longer work**
-- **Replace** obsolete instructions with current viable alternatives when the audit or your knowledge indicates they fail
-- Remove duplication and low-trust filler — but never delete still-accurate core facts without cause
+**ADD (missing high-value content):**
+- Incorporate competitor/diagnosis points the source lacks (steps, tips, data, use cases)
+- Insert into the **most relevant existing section**, or add a **new H2** when the audit marks [新增 H2] / [NEW H2]
+- Prefer specific, actionable additions the reader can use immediately
 
-**Balance with preservation:**
-- Keep existing H2/H3 order and titles unless the audit marks **new H2** or **REMOVE** for a section
-- Unchanged good sentences stay as-is; **new** competitor value and **removed** stale parts are expected — this is not "patch only"
+**REMOVE (outdated / unusable / EEAT-weak):**
+- **Delete** steps, tools, UI paths, version numbers, or methods that are outdated, deprecated, broken, or no longer work
+- **Delete** misleading claims, empty filler, keyword stuffing, duplication, or content that hurts Trustworthiness
+- **Replace** obsolete instructions with current viable alternatives when the audit or facts require it
+- **Shortening the article is valid** when stale or harmful content is removed — do not keep bad text to preserve word count
+
+**Local REWRITE only when needed:**
+- Fix unclear, weak, repetitive, or SEO-poor sentences — not whole sections by default
 - Do not invent statistics, reviews, or claims absent from source/competitor analysis
 `.trim()
 
 export const SOURCE_PRESERVATION_GUIDANCE = `
-【Source Preservation — Structure First, NOT Passive Patch】
-This task is **optimizing an existing page**, not writing a new article from scratch.
+【Source-First Editing — Keep What Works, Cut What Doesn't】
+This task is **optimizing an existing page**, not drafting a brand-new article.
 
-**Preserve structure & good prose:**
+**Preserve when content is still strong:**
 - Keep the source page's **H2/H3 order, section titles, accurate facts, steps, lists, tables, and product names**
-- Keep **wording and paragraph flow** when content is accurate, helpful, and current
+- Keep **wording and paragraph flow** when passages are accurate, helpful, current, and EEAT-aligned
 - Treat the scraped Markdown as the **working draft**; edit in place
 
-**Active edits (required when audit/competitor flags them):**
-- **Insert** competitor gaps and missing high-value info into the right section
-- **Add new H2 sections** when the diagnosis explicitly recommends them (Quick Answer, FAQ, or audit-marked [新增 H2] modules)
-- **Remove or replace** outdated, invalid, or misleading steps/methods
-- Fix grammar, clarity, weak SEO phrasing sentence by sentence
+**Act when audit/competitor/EEAT flags issues:**
+- **Enhance** excellent sections with missing competitor/diagnosis value (incremental add)
+- **Add new H2 sections** when the diagnosis explicitly recommends them (Quick Answer, FAQ, or [新增 H2] modules)
+- **Remove** outdated, invalid, misleading, or low-trust content — deletion is a first-class optimization outcome
+- **Replace** obsolete methods with current alternatives; fix grammar/clarity/SEO sentence by sentence where weak
 
 **Do NOT:**
 - Rewrite entire sections in a new voice or impose a new-article Part template
 - Replace the page with generic tutorial content unrelated to the source
 - Add new H2 **not** backed by the diagnosis / competitor analysis
+- Keep stale or EEAT-harmful text just to avoid shortening the page
 
 **Per-section when original text is supplied:**
-- Retain **most unchanged sentences** in passages that stay valid (rough guide ≥70% where no add/remove needed)
-- Where audit marks **add**: write new helpful content; where audit marks **remove**: delete stale parts — both are intentional changes
+- Passages that remain valid: retain **most unchanged sentences** (rough guide ≥70% where no add/remove needed)
+- Where audit marks **add**: write new helpful content into strong sections
+- Where audit marks **remove**: delete stale/harmful parts — a shorter, sharper section is better than padded obsolete text
 `.trim()
 
 export const EEAT_OPTIMIZE_GUIDANCE = `
-【Optimization Principles — E-E-A-T + Source First + Incremental Value】
+【Optimization Principles — E-E-A-T Drives Keep / Add / Remove】
 - Use the scraped source as **structural and factual baseline**; improve it for today's readers.
-- **Keep** accurate, current, helpful passages.
-- **Add** competitor/user-intent gaps that increase Experience & Trustworthiness.
-- **Remove/replace** outdated or misleading content — outdated help hurts E-E-A-T.
+- **Keep & enhance** passages that show Experience, Expertise, or Trustworthiness and are still accurate.
+- **Add** competitor/user-intent gaps that increase helpfulness and Trust — especially where existing sections are good but incomplete.
+- **Remove** outdated, broken, misleading, or thin SEO filler — outdated or untrustworthy help **lowers** E-E-A-T.
 - **Rewrite** only unclear or weak sentences — not whole sections by default.
+- Final length may go **up or down** depending on adds vs. deletions; quality beats word count.
 - Language must stay 100% identical to the source page.
 `.trim()
 
@@ -216,8 +223,8 @@ export function getOptimizeWordRange(
       min,
       max,
       label: hasCompetitorInsights
-        ? `${min}–${max}（原文 ${sourceWords} 词；允许竞品增量补充 ±10–12%）`
-        : `${min}–${max}（贴近原文 ${sourceWords} 词，±8%）`
+        ? `${min}–${max}（原文 ${sourceWords} 词；优质内容可增量补充，过时内容可删减，篇幅可增可减）`
+        : `${min}–${max}（贴近原文 ${sourceWords} 词；保留优质内容，删减过时/低质段落）`
     }
   }
 
@@ -256,41 +263,44 @@ export function getSourceSectionEditHint(options: {
   }
   if (options.hasOriginal) {
     return [
-      `【本节编辑模式：保守结构 + 主动增量更新】`,
-      '以下方「原文本节」为底稿，**保留章节结构与大部分有效原句**。',
-      '**必须主动执行**（若诊断/竞品分析有提及）：',
-      '1. **增量吸纳**：将竞品/诊断中针对本节（或「' + (options.sectionTitle ?? '本节') + '」）的优秀要点自然写入（新句、bullet 或短段）',
-      '2. **删减过时**：删除或替换本节中失效的方法、过时版本、已不可用步骤/工具说明，必要时给出当前可行替代',
-      '3. **局部润色**：仅改薄弱、难读、重复或 SEO 不足的句子',
-      '禁止整节重写或换成无关通用教程；新增与删除均须服务于读者价值。'
+      `【本节编辑模式：内容评估 + 按需增删】`,
+      '以下方「原文本节」为底稿。**先判断质量，再决定动作**，不是默认整节增量叠加。',
+      '**优质内容（准确、可用、符合 E-E-A-T）**：',
+      '- **保留**大部分有效原句与结构',
+      '- **增量补充**诊断/竞品中针对「' + (options.sectionTitle ?? '本节') + '」的高价值要点（新句、bullet 或短段）',
+      '**问题内容（过时、不可用、误导、堆砌、重复）**：',
+      '- **删减**失效步骤、过时版本、已不可用工具/方法说明',
+      '- **替换**为当前可行方案；无法挽救的段落可直接删除，本节变短是正常结果',
+      '**局部润色**：仅改薄弱、难读或 SEO 不足的句子',
+      '禁止整节重写或换成无关通用教程；增删均须服务于读者价值与 E-E-A-T。'
     ].join('\n')
   }
-  return '未匹配到同名原文节：从原文相关段落提炼，并按诊断/竞品缺口做增量补充与过时删减，保持与原页面一致的语气。'
+  return '未匹配到同名原文节：从原文相关段落提炼；优质处保留并补充缺口，过时/低质处删减，保持与原页面一致的语气。'
 }
 
 export function getOptimizeSinglePassHint(wordRangeLabel: string): string {
   return [
-    '【编辑模式：就地优化 + 主动增量更新】',
+    '【编辑模式：内容评估 + 按需增删】',
     '保留原文 **H2/H3 顺序与标题**（可微调措辞）；**诊断明确标记 [新增 H2] / [NEW H2] 的章节必须新增**并插入诊断指定位置。',
-    '**必须执行**诊断与竞品分析中的：',
-    '- **增量吸纳**：竞品优秀内容写入对应章节',
-    '- **新增 H2**：写入诊断大纲骨架中标记的新章节',
-    '- **删减过时**：移除失效/错误/过时方法与步骤，必要时替换为当前方案',
-    '- **局部润色**：保留仍然准确有用的原句',
-    '禁止整篇重写或套用新文 Part 模板。',
-    `词数目标：${wordRangeLabel}`
+    '**按内容质量执行**（见诊断与竞品分析）：',
+    '- **优质内容**：保留有效原句；对优秀章节**增量吸纳**竞品/诊断要点',
+    '- **缺失内容**：写入竞品缺口或诊断 ADD 项；新增 H2 写入完整新节',
+    '- **问题内容**：**删减**过时、不可用、误导或不符合 E-E-A-T 的段落/步骤；必要时替换为当前方案',
+    '- **局部润色**：仅改薄弱、难读、重复或 SEO 不足的句子',
+    '篇幅可因删减而变短、因补充而变长；禁止整篇重写或套用新文 Part 模板。',
+    `词数参考：${wordRangeLabel}`
   ].join('\n')
 }
 
 export function getOptimizePolishHint(): string {
   return [
-    '【终稿校对 + 增量检查】',
+    '【终稿校对 + 内容质量复核】',
     '- 修正错别字、语法、明显 AI 套话、衔接问题',
-    '- **检查诊断/竞品要点是否已写入**；若优化稿遗漏应吸纳的竞品内容，补入对应章节',
+    '- **检查优质章节是否已增量吸纳**诊断/竞品要点；遗漏则补入对应章节',
     '- **检查诊断建议的新增 H2 是否已出现**；若缺失则按诊断补写',
-    '- **检查过时/失效内容是否已删除或替换**；若仍残留，按诊断删改',
+    '- **检查过时/不可用/低 E-E-A-T 内容是否已删减或替换**；若仍残留，按诊断删改（允许终稿比原文更短）',
     '- **禁止**无诊断依据地增删 H2；**允许**保留诊断批准的新 H2 及其顺序',
-    '- 对照「原页面」：骨架一致 + 诊断新增模块，允许比原文更充实、更当前'
+    '- 对照「原页面」：骨架一致 + 诊断新增模块；终稿应更当前、更可信，而非单纯更长'
   ].join('\n')
 }
 
@@ -386,8 +396,8 @@ export function buildAnchoredOutline(
     lines.push(
       `## ${section.title}`,
       '- Same section as source — preserve title and order',
-      '- ADD competitor gaps into this section where relevant',
-      '- REMOVE/REPLACE stale methods; keep valid original sentences',
+      '- KEEP + ENHANCE: retain strong original sentences; ADD competitor gaps where relevant',
+      '- REMOVE/REPLACE: cut stale, broken, or EEAT-weak content; do not pad obsolete text',
       ''
     )
   }

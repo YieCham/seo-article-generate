@@ -32,16 +32,24 @@
     "appId": "com.ai-article-agent.app",
     "productName": "AI文章创作Agent",
     "copyright": "Copyright © 2026",
+    "icon": "icons/icon.png",
     "directories": {
       "output": "dist",
       "buildResources": "build"
     },
+    "extraResources": [
+      {
+        "from": "icons/icon.png",
+        "to": "icon.png"
+      }
+    ],
     "files": [
       "out/**/*",
       "package.json"
     ],
     "asar": true,
     "win": {
+      "icon": "icons/icon.png",
       "target": [
         {
           "target": "nsis",

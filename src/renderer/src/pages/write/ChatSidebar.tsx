@@ -214,7 +214,7 @@ export default function ChatSidebar({
       <div className="sidebar-bottom">
         <button type="button" className="sidebar-nav-item" onClick={onOpenSettings}>
           <IconSettings size={14} />
-          <span>AI 配置</span>
+          <span>设置</span>
         </button>
       </div>
 

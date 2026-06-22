@@ -27,7 +27,6 @@ export default function App() {
               <IconArrowLeft size={14} />
               返回创作
             </button>
-            <h1>AI 配置</h1>
           </header>
           <main className="settings-main">
             <SettingsPage

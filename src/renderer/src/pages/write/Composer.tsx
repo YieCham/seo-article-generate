@@ -3,7 +3,7 @@ import type { QuickPicksConfig } from '../../env.d'
 import { ARTICLE_TYPE_OPTIONS, type ArticleType } from '../../constants/articleTypes'
 import type { WriteMode } from '../../constants/writeMode'
 import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../../constants/outputLanguage'
-import { IconPlus, IconSend, IconStop } from '../../components/Icons'
+import { IconPlus, IconSend, IconStop, IconClose } from '../../components/Icons'
 
 interface ComposerProps {
   disabled: boolean
@@ -23,6 +23,8 @@ interface ComposerProps {
   draftExtra: string
   onDraftInputChange: (value: string) => void
   onDraftExtraChange: (value: string) => void
+  reviseSelectionPreview?: string | null
+  onClearReviseSelection?: () => void
 }
 
 export default function Composer({
@@ -42,16 +44,20 @@ export default function Composer({
   draftInput,
   draftExtra,
   onDraftInputChange,
-  onDraftExtraChange
+  onDraftExtraChange,
+  reviseSelectionPreview = null,
+  onClearReviseSelection
 }: ComposerProps) {
   const [showExtra, setShowExtra] = useState(false)
   const isOptimize = writeMode === 'optimize'
   const isFollowUp = !showOptions
   const placeholder = isFollowUp
-    ? '描述要如何修改文章…'
+    ? reviseSelectionPreview
+      ? '描述如何改写选中部分…'
+      : '描述要如何修改文章（可补充、删减或局部改写）…'
     : isOptimize
-      ? '粘贴要优化的页面 URL 或追问…'
-      : '输入主题或追问…'
+      ? '请发送要优化的页面URL...'
+      : '请输入你想要创作的主题...'
   const panelDisabled = disabled || isGenerating
 
   useEffect(() => {
@@ -151,6 +157,27 @@ export default function Composer({
               </div>
             ) : null}
           </>
+        ) : null}
+
+        {isFollowUp && reviseSelectionPreview ? (
+          <div className="composer-selection-hint">
+            <span className="composer-selection-hint-text">
+              已选中{' '}
+              {reviseSelectionPreview.length > 80
+                ? `${reviseSelectionPreview.slice(0, 80).trim()}…`
+                : reviseSelectionPreview}
+            </span>
+            <button
+              type="button"
+              className="composer-selection-clear"
+              onClick={onClearReviseSelection}
+              disabled={panelDisabled}
+              aria-label="取消选中"
+              title="取消选中"
+            >
+              <IconClose size={10} />
+            </button>
+          </div>
         ) : null}
 
         <div className="composer-bar">

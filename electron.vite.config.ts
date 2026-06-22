@@ -38,6 +38,7 @@ export default defineConfig({
     }
   },
   renderer: {
+    publicDir: resolve(__dirname, 'icons'),
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src')

@@ -149,23 +149,10 @@ export interface TokenUsageLogResponse {
   summary: TokenUsageSummary
 }
 
-export type SectionEditMode = 'rewrite' | 'insert'
-
-export interface RewriteArticleSectionRequest {
-  fullArticle: string
-  selectedText: string
-  selectionStart: number
-  selectionEnd: number
-  instruction: string
-  mode: SectionEditMode
-  topic?: string
-  outputLanguage?: string
-}
-
-export interface RewriteArticleSectionResult {
-  ok: boolean
-  message?: string
-  updatedArticle?: string
+export interface ReviseArticleSelection {
+  start: number
+  end: number
+  text: string
 }
 
 declare global {
@@ -187,8 +174,9 @@ declare global {
         instruction: string
         outputLanguage?: string
         pipeline?: 'create' | 'optimize'
+        topic?: string
+        selection?: ReviseArticleSelection
       }) => Promise<GenerateArticleResult>
-      rewriteArticleSection: (request: RewriteArticleSectionRequest) => Promise<RewriteArticleSectionResult>
       onProgress: (callback: (event: GenerateProgressEvent) => void) => () => void
       getConfig: () => Promise<AppConfig>
       saveConfig: (partial: Partial<AppConfig>) => Promise<AppConfig>

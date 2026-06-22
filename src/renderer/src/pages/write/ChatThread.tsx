@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
-import type { ChatMessage } from './types'
+import type { ChatMessage, ReviseArticleSelection } from './types'
 import ChatMessageItem from './ChatMessageItem'
 import MessageContextMenu from './MessageContextMenu'
 
@@ -17,11 +17,9 @@ const SUGGESTIONS = [
 interface ChatThreadPropsWithSuggest extends ChatThreadProps {
   onSuggest: (text: string) => void
   isRunning?: boolean
-  sectionEditDisabled?: boolean
-  sectionEditTopic?: string
-  outputLanguage?: string
-  onSectionEditApply?: (messageId: string, content: string) => void
-  onSectionEditBusyChange?: (busy: boolean) => void
+  reviseTargetMessageId?: string | null
+  reviseSelection?: ReviseArticleSelection | null
+  onReviseSelectionChange?: (selection: ReviseArticleSelection | null) => void
   onDeleteMessage?: (messageId: string) => void
   onApplyRevision?: (assistantMessageId: string) => void
   onCancelRevision?: (assistantMessageId: string) => void
@@ -32,11 +30,9 @@ export default function ChatThread({
   onCopy,
   onSuggest,
   isRunning = false,
-  sectionEditDisabled,
-  sectionEditTopic,
-  outputLanguage,
-  onSectionEditApply,
-  onSectionEditBusyChange,
+  reviseTargetMessageId = null,
+  reviseSelection = null,
+  onReviseSelectionChange,
   onDeleteMessage,
   onApplyRevision,
   onCancelRevision
@@ -86,11 +82,15 @@ export default function ChatThread({
               message={message}
               onCopy={onCopy}
               onContextMenu={(event) => handleContextMenu(event, message)}
-              sectionEditDisabled={sectionEditDisabled}
-              sectionEditTopic={sectionEditTopic}
-              outputLanguage={outputLanguage}
-              onSectionEditApply={onSectionEditApply}
-              onSectionEditBusyChange={onSectionEditBusyChange}
+              reviseSelectionEnabled={
+                Boolean(reviseTargetMessageId) &&
+                message.id === reviseTargetMessageId &&
+                message.status === 'done'
+              }
+              reviseSelection={
+                message.id === reviseTargetMessageId ? reviseSelection : null
+              }
+              onReviseSelectionChange={onReviseSelectionChange}
               onApplyRevision={onApplyRevision}
               onCancelRevision={onCancelRevision}
             />

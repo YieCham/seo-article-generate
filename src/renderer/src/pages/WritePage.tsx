@@ -29,7 +29,7 @@ import Composer from './write/Composer'
 
 import WriteModePickerDialog from './write/WriteModePickerDialog'
 
-import { createMessage, createSession, getLatestDoneAssistantMessage, getSessionDisplayTitle, sessionHasPendingRevision, sessionIsInFollowUpMode, sessionTitleFromPrompt, sessionTitleFromUrl, type ChatSession } from './write/types'
+import { createMessage, createSession, getLatestDoneAssistantMessage, getSessionDisplayTitle, sessionHasPendingRevision, sessionIsInFollowUpMode, sessionTitleFromPrompt, sessionTitleFromUrl, type ChatSession, type ReviseArticleSelection } from './write/types'
 
 
 
@@ -58,7 +58,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [articleType, setArticleType] = useState<ArticleType>('how-to')
   const [modePickerOpen, setModePickerOpen] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
-  const [sectionEditing, setSectionEditing] = useState(false)
+  const [reviseSelection, setReviseSelection] = useState<ReviseArticleSelection | null>(null)
   const [runningSessionId, setRunningSessionId] = useState('')
 
   const [toast, setToast] = useState('')
@@ -801,7 +801,10 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     const articleMessage = getLatestDoneAssistantMessage(activeSession)
     if (!articleMessage) return
 
-    const userMessage = createMessage('user', formatReviseUserMessageContent(instruction))
+    const userMessage = createMessage(
+      'user',
+      formatReviseUserMessageContent(instruction, reviseSelection?.text)
+    )
     const sessionId = activeSession.id
     const articleContent = articleMessage.content
 
@@ -826,6 +829,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     setDraftTopic('')
     setDraftExtra('')
+    setReviseSelection(null)
+    window.getSelection()?.removeAllRanges()
     setIsRunning(true)
     generatingSessionIdRef.current = sessionId
     setRunningSessionId(sessionId)
@@ -834,7 +839,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       article: articleContent,
       instruction,
       outputLanguage,
-      pipeline: activeWriteMode
+      pipeline: activeWriteMode,
+      topic: activeSession.messages.find((message) => message.role === 'user')?.content,
+      selection: reviseSelection ?? undefined
     })
 
     if (!result.ok && result.message !== '已中止生成') {
@@ -1072,26 +1079,16 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
-  function handleSectionEditApply(messageId: string, content: string): void {
-    if (!activeSession) return
-
-    updateSession(activeSession.id, (session) => ({
-      ...session,
-      messages: session.messages.map((message) =>
-        message.id === messageId ? { ...message, content } : message
-      ),
-      updatedAt: Date.now()
-    }))
-
-    setToast('已更新文章片段')
-    window.setTimeout(() => setToast(''), 1800)
+  function handleClearReviseSelection(): void {
+    setReviseSelection(null)
+    window.getSelection()?.removeAllRanges()
   }
-
-  const sectionEditTopic =
-    activeSession?.messages.find((message) => message.role === 'user')?.content ?? ''
 
   const composerShowOptions = activeSession ? !sessionIsInFollowUpMode(activeSession) : true
   const hasPendingRevision = activeSession ? sessionHasPendingRevision(activeSession) : false
+  const latestArticleMessage = activeSession ? getLatestDoneAssistantMessage(activeSession) : null
+  const reviseTargetMessageId =
+    composerShowOptions || hasPendingRevision || isRunning ? null : latestArticleMessage?.id ?? null
 
 
 
@@ -1154,11 +1151,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           onCopy={(content) => void handleCopy(content)}
           onSuggest={handleSuggest}
           isRunning={isRunning}
-          sectionEditDisabled={isRunning || sectionEditing || hasPendingRevision}
-          sectionEditTopic={sectionEditTopic}
-          outputLanguage={outputLanguage}
-          onSectionEditApply={handleSectionEditApply}
-          onSectionEditBusyChange={setSectionEditing}
+          reviseTargetMessageId={reviseTargetMessageId}
+          reviseSelection={reviseSelection}
+          onReviseSelectionChange={setReviseSelection}
           onDeleteMessage={handleDeleteMessage}
           onApplyRevision={handleApplyRevision}
           onCancelRevision={handleCancelRevision}
@@ -1168,7 +1163,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
         <div className="composer-area">
           <Composer
-            disabled={sectionEditing || hasPendingRevision}
+            disabled={hasPendingRevision}
             isGenerating={isRunning}
             showOptions={composerShowOptions}
             writeMode={activeWriteMode}
@@ -1185,6 +1180,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             draftExtra={draftExtra}
             onDraftInputChange={setDraftTopic}
             onDraftExtraChange={setDraftExtra}
+            reviseSelectionPreview={reviseSelection?.text ?? null}
+            onClearReviseSelection={handleClearReviseSelection}
           />
 
           <footer className="write-statusbar">
@@ -1199,7 +1196,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             ) : hasPendingRevision ? (
               <span className="write-status-running">待确认修改</span>
             ) : (
-              <span className="write-status-idle">{composerShowOptions ? '就绪' : '继续对话修改文章'}</span>
+              <span className="write-status-idle">
+                {composerShowOptions
+                  ? '就绪'
+                  : reviseSelection
+                    ? '已选中片段 · 输入修改说明后发送'
+                    : '继续对话修改文章 · 可选中片段进行局部重写'}
+              </span>
             )}
           </footer>
         </div>

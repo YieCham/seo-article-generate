@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react'
 import { IconClose, IconMaximize, IconMinimize, IconRestore } from './Icons'
 
-const MENU_ITEMS = ['File', 'Edit', 'View', 'Help'] as const
-
 export default function TitleBar() {
   const [maximized, setMaximized] = useState(false)
   const showWinControls = window.app.platform !== 'darwin'
@@ -12,26 +10,10 @@ export default function TitleBar() {
     return window.app.onWindowMaximized(setMaximized)
   }, [])
 
-  function handleMenuClick(label: (typeof MENU_ITEMS)[number], event: React.MouseEvent<HTMLButtonElement>) {
-    const rect = event.currentTarget.getBoundingClientRect()
-    void window.app.popupAppMenu(label, rect.left, rect.bottom)
-  }
-
   return (
     <header className="title-bar">
       <div className="title-bar-leading">
-        <nav className="title-bar-menu" aria-label="应用菜单">
-          {MENU_ITEMS.map((label) => (
-            <button
-              key={label}
-              type="button"
-              className="title-bar-menu-item"
-              onClick={(event) => handleMenuClick(label, event)}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
+        <span className="title-bar-brand">AI文章写作助手</span>
       </div>
 
       <div

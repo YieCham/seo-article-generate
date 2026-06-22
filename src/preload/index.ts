@@ -31,11 +31,19 @@ export interface GenerateProgressEvent {
   sources?: ResearchSourcePreview[]
 }
 
+export interface ReviseArticleSelection {
+  start: number
+  end: number
+  text: string
+}
+
 export interface ReviseArticleRequest {
   article: string
   instruction: string
   outputLanguage?: string
   pipeline?: 'create' | 'optimize'
+  topic?: string
+  selection?: ReviseArticleSelection
 }
 
 export interface GenerateArticleResult {
@@ -153,25 +161,6 @@ export interface TokenUsageLogResponse {
   summary: TokenUsageSummary
 }
 
-export type SectionEditMode = 'rewrite' | 'insert'
-
-export interface RewriteArticleSectionRequest {
-  fullArticle: string
-  selectedText: string
-  selectionStart: number
-  selectionEnd: number
-  instruction: string
-  mode: SectionEditMode
-  topic?: string
-  outputLanguage?: string
-}
-
-export interface RewriteArticleSectionResult {
-  ok: boolean
-  message?: string
-  updatedArticle?: string
-}
-
 export interface ChatStoreData {
   activeSessionId: string
   sessions: Array<{
@@ -197,9 +186,6 @@ const api = {
   cancelArticle: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('article:cancel'),
   reviseArticle: (request: ReviseArticleRequest): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:revise', request),
-  rewriteArticleSection: (
-    request: RewriteArticleSectionRequest
-  ): Promise<RewriteArticleSectionResult> => ipcRenderer.invoke('article:rewriteSection', request),
   onProgress: (callback: (event: GenerateProgressEvent) => void): (() => void) => {
     const listener = (_: Electron.IpcRendererEvent, event: GenerateProgressEvent): void => {
       callback(event)

@@ -1,4 +1,5 @@
 import { config as loadEnv } from 'dotenv'
+import { existsSync } from 'fs'
 import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 import { registerArticleIpc } from './ipc/article'
@@ -13,7 +14,18 @@ if (!app.isPackaged) {
 const isDev = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
 
+function resolveAppIcon(): string | undefined {
+  const candidates = [
+    join(process.resourcesPath, 'icon.png'),
+    join(__dirname, '../../icons/icon.png')
+  ]
+
+  return candidates.find((candidate) => existsSync(candidate))
+}
+
 function createWindow(): void {
+  const icon = resolveAppIcon()
+
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 780,
@@ -22,6 +34,7 @@ function createWindow(): void {
     show: false,
     frame: false,
     backgroundColor: '#f3f3f4',
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,

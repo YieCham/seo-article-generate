@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -8,6 +8,7 @@ interface MarkdownContentProps {
   sourceMapping?: boolean
   editableSelection?: boolean
   className?: string
+  bodyRef?: Ref<HTMLDivElement>
 }
 
 type MarkdownNode = {
@@ -134,7 +135,8 @@ export default function MarkdownContent({
   streaming,
   sourceMapping = false,
   editableSelection = false,
-  className
+  className,
+  bodyRef
 }: MarkdownContentProps) {
   if (!content && streaming) {
     return (
@@ -157,7 +159,7 @@ export default function MarkdownContent({
     .join(' ')
 
   return (
-    <div className={bodyClass}>
+    <div ref={bodyRef} className={bodyClass}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={mergeMarkdownComponents(sourceMapping ? sourceMappingComponents : undefined)}

@@ -1,17 +1,86 @@
-import { locateTextInMarkdown } from './markdownSelection'
+import {
+  locateTextInMarkdown,
+  markdownSliceMatchesSelection
+} from './markdownSelection'
 
-function findMappedElement(node: Node | null, root: HTMLElement): HTMLElement | null {
+function findMappedElements(node: Node | null, root: HTMLElement): HTMLElement[] {
+  const results: HTMLElement[] = []
   let current: Node | null = node
   while (current && current !== root) {
     if (current instanceof HTMLElement && current.dataset.mdStart != null) {
-      return current
+      results.push(current)
     }
     current = current.parentNode
   }
+  return results
+}
+
+function pickBestMappedElement(candidates: HTMLElement[]): HTMLElement | null {
+  if (candidates.length === 0) return null
+
+  const textSpan = candidates.find((element) => element.classList.contains('md-source-span'))
+  if (textSpan) return textSpan
+
+  const inlineCode = candidates.find((element) => element.tagName === 'CODE')
+  if (inlineCode) return inlineCode
+
+  return candidates.reduce((best, element) => {
+    const bestLen = Number(best.dataset.mdEnd) - Number(best.dataset.mdStart)
+    const len = Number(element.dataset.mdEnd) - Number(element.dataset.mdStart)
+    if (!Number.isFinite(len) || len <= 0) return best
+    if (!Number.isFinite(bestLen) || bestLen <= 0) return element
+    return len < bestLen ? element : best
+  })
+}
+
+function findMappedElement(node: Node | null, root: HTMLElement): HTMLElement | null {
+  return pickBestMappedElement(findMappedElements(node, root))
+}
+
+function getEndTextNode(element: Element): Text | null {
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+  let last: Text | null = null
+  let current = walker.nextNode()
+  while (current) {
+    last = current as Text
+    current = walker.nextNode()
+  }
+  return last
+}
+
+/** Normalize Range boundary to a concrete text node + offset (handles Element containers). */
+function resolveTextBoundary(node: Node, offset: number): { node: Text; offset: number } | null {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node as Text
+    return { node: text, offset: Math.max(0, Math.min(offset, text.length)) }
+  }
+
+  if (!(node instanceof Element)) return null
+
+  if (node.childNodes.length === 0) return null
+
+  if (offset >= node.childNodes.length) {
+    const last = getEndTextNode(node)
+    return last ? { node: last, offset: last.length } : null
+  }
+
+  const child = node.childNodes[offset]
+  if (!child) return null
+
+  if (child.nodeType === Node.TEXT_NODE) {
+    return { node: child as Text, offset: 0 }
+  }
+
+  if (child instanceof Element) {
+    const walker = document.createTreeWalker(child, NodeFilter.SHOW_TEXT)
+    const first = walker.nextNode() as Text | null
+    if (first) return { node: first, offset: 0 }
+  }
+
   return null
 }
 
-function charOffsetWithinElement(element: HTMLElement, targetNode: Node, offsetInNode: number): number {
+function charOffsetWithinElement(element: HTMLElement, targetNode: Node, offsetInNode: number): number | null {
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
   let charCount = 0
   let textNode = walker.nextNode()
@@ -24,7 +93,7 @@ function charOffsetWithinElement(element: HTMLElement, targetNode: Node, offsetI
     textNode = walker.nextNode()
   }
 
-  return charCount
+  return null
 }
 
 export function getMarkdownOffsetFromDomPoint(
@@ -32,7 +101,10 @@ export function getMarkdownOffsetFromDomPoint(
   node: Node,
   offsetInNode: number
 ): number | null {
-  const mapped = findMappedElement(node, root)
+  const resolved = resolveTextBoundary(node, offsetInNode)
+  if (!resolved) return null
+
+  const mapped = findMappedElement(resolved.node, root)
   if (!mapped) return null
 
   const mdStart = Number(mapped.dataset.mdStart)
@@ -41,7 +113,9 @@ export function getMarkdownOffsetFromDomPoint(
     return null
   }
 
-  const charIndex = charOffsetWithinElement(mapped, node, offsetInNode)
+  const charIndex = charOffsetWithinElement(mapped, resolved.node, resolved.offset)
+  if (charIndex == null) return null
+
   const renderedLength = mapped.textContent?.length ?? 0
   const sourceLength = mdEnd - mdStart
 
@@ -107,7 +181,8 @@ function clipRangeToRoot(range: Range, root: HTMLElement): Range | null {
 function rangeToMarkdownSelection(
   root: HTMLElement,
   markdown: string,
-  range: Range
+  range: Range,
+  selectedText: string
 ): { start: number; end: number; text: string } | null {
   const start = getMarkdownOffsetFromDomPoint(root, range.startContainer, range.startOffset)
   const end = getMarkdownOffsetFromDomPoint(root, range.endContainer, range.endOffset)
@@ -115,10 +190,22 @@ function rangeToMarkdownSelection(
 
   const selectionStart = Math.min(start, end)
   const selectionEnd = Math.max(start, end)
-  const text = markdown.slice(selectionStart, selectionEnd)
-  if (!text.trim()) return null
+  const slice = markdown.slice(selectionStart, selectionEnd)
+  if (!slice.trim()) return null
 
-  return { start: selectionStart, end: selectionEnd, text }
+  if (markdownSliceMatchesSelection(slice, selectedText)) {
+    return { start: selectionStart, end: selectionEnd, text: slice }
+  }
+
+  const anchor = Math.round((selectionStart + selectionEnd) / 2)
+  const located = locateTextInMarkdown(markdown, selectedText, anchor)
+  if (!located) return null
+
+  return {
+    start: located.start,
+    end: located.end,
+    text: markdown.slice(located.start, located.end)
+  }
 }
 
 export function getMarkdownRangeFromDomSelection(
@@ -128,28 +215,28 @@ export function getMarkdownRangeFromDomSelection(
   const selection = window.getSelection()
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null
 
-  const anchorNode = selection.anchorNode
-  const focusNode = selection.focusNode
-  if (!anchorNode || !focusNode) return null
+  const selectedText = selection.toString()
+  if (!selectedText.trim()) return null
 
   const range = selection.getRangeAt(0)
   if (!rangeIntersectsRoot(range, root)) return null
 
-  const selectedText = selection.toString()
-  if (!selectedText.trim()) return null
+  const anchorNode = selection.anchorNode
+  const focusNode = selection.focusNode
 
-  if (root.contains(anchorNode) && root.contains(focusNode)) {
-    const mapped = rangeToMarkdownSelection(root, markdown, range)
+  if (anchorNode && focusNode && root.contains(anchorNode) && root.contains(focusNode)) {
+    const mapped = rangeToMarkdownSelection(root, markdown, range, selectedText)
     if (mapped) return mapped
   }
 
   const clipped = clipRangeToRoot(range, root)
   if (clipped) {
-    const mapped = rangeToMarkdownSelection(root, markdown, clipped)
+    const mapped = rangeToMarkdownSelection(root, markdown, clipped, selectedText)
     if (mapped) return mapped
   }
 
-  const located = locateTextInMarkdown(markdown, selectedText)
+  const startGuess = getMarkdownOffsetFromDomPoint(root, range.startContainer, range.startOffset)
+  const located = locateTextInMarkdown(markdown, selectedText, startGuess ?? Math.floor(markdown.length / 2))
   if (!located) return null
 
   return {

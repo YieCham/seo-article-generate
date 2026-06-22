@@ -1,20 +1,18 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react'
-import type { ChatMessage } from './types'
+import { useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react'
+import type { ChatMessage, ReviseArticleSelection } from './types'
 import MarkdownContent from './MarkdownContent'
 import CollapsibleMarkdownCard from './CollapsibleMarkdownCard'
-import ArticleSectionEditor from './ArticleSectionEditor'
 import { formatPlanningMarkdown } from './planningContent'
+import { getMarkdownRangeFromDomSelection } from '../../utils/markdownSourceMap'
 import { IconCopy, IconMessage } from '../../components/Icons'
 
 interface ChatMessageItemProps {
   message: ChatMessage
   onCopy?: (content: string) => void
-  onContextMenu?: (event: MouseEvent) => void
-  sectionEditDisabled?: boolean
-  sectionEditTopic?: string
-  outputLanguage?: string
-  onSectionEditApply?: (messageId: string, content: string) => void
-  onSectionEditBusyChange?: (busy: boolean) => void
+  onContextMenu?: (event: ReactMouseEvent) => void
+  reviseSelectionEnabled?: boolean
+  reviseSelection?: ReviseArticleSelection | null
+  onReviseSelectionChange?: (selection: ReviseArticleSelection | null) => void
   onApplyRevision?: (assistantMessageId: string) => void
   onCancelRevision?: (assistantMessageId: string) => void
 }
@@ -23,23 +21,90 @@ export default function ChatMessageItem({
   message,
   onCopy,
   onContextMenu,
-  sectionEditDisabled,
-  sectionEditTopic,
-  outputLanguage,
-  onSectionEditApply,
-  onSectionEditBusyChange,
+  reviseSelectionEnabled = false,
+  reviseSelection = null,
+  onReviseSelectionChange,
   onApplyRevision,
   onCancelRevision
 }: ChatMessageItemProps) {
-  const articleRef = useRef<HTMLDivElement>(null)
-  const [sectionEditOpen, setSectionEditOpen] = useState(false)
-  const [editDraft, setEditDraft] = useState(message.content)
+  const markdownRef = useRef<HTMLDivElement>(null)
+  const lastSelectionRef = useRef<ReviseArticleSelection | null>(null)
+
+  const applyDomSelection = useCallback((): boolean => {
+    const root = markdownRef.current
+    if (!root || !onReviseSelectionChange) return false
+
+    const range = getMarkdownRangeFromDomSelection(root, message.content)
+    if (!range) return false
+
+    const next = { start: range.start, end: range.end, text: range.text }
+    lastSelectionRef.current = next
+    onReviseSelectionChange(next)
+    return true
+  }, [message.content, onReviseSelectionChange])
+
+  const restoreLastSelection = useCallback((): void => {
+    if (lastSelectionRef.current) {
+      onReviseSelectionChange?.(lastSelectionRef.current)
+    }
+  }, [onReviseSelectionChange])
 
   useEffect(() => {
-    if (!sectionEditOpen) {
-      setEditDraft(message.content)
+    if (!reviseSelectionEnabled) {
+      lastSelectionRef.current = null
+      onReviseSelectionChange?.(null)
+      return
     }
-  }, [message.content, sectionEditOpen])
+
+    const handleSelectionChange = (): void => {
+      applyDomSelection()
+    }
+
+    const handlePointerUp = (event: globalThis.MouseEvent): void => {
+      window.requestAnimationFrame(() => {
+        if (!markdownRef.current || !onReviseSelectionChange) return
+
+        if (applyDomSelection()) return
+
+        const target = event.target
+        const inArticle = target instanceof Node && markdownRef.current.contains(target)
+        const domSelection = window.getSelection()
+        const hasVisibleSelection =
+          Boolean(domSelection && !domSelection.isCollapsed && domSelection.toString().trim())
+
+        if (inArticle) {
+          if (hasVisibleSelection || lastSelectionRef.current) {
+            restoreLastSelection()
+            return
+          }
+
+          lastSelectionRef.current = null
+          onReviseSelectionChange(null)
+          return
+        }
+
+        restoreLastSelection()
+      })
+    }
+
+    document.addEventListener('selectionchange', handleSelectionChange)
+    document.addEventListener('mouseup', handlePointerUp)
+
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange)
+      document.removeEventListener('mouseup', handlePointerUp)
+      lastSelectionRef.current = null
+    }
+  }, [applyDomSelection, onReviseSelectionChange, restoreLastSelection, reviseSelectionEnabled])
+
+  useEffect(() => {
+    if (!reviseSelectionEnabled) return
+    if (reviseSelection === null) {
+      lastSelectionRef.current = null
+    } else {
+      lastSelectionRef.current = reviseSelection
+    }
+  }, [reviseSelection, reviseSelectionEnabled])
 
   if (message.role === 'status') {
     return (
@@ -88,9 +153,6 @@ export default function ChatMessageItem({
   const streaming = message.status === 'streaming'
   const revising = message.status === 'revising'
   const pendingApply = message.status === 'pendingApply'
-  const canSectionEdit =
-    !isUser && message.status === 'done' && Boolean(message.content.trim()) && Boolean(onSectionEditApply)
-  const displayContent = sectionEditOpen ? editDraft : message.content
   const showRevisionActions =
     isUser &&
     Boolean(message.content.startsWith('**修改说明**')) &&
@@ -143,22 +205,20 @@ export default function ChatMessageItem({
         <div
           className={[
             'assistant-card',
-            sectionEditOpen ? 'is-section-editing' : '',
+            reviseSelectionEnabled ? 'is-revise-selectable' : '',
             revising ? 'is-revising' : '',
             pendingApply ? 'is-pending-apply' : ''
           ]
             .filter(Boolean)
             .join(' ')}
         >
-          <div
-            ref={articleRef}
-            className={`section-editor-article${sectionEditOpen ? ' is-active' : ''}`}
-          >
+          <div className={`section-editor-article${reviseSelectionEnabled ? ' is-active' : ''}`}>
             <MarkdownContent
-              content={displayContent}
+              bodyRef={markdownRef}
+              content={message.content}
               streaming={streaming}
-              sourceMapping={sectionEditOpen}
-              editableSelection={sectionEditOpen}
+              sourceMapping={reviseSelectionEnabled}
+              editableSelection={reviseSelectionEnabled}
             />
           </div>
           {revising ? (
@@ -171,19 +231,6 @@ export default function ChatMessageItem({
             <div className="assistant-pending-badge" aria-live="polite">
               待确认修改
             </div>
-          ) : null}
-          {canSectionEdit ? (
-            <ArticleSectionEditor
-              content={message.content}
-              articleRef={articleRef}
-              topic={sectionEditTopic}
-              outputLanguage={outputLanguage}
-              disabled={sectionEditDisabled}
-              onOpenChange={setSectionEditOpen}
-              onDraftChange={setEditDraft}
-              onApply={(updatedContent) => onSectionEditApply?.(message.id, updatedContent)}
-              onBusyChange={onSectionEditBusyChange}
-            />
           ) : null}
         </div>
         {message.status === 'error' ? <p className="message-error">生成失败，请检查 AI 配置后重试。</p> : null}

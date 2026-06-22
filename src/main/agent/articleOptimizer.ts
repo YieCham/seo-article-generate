@@ -137,7 +137,7 @@ async function extractCompetitorGapInsights(
       {
         role: 'system',
         content: [
-          '你是 SEO/GEO 竞品分析专家。对比「待优化原页面」与「竞品高排名页面」，输出**可执行的增量更新清单**（写什么、删什么）。',
+          '你是 SEO/GEO 竞品分析专家。对比「待优化原页面」与「竞品高排名页面」，输出**可执行的内容评估清单**（保留增强什么、补充什么、删减什么）。',
           getUserContextPromptBlocks(userContext),
           skillsText ? `优化规范（Skills）：\n${skillsText}` : ''
         ]
@@ -152,13 +152,14 @@ async function extractCompetitorGapInsights(
           userContext.briefForPrompt,
           '',
           '请输出 Markdown 竞品缺口分析，包含：',
-          '### 建议增量吸纳（ADD）',
+          '### 建议保留并增强（KEEP + ENHANCE）',
+          '- 原文仍准确、可用、体现经验/专业性的段落（注明章节；可补充哪些竞品要点）',
+          '### 建议补充（ADD）',
           '- 竞品有、原文缺的高价值内容：具体观点/步骤/技巧/FAQ（每条注明**建议插入的原文章节**）',
-          '- 至少 3–8 条可执行要点，可直接写入对应 H2',
-          '### 原文仍优于竞品（KEEP）',
-          '- 应保留甚至强化的原文论点',
-          '### 原文可能过时（REVIEW for REMOVE/REPLACE）',
-          '- 原文中疑似过时、失效、与竞品/现状不符的步骤或方法（注明章节，建议删除或替换方向）',
+          '- 至少 3–8 条可执行要点，写入对应 H2',
+          '### 建议删减或替换（REMOVE / REPLACE）',
+          '- 原文中过时、失效、不可用、误导或与现状/E-E-A-T 不符的内容（注明章节；说明删或换的方向）',
+          '- 空洞堆砌、重复、低信任表述也应列入删减候选',
           '',
           `语言：${articleLang.label}`,
           '',
@@ -193,8 +194,8 @@ async function auditSourcePage(
       {
         role: 'system',
         content: [
-          '你是 SEO/GEO 内容诊断专家。分析现有页面并制定**保守结构 + 主动增量更新**方案，不要撰写终稿。',
-          '须明确：保留什么、吸纳什么竞品内容、删除/替换什么过时内容；禁止默认整节重写。',
+          '你是 SEO/GEO 内容诊断专家。分析现有页面并制定**内容评估 + 按需增删**方案，不要撰写终稿。',
+          '须明确：哪些优质内容保留并增强、哪些缺口应补充、哪些过时/不可用/不符合 E-E-A-T 的内容应删减或替换；禁止默认整节重写，也禁止为保篇幅而保留问题内容。',
           getUserContextPromptBlocks(userContext),
           skillsText ? `优化规范（Skills）：\n${skillsText}` : '',
           getEditorPromptBlocks()
@@ -211,12 +212,12 @@ async function auditSourcePage(
           '',
           '请输出 Markdown 诊断报告，包含：',
           '1. 页面现状摘要（主题、意图、语言）',
-          '2. 竞品对比：**原文遗漏**但对用户有价值、**应增量写入**的具体要点（按章节列出）',
-          '3. **过时/失效内容清单**：应删除或替换的步骤、工具、版本、方法（按章节列出，说明原因）',
-          '4. 结构与 SEO/GEO 问题（标题层级、关键词、缺失模块如 Quick Answer/FAQ 等）',
-          '5. **建议保留的原文**（仍准确有用的段落/句子，列出章节）',
+          '2. **优质内容清单**：仍准确、可用、符合 E-E-A-T 的段落/章节（应保留；可注明可增量补充的竞品要点）',
+          '3. **缺口清单**：原文遗漏但对用户有价值、**应补充**的具体要点（按章节列出）',
+          '4. **删减/替换清单**：过时、不可用、误导、堆砌或损害 E-E-A-T 的内容（按章节列出，说明原因与处理方式）',
+          '5. 结构与 SEO/GEO 问题（标题层级、关键词、缺失模块如 Quick Answer/FAQ 等）',
           '6. **建议局部改写**的句子（薄弱/难读/SEO 不足，具体到句）',
-          '7. **优化动作清单**（ADD / REMOVE / REPLACE / KEEP / **NEW H2**，按优先级）',
+          '7. **优化动作清单**（KEEP+ENHANCE / ADD / REMOVE / REPLACE / **NEW H2**，按优先级）',
           '8. 大纲骨架（H2 列表）：保留原文章节顺序；**诊断建议的新模块须用 `[新增 H2] 标题` 标出**并注明插入位置（before/after 某原文章节）',
           '9. **建议新增章节**（可选）：每条 `- [NEW H2] 标题 | insert before/after 「原文章节名」| 要点摘要`',
           '',
@@ -250,7 +251,7 @@ async function enrichAnchoredOutline(
       {
         role: 'system',
         content:
-          '你是内容优化编辑。在大纲各 ## 章节下补充编辑要点 bullet：**ADD / REMOVE / KEEP / 局部改写**；若诊断报告含 `[新增 H2]` / `[NEW H2]` 而大纲中缺失，**可插入该 ## 标题**到诊断指定位置（before/after 某原文章节）。'
+          '你是内容优化编辑。在大纲各 ## 章节下补充编辑要点 bullet：**KEEP+ENHANCE / ADD / REMOVE / REPLACE / 局部改写**；若诊断报告含 `[新增 H2]` / `[NEW H2]` 而大纲中缺失，**可插入该 ## 标题**到诊断指定位置（before/after 某原文章节）。'
       },
       {
         role: 'user',
@@ -289,7 +290,7 @@ async function optimizeArticleSinglePass(
       {
         role: 'system',
         content: [
-          '你是资深 SEO/GEO 编辑。在**原文上就地优化**：保留结构，**主动吸纳竞品要点、删改过时内容**。',
+          '你是资深 SEO/GEO 编辑。在**原文上就地优化**：先评估内容质量，**优质处保留并增量增强，问题处删减或替换**。',
           articleLang.lock,
           getUserContextPromptBlocks(userContext),
           skillsText ? `Skills：\n${skillsText}` : '',
@@ -307,10 +308,9 @@ async function optimizeArticleSinglePass(
           getOptimizeSinglePassHint(wordRangeLabel),
           '',
           '请输出**完整优化后 Markdown 文章**：',
-          '- 保留原文 H2/H3 顺序；保留仍然准确有用的原句',
-          '- **执行诊断 ADD**：写入竞品/缺口要点到对应章节',
-          '- **执行诊断 NEW H2**：新增诊断标记的 H2 章节并写入对应内容',
-          '- **执行诊断 REMOVE/REPLACE**：删除或替换过时失效方法与步骤',
+          '- 保留原文 H2/H3 顺序；**优质内容**保留有效原句并可增量补充竞品/诊断要点',
+          '- **执行诊断 ADD / NEW H2**：补充缺口、新增诊断标记的 H2 章节',
+          '- **执行诊断 REMOVE/REPLACE**：删减过时、不可用、误导或不符合 E-E-A-T 的内容；终稿变短是正常结果',
           '- 直接输出正文，不要写修改说明',
           '',
           '--- 诊断 ---',
@@ -383,7 +383,7 @@ async function draftOptimizedSections(
         {
           role: 'system',
           content: [
-            '你是 SEO/GEO 内容编辑。对本节做**保守结构 + 主动增量更新**：保留有效原句，吸纳竞品要点，删改过时内容。',
+            '你是 SEO/GEO 内容编辑。对本节做**内容评估 + 按需增删**：优质原句保留并增量补充，过时/不可用/低 E-E-A-T 内容删减或替换。',
             articleLang.lock,
             getUserContextPromptBlocks(userContext),
             skillsText ? `Skills：\n${skillsText}` : '',
@@ -414,7 +414,7 @@ async function draftOptimizedSections(
             '诊断摘要：',
             audit.slice(0, 2500),
             '',
-            '可补充的竞品缺口（须写入本节相关处）：',
+            '可补充的竞品缺口（优质章节须写入本节相关处）：',
             competitorInsights.slice(0, 2000),
             '',
             `输出优化后的「${section.title}」正文。`,
@@ -457,7 +457,7 @@ async function polishOptimizedArticle(
   emit: (event: GenerateProgressEvent) => void,
   onChunk: (text: string) => void
 ): Promise<string> {
-  emit({ type: 'status', step: 'polish', message: '⑨ 终稿校对（检查增量更新与过时删减）…' })
+  emit({ type: 'status', step: 'polish', message: '⑨ 终稿校对（复核增删与 E-E-A-T）…' })
   emit({ type: 'reset' })
 
   let polished = ''
@@ -469,7 +469,7 @@ async function polishOptimizedArticle(
       {
         role: 'system',
         content: [
-          '你是校对编辑。终稿校对并**确认增量更新已落实**（竞品吸纳、过时删减），不是整篇重写。',
+          '你是校对编辑。终稿校对并**确认内容评估结果已落实**（优质处已增强、问题处已删减/替换），不是整篇重写。',
           articleLang.lock,
           getUserContextPromptBlocks(userContext),
           skillsText ? `Skills：\n${skillsText}` : '',
@@ -490,10 +490,10 @@ async function polishOptimizedArticle(
           '--- 原页面（结构与核心信息勿偏离）---',
           sourceMarkdown.slice(0, 6000),
           '',
-          '--- 诊断摘要（ADD/REMOVE 须已落实）---',
+          '--- 诊断摘要（KEEP+ENHANCE / ADD / REMOVE 须已落实）---',
           audit.slice(0, 3500),
           '',
-          '--- 竞品增量要点 ---',
+          '--- 竞品补充要点 ---',
           competitorInsights.slice(0, 2500),
           '',
           '--- 优化稿 ---',
@@ -720,8 +720,8 @@ export async function optimizeArticle(
       type: 'status',
       step: 'draft',
       message: useSinglePass
-        ? `⑧ 就地优化全文（${articleLang.label} · 增量更新）…`
-        : `⑧ 按章节优化（${articleLang.label} · 增量吸纳 + 过时删减）…`
+        ? `⑧ 就地优化全文（${articleLang.label} · 内容评估 + 按需增删）…`
+        : `⑧ 按章节优化（${articleLang.label} · 保留增强 / 删减替换）…`
     })
 
     let draft: string

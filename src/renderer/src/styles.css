@@ -673,40 +673,16 @@ input[type='range'] {
 .title-bar-leading {
   display: flex;
   align-items: center;
-  padding-left: 10px;
+  padding-left: 12px;
   -webkit-app-region: drag;
 }
 
-.title-bar-menu {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-  -webkit-app-region: no-drag;
-}
-
-.title-bar-menu-item {
-  padding: 0 8px;
-  height: 24px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-secondary);
+.title-bar-brand {
   font-size: 0.75rem;
-  font-weight: 450;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
   line-height: 1;
-  box-shadow: none;
-  cursor: default;
-}
-
-.title-bar-menu-item:hover {
-  background: rgba(12, 16, 32, 0.06);
-  color: var(--text-primary);
-  filter: none;
-  box-shadow: none;
-}
-
-.title-bar-menu-item:active:not(:disabled) {
-  transform: none;
 }
 
 .title-bar-drag {
@@ -2340,7 +2316,7 @@ input[type='range'] {
 
 .composer-bar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 6px;
   padding: 6px 10px;
   border-radius: 12px;
@@ -2397,9 +2373,9 @@ input[type='range'] {
   background: transparent;
   resize: none;
   overflow-y: auto;
-  min-height: 20px;
+  min-height: 26px;
   max-height: 140px;
-  line-height: 20px;
+  line-height: 26px;
   font-size: 13px;
   box-sizing: border-box;
   field-sizing: content;
@@ -2468,9 +2444,49 @@ input[type='range'] {
   padding-top: 6px;
 }
 
-.composer-panel.is-follow-up .composer-bar {
+.composer-selection-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 12px 4px;
+  padding: 6px 8px 6px 10px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.composer-selection-hint-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.composer-selection-clear {
+  flex-shrink: 0;
+  display: inline-flex;
   align-items: center;
-  padding: 6px 10px;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: -1px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.composer-selection-clear:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-secondary);
+}
+
+.composer-selection-clear:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .write-statusbar {

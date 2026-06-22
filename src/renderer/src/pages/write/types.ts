@@ -1,5 +1,11 @@
 import type { WriteMode } from '../../constants/writeMode'
 
+export interface ReviseArticleSelection {
+  start: number
+  end: number
+  text: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'status' | 'research' | 'planning'

@@ -51,6 +51,15 @@ export function formatOptimizeUserMessageContent(sourceUrl: string, extraInstruc
   return `${header}\n\n**补充要求**\n${extraInstructions.trim()}`
 }
 
-export function formatReviseUserMessageContent(instruction: string): string {
-  return `**修改说明**\n${instruction.trim()}`
+export function formatReviseUserMessageContent(
+  instruction: string,
+  selectionPreview?: string
+): string {
+  const trimmed = instruction.trim()
+  if (selectionPreview?.trim()) {
+    const preview =
+      selectionPreview.length > 120 ? `${selectionPreview.slice(0, 120).trim()}…` : selectionPreview.trim()
+    return `**修改说明**（选中片段：「${preview}」）\n${trimmed}`
+  }
+  return `**修改说明**\n${trimmed}`
 }

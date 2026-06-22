@@ -2,7 +2,6 @@ import { ipcMain } from 'electron'
 import { generateArticle } from '../agent/articleAgent'
 import { optimizeArticle } from '../agent/articleOptimizer'
 import { reviseArticle } from '../agent/articleReviser'
-import { rewriteArticleSection } from '../agent/articleSectionEditor'
 import {
   beginArticleRun,
   cancelArticleRun,
@@ -43,7 +42,4 @@ export function registerArticleIpc(): void {
     }
   })
 
-  ipcMain.handle('article:rewriteSection', async (_event, options) => {
-    return rewriteArticleSection(options)
-  })
 }

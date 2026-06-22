@@ -8,7 +8,7 @@ interface TokenLogPanelProps {
 const PIPELINE_LABELS: Record<string, string> = {
   create: '文章创作',
   optimize: '文章优化',
-  sectionEdit: '部分重写',
+  sectionEdit: '局部修订',
   test: '连接测试',
   other: '其他'
 }
@@ -78,7 +78,7 @@ export default function TokenLogPanel({ onStatus }: TokenLogPanelProps) {
     <section className="panel token-log-panel">
       <h2 className="section-title">Token 日志</h2>
       <p className="section-desc">
-        记录每次文章创作、优化与部分重写过程中各 Pipeline 步骤的 LLM Token 用量（优先使用 API 返回的
+        记录每次文章创作、优化与修订过程中各 Pipeline 步骤的 LLM Token 用量（优先使用 API 返回的
         usage；流式或未返回时按字符估算，标记为「估算」）。
       </p>
 
@@ -115,7 +115,7 @@ export default function TokenLogPanel({ onStatus }: TokenLogPanelProps) {
             <option value="all">全部</option>
             <option value="create">文章创作</option>
             <option value="optimize">文章优化</option>
-            <option value="sectionEdit">部分重写</option>
+            <option value="sectionEdit">局部修订</option>
           </select>
         </label>
         <div className="actions">

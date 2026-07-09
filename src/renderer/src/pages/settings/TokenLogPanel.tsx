@@ -5,6 +5,8 @@ interface TokenLogPanelProps {
   onStatus?: (message: string) => void
 }
 
+const PAGE_SIZE = 20
+
 const PIPELINE_LABELS: Record<string, string> = {
   create: '文章创作',
   optimize: '文章优化',
@@ -40,6 +42,7 @@ export default function TokenLogPanel({ onStatus }: TokenLogPanelProps) {
   const [summary, setSummary] = useState<TokenUsageSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [pipelineFilter, setPipelineFilter] = useState<string>('all')
+  const [currentPage, setCurrentPage] = useState(1)
   const [clearing, setClearing] = useState(false)
 
   const loadLog = useCallback(async () => {
@@ -62,12 +65,29 @@ export default function TokenLogPanel({ onStatus }: TokenLogPanelProps) {
       ? records
       : records.filter((record) => record.pipeline === pipelineFilter)
 
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / PAGE_SIZE))
+  const safePage = Math.min(currentPage, totalPages)
+  const pageStart = filteredRecords.length === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
+  const pageEnd = Math.min(safePage * PAGE_SIZE, filteredRecords.length)
+  const pagedRecords = filteredRecords.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [pipelineFilter])
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages)
+    }
+  }, [currentPage, totalPages])
+
   async function handleClear(): Promise<void> {
     if (!window.confirm('确定清空全部 Token 日志？此操作不可恢复。')) return
     setClearing(true)
     try {
       await window.app.clearTokenUsageLog()
       await loadLog()
+      setCurrentPage(1)
       onStatus?.('Token 日志已清空')
     } finally {
       setClearing(false)
@@ -138,41 +158,69 @@ export default function TokenLogPanel({ onStatus }: TokenLogPanelProps) {
       ) : filteredRecords.length === 0 ? (
         <p className="field-hint">暂无 Token 记录。完成一次创作或优化后在此查看。</p>
       ) : (
-        <div className="token-log-table-wrap">
-          <table className="token-log-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>Pipeline</th>
-                <th>步骤</th>
-                <th>模型</th>
-                <th>输入</th>
-                <th>输出</th>
-                <th>合计</th>
-                <th>主题</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRecords.map((record) => (
-                <tr key={record.id}>
-                  <td>{formatTime(record.timestamp)}</td>
-                  <td>{PIPELINE_LABELS[record.pipeline] ?? record.pipeline}</td>
-                  <td title={record.label}>
-                    {record.label || record.step}
-                    {record.estimated ? <span className="token-log-estimated">估算</span> : null}
-                  </td>
-                  <td title={record.model}>{truncate(record.model, 28)}</td>
-                  <td>{formatTokens(record.promptTokens)}</td>
-                  <td>{formatTokens(record.completionTokens)}</td>
-                  <td>
-                    <strong>{formatTokens(record.totalTokens)}</strong>
-                  </td>
-                  <td title={record.topic}>{truncate(record.topic, 36)}</td>
+        <>
+          <div className="token-log-table-wrap">
+            <table className="token-log-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>Pipeline</th>
+                  <th>步骤</th>
+                  <th>模型</th>
+                  <th>输入</th>
+                  <th>输出</th>
+                  <th>合计</th>
+                  <th>主题</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pagedRecords.map((record) => (
+                  <tr key={record.id}>
+                    <td>{formatTime(record.timestamp)}</td>
+                    <td>{PIPELINE_LABELS[record.pipeline] ?? record.pipeline}</td>
+                    <td title={record.label}>
+                      {record.label || record.step}
+                      {record.estimated ? <span className="token-log-estimated">估算</span> : null}
+                    </td>
+                    <td title={record.model}>{truncate(record.model, 28)}</td>
+                    <td>{formatTokens(record.promptTokens)}</td>
+                    <td>{formatTokens(record.completionTokens)}</td>
+                    <td>
+                      <strong>{formatTokens(record.totalTokens)}</strong>
+                    </td>
+                    <td title={record.topic}>{truncate(record.topic, 36)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {filteredRecords.length > PAGE_SIZE ? (
+            <div className="token-log-pagination">
+              <span className="token-log-pagination-info">
+                第 {pageStart}–{pageEnd} 条，共 {filteredRecords.length} 条 · 第 {safePage} /{' '}
+                {totalPages} 页
+              </span>
+              <div className="token-log-pagination-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={safePage <= 1}
+                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                >
+                  上一页
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={safePage >= totalPages}
+                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </>
       )}
     </section>
   )

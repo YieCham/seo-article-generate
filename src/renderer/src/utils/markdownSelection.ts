@@ -30,7 +30,44 @@ function collapseWhitespace(value: string): string {
 }
 
 function stripInlineMarkdown(value: string): string {
-  return value.replace(/\*\*/g, '').replace(/__/g, '').replace(/`/g, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+  return value
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
+    .replace(/`/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Match selected text in markdown allowing flexible whitespace / paragraph breaks. */
+function locateFlexibleNear(
+  markdown: string,
+  selectedText: string,
+  anchor: number
+): { start: number; end: number } | null {
+  const trimmed = selectedText.trim()
+  if (trimmed.length < 2) return null
+
+  const tokens = trimmed.split(/\s+/).filter(Boolean)
+  if (tokens.length < 2) return null
+
+  const searchRadius = Math.max(800, trimmed.length * 6)
+  const windowStart = Math.max(0, anchor - searchRadius)
+  const windowEnd = Math.min(markdown.length, anchor + searchRadius + trimmed.length)
+  const window = markdown.slice(windowStart, windowEnd)
+
+  const head = tokens.slice(0, Math.min(6, tokens.length)).map(escapeRegExp).join('\\s+')
+  const tail = tokens.slice(-Math.min(4, tokens.length)).map(escapeRegExp).join('\\s+')
+  const pattern = new RegExp(`${head}[\\s\\S]{0,${Math.max(trimmed.length * 2, 200)}}?${tail}`, 'i')
+  const match = pattern.exec(window)
+  if (!match) return null
+
+  return {
+    start: windowStart + match.index,
+    end: windowStart + match.index + match[0].length
+  }
 }
 
 export function locateTextInMarkdown(
@@ -54,7 +91,7 @@ export function locateTextInMarkdown(
 
   const searchRadius = Math.max(400, normalizedNeedle.length * 8)
   const windowStart = Math.max(0, anchor - searchRadius)
-  const windowEnd = Math.min(markdown.length, anchor + searchRadius)
+  const windowEnd = Math.min(markdown.length, anchor + searchRadius + normalizedNeedle.length)
   const window = markdown.slice(windowStart, windowEnd)
 
   const directInWindow = pickClosestOccurrence(window, selectedText, anchor - windowStart)
@@ -73,31 +110,37 @@ export function locateTextInMarkdown(
     }
   }
 
-  if (normalizedNeedle.length < 2) return null
+  const flexible = locateFlexibleNear(markdown, selectedText, anchor)
+  if (flexible) return flexible
 
-  const normalizedWindow = collapseWhitespace(window)
-  const relative = normalizedWindow.indexOf(normalizedNeedle)
-  if (relative >= 0 && normalizedNeedle.length >= 2) {
-    const roughStart = windowStart + Math.max(0, window.indexOf(normalizedNeedle.slice(0, Math.min(12, normalizedNeedle.length))))
-    const roughEnd = Math.min(markdown.length, roughStart + selectedText.length)
-    if (roughStart >= 0 && roughEnd > roughStart) {
-      return { start: roughStart, end: roughEnd }
+  if (normalizedNeedle.length >= 2) {
+    const normalizedWindow = collapseWhitespace(window)
+    const relative = normalizedWindow.indexOf(normalizedNeedle)
+    if (relative >= 0) {
+      const head = normalizedNeedle.slice(0, Math.min(24, normalizedNeedle.length))
+      const roughStart = window.indexOf(head)
+      if (roughStart >= 0) {
+        const start = windowStart + roughStart
+        const end = Math.min(markdown.length, start + selectedText.length + 32)
+        return { start, end }
+      }
     }
   }
 
   if (normalizedNeedle.length < 8) return null
 
-  const chunkSize = Math.min(normalizedNeedle.length + 80, 600)
-  for (let start = 0; start < markdown.length; start += 1) {
+  const chunkSize = Math.min(normalizedNeedle.length + 120, 800)
+  for (let start = Math.max(0, anchor - 2000); start < markdown.length; start += 1) {
     const slice = markdown.slice(start, start + chunkSize)
-    if (collapseWhitespace(slice).includes(normalizedNeedle)) {
-      const relativeNeedle = slice.indexOf(normalizedNeedle.slice(0, Math.min(24, normalizedNeedle.length)))
-      if (relativeNeedle >= 0) {
-        const hitStart = start + relativeNeedle
-        return {
-          start: hitStart,
-          end: Math.min(markdown.length, hitStart + selectedText.length)
-        }
+    if (!collapseWhitespace(slice).includes(normalizedNeedle.slice(0, Math.min(32, normalizedNeedle.length)))) {
+      continue
+    }
+    const relativeNeedle = slice.indexOf(normalizedNeedle.slice(0, Math.min(24, normalizedNeedle.length)))
+    if (relativeNeedle >= 0) {
+      const hitStart = start + relativeNeedle
+      return {
+        start: hitStart,
+        end: Math.min(markdown.length, hitStart + selectedText.length + 48)
       }
     }
   }
@@ -112,8 +155,16 @@ export function markdownSliceMatchesSelection(markdownSlice: string, selectedTex
   const normalizedSelection = collapseWhitespace(selectedText)
   if (!normalizedSelection) return false
   if (normalizedSlice === normalizedSelection) return true
-  if (normalizedSlice.includes(normalizedSelection)) return true
-  if (normalizedSelection.includes(normalizedSlice) && normalizedSlice.length >= normalizedSelection.length - 2) {
+
+  const sliceLen = normalizedSlice.length
+  const selectionLen = normalizedSelection.length
+  if (sliceLen === 0 || selectionLen === 0) return false
+
+  // Reject partial slices (e.g. "B" matching inside a long selection).
+  const ratio = sliceLen / selectionLen
+  if (ratio < 0.85 || ratio > 1.4) return false
+
+  if (normalizedSlice.includes(normalizedSelection) || normalizedSelection.includes(normalizedSlice)) {
     return true
   }
 

@@ -1,4 +1,5 @@
-import { countArticleWords as countWords, MIN_ARTICLE_WORDS, MAX_ARTICLE_WORDS } from './articleLength'
+import { countArticleWords as countWords } from './articleLength'
+import { filterJunkSourceSections } from './optimizeSectionSanitize'
 import { parseOutlineSections } from './llmClient'
 
 export type OutlineSection = { title: string; body: string }
@@ -64,7 +65,7 @@ export const EEAT_OPTIMIZE_GUIDANCE = `
 - **Add** competitor/user-intent gaps that increase helpfulness and Trust — especially where existing sections are good but incomplete.
 - **Remove** outdated, broken, misleading, or thin SEO filler — outdated or untrustworthy help **lowers** E-E-A-T.
 - **Rewrite** only unclear or weak sentences — not whole sections by default.
-- Final length may go **up or down** depending on adds vs. deletions; quality beats word count.
+- Final length should stay within **±20% of the source word count** when quality allows; quality beats word count.
 - Language must stay 100% identical to the source page.
 `.trim()
 
@@ -167,7 +168,7 @@ function resolveInsertIndex(
     if (idx >= 0) return idx + 1
   }
 
-  const faqIdx = sections.findIndex((item) => /^faq$/i.test(item.title.trim()))
+  const faqIdx = sections.findIndex((item) => isFaqSection(item.title))
   if (faqIdx >= 0) return faqIdx
 
   const verdictIdx = sections.findIndex((item) => /^verdict$/i.test(item.title.trim()))
@@ -209,41 +210,119 @@ export function getOptimizePromptBlocks(): string {
   return `${SOURCE_PRESERVATION_GUIDANCE}\n\n${INCREMENTAL_UPDATE_GUIDANCE}\n\n${EEAT_OPTIMIZE_GUIDANCE}`
 }
 
+export interface OptimizeWordRange {
+  min: number
+  max: number
+  label: string
+}
+
+export function getOptimizeLengthPromptBlock(wordRange: OptimizeWordRange): string {
+  return `
+【Article Length — optimize mode (±20% of source)】
+- The complete final article should stay within **${wordRange.min}–${wordRange.max} English words** ${wordRange.label}.
+- Length may be verified programmatically — **quality beats word count**; do not pad or keep stale text to hit a number.
+- **No per-paragraph word cap** — write naturally; only the full-article band above is the target.
+- If under ${wordRange.min}: add genuinely helpful missing points from diagnosis/competitors — never pad with filler.
+- If over ${wordRange.max}: cut redundancy and low-value sentences — removing outdated content is valid even when the article becomes shorter than the source.
+`.trim()
+}
+
+const OPTIMIZE_WORD_TOLERANCE = 0.2
+const MIN_LEAD_IN_WORDS = 10
+
+/** Programmatic word count in this band skips optimize length-adjust LLM step. */
+export const OPTIMIZE_LENGTH_SKIP_MIN = 1100
+export const OPTIMIZE_LENGTH_SKIP_MAX = 2500
+
+export function shouldSkipOptimizeLengthAdjust(wordCount: number): boolean {
+  return wordCount >= OPTIMIZE_LENGTH_SKIP_MIN && wordCount <= OPTIMIZE_LENGTH_SKIP_MAX
+}
+
+function hasIntroductionSection(sections: OutlineSection[]): boolean {
+  return sections.some((item) => /^introduction$/i.test(item.title.trim()))
+}
+
+function isQuickAnswerSection(title: string): boolean {
+  return /quick answer|key takeaways/i.test(title.trim())
+}
+
+function isFaqSection(title: string): boolean {
+  return /^faq$|frequently asked questions/i.test(title.trim())
+}
+
+function isConclusionSection(title: string): boolean {
+  return /^conclusion$/i.test(title.trim())
+}
+
+function hasFaqSection(sections: OutlineSection[]): boolean {
+  return sections.some((item) => isFaqSection(item.title))
+}
+
+function hasQuickAnswerSection(sections: OutlineSection[]): boolean {
+  return sections.some((item) => isQuickAnswerSection(item.title))
+}
+
+/** GEO module order: Quick Answer → Introduction → body → FAQ → Conclusion */
+export function normalizeOptimizeSectionOrder(sections: OutlineSection[]): OutlineSection[] {
+  const quickAnswer: OutlineSection[] = []
+  const introduction: OutlineSection[] = []
+  const faq: OutlineSection[] = []
+  const conclusion: OutlineSection[] = []
+  const body: OutlineSection[] = []
+
+  for (const section of sections) {
+    const title = section.title.trim()
+    if (isQuickAnswerSection(title)) quickAnswer.push(section)
+    else if (/^introduction$/i.test(title)) introduction.push(section)
+    else if (isFaqSection(title)) faq.push(section)
+    else if (/^conclusion$/i.test(title)) conclusion.push(section)
+    else body.push(section)
+  }
+
+  return [
+    ...quickAnswer.slice(0, 1),
+    ...introduction.slice(0, 1),
+    ...body,
+    ...faq.slice(0, 1),
+    ...conclusion.slice(0, 1)
+  ]
+}
+
+export const OPTIMIZE_MODULE_ORDER_GUIDANCE =
+  '模块顺序（硬性）：## Quick Answer / Key Takeaways → ## Introduction → 正文 Part（保持相对顺序）→ ## FAQ → ## Conclusion。'
+
+/** Text between H1 removal and the first ## heading — often the page intro. */
+function extractLeadInBeforeFirstH2(markdownWithoutH1: string): string {
+  const trimmed = markdownWithoutH1.trim()
+  if (!trimmed) return ''
+
+  const firstH2Index = trimmed.search(/^##\s+/m)
+  if (firstH2Index <= 0) return ''
+
+  return trimmed.slice(0, firstH2Index).trim()
+}
+
+function finalizeOptimizeWordRange(
+  min: number,
+  max: number,
+  suffix: string
+): OptimizeWordRange {
+  const lo = Math.max(1, Math.min(min, max))
+  const hi = Math.max(lo, Math.max(min, max))
+  return { min: lo, max: hi, label: `${lo}–${hi}${suffix}` }
+}
+
 export function getOptimizeWordRange(
   sourceWords: number,
-  hasCompetitorInsights = false
-): { min: number; max: number; label: string } {
-  if (sourceWords >= MIN_ARTICLE_WORDS && sourceWords <= MAX_ARTICLE_WORDS) {
-    const min = Math.floor(sourceWords * (hasCompetitorInsights ? 0.9 : 0.92))
-    const max = Math.min(
-      MAX_ARTICLE_WORDS,
-      Math.ceil(sourceWords * (hasCompetitorInsights ? 1.12 : 1.08))
-    )
-    return {
-      min,
-      max,
-      label: hasCompetitorInsights
-        ? `${min}–${max}（原文 ${sourceWords} 词；优质内容可增量补充，过时内容可删减，篇幅可增可减）`
-        : `${min}–${max}（贴近原文 ${sourceWords} 词；保留优质内容，删减过时/低质段落）`
-    }
-  }
-
-  if (sourceWords < MIN_ARTICLE_WORDS) {
-    const max = Math.min(MAX_ARTICLE_WORDS, Math.max(MIN_ARTICLE_WORDS, Math.ceil(sourceWords * 1.2)))
-    return {
-      min: sourceWords,
-      max,
-      label: `${sourceWords}–${max}（原文偏短，可补充缺失内容，禁止整篇重写）`
-    }
-  }
-
-  const min = Math.max(MIN_ARTICLE_WORDS, Math.floor(sourceWords * 0.88))
-  const max = Math.min(sourceWords, MAX_ARTICLE_WORDS)
-  return {
+  _hasCompetitorInsights = false
+): OptimizeWordRange {
+  const min = Math.floor(sourceWords * (1 - OPTIMIZE_WORD_TOLERANCE))
+  const max = Math.ceil(sourceWords * (1 + OPTIMIZE_WORD_TOLERANCE))
+  return finalizeOptimizeWordRange(
     min,
-    max: Math.max(min, max),
-    label: `${min}–${Math.max(min, max)}（原文偏长，优先精简冗余，保留结构与关键信息）`
-  }
+    max,
+    `（原文 ${sourceWords} 词，允许 ±${Math.round(OPTIMIZE_WORD_TOLERANCE * 100)}% 浮动；质量优先于字数）`
+  )
 }
 
 export function getSourceSectionEditHint(options: {
@@ -281,26 +360,33 @@ export function getSourceSectionEditHint(options: {
 export function getOptimizeSinglePassHint(wordRangeLabel: string): string {
   return [
     '【编辑模式：内容评估 + 按需增删】',
+    OPTIMIZE_MODULE_ORDER_GUIDANCE,
     '保留原文 **H2/H3 顺序与标题**（可微调措辞）；**诊断明确标记 [新增 H2] / [NEW H2] 的章节必须新增**并插入诊断指定位置。',
+    '**保留文首导语**：H1 下方、首个正文 Part 前的段落须保留为 ## Introduction 或等价开篇（不可整段删除）。',
     '**按内容质量执行**（见诊断与竞品分析）：',
     '- **优质内容**：保留有效原句；对优秀章节**增量吸纳**竞品/诊断要点',
     '- **缺失内容**：写入竞品缺口或诊断 ADD 项；新增 H2 写入完整新节',
     '- **问题内容**：**删减**过时、不可用、误导或不符合 E-E-A-T 的段落/步骤；必要时替换为当前方案',
     '- **局部润色**：仅改薄弱、难读、重复或 SEO 不足的句子',
-    '篇幅可因删减而变短、因补充而变长；禁止整篇重写或套用新文 Part 模板。',
+    '篇幅可在原文 ±20% 内浮动；禁止整篇重写或套用新文 Part 模板。',
     `词数参考：${wordRangeLabel}`
   ].join('\n')
 }
 
 export function getOptimizePolishHint(): string {
   return [
-    '【终稿校对 + 内容质量复核】',
-    '- 修正错别字、语法、明显 AI 套话、衔接问题',
-    '- **检查优质章节是否已增量吸纳**诊断/竞品要点；遗漏则补入对应章节',
-    '- **检查诊断建议的新增 H2 是否已出现**；若缺失则按诊断补写',
-    '- **检查过时/不可用/低 E-E-A-T 内容是否已删减或替换**；若仍残留，按诊断删改（允许终稿比原文更短）',
-    '- **禁止**无诊断依据地增删 H2；**允许**保留诊断批准的新 H2 及其顺序',
-    '- 对照「原页面」：骨架一致 + 诊断新增模块；终稿应更当前、更可信，而非单纯更长'
+    '【终稿校对】',
+    OPTIMIZE_MODULE_ORDER_GUIDANCE,
+    '- 修正错别字、语法、明显 AI 套话、段落衔接问题',
+    '- **检查 Introduction / FAQ / Conclusion 等模块是否齐全、顺序是否正确**',
+    '- **保留现有 H2/H3 与实质内容**；仅局部润色弱句，禁止整篇重写或大幅增删章节',
+    '- 禁止 Target audience、for US reader 等 brief 标签渗入正文'
+  ].join('\n')
+}
+
+export function getOptimizePolishSystemBlocks(): string {
+  return [
+    '前一阶段（分段优化）已落实内容评估与增删；本步仅做语言校对与结构完整性检查，勿重新展开内容策略。'
   ].join('\n')
 }
 
@@ -316,7 +402,24 @@ export function validateSourceMarkdown(markdown: string): void {
 
 export function parseSourceSections(markdown: string): OutlineSection[] {
   const withoutH1 = markdown.replace(/^#\s+.+\n+/m, '')
-  return parseOutlineSections(withoutH1.trim() || markdown)
+  const trimmed = withoutH1.trim() || markdown
+  const sections = filterJunkSourceSections(parseOutlineSections(trimmed))
+  const leadIn = extractLeadInBeforeFirstH2(trimmed)
+
+  if (leadIn && countWords(leadIn) >= MIN_LEAD_IN_WORDS) {
+    const introIndex = sections.findIndex((item) => /^introduction$/i.test(item.title.trim()))
+    if (introIndex >= 0) {
+      const intro = sections[introIndex]
+      sections[introIndex] = {
+        ...intro,
+        body: `${leadIn}\n\n${intro.body}`.trim()
+      }
+    } else {
+      sections.unshift({ title: 'Introduction', body: leadIn })
+    }
+  }
+
+  return sections
 }
 
 export function extractSourceH1(markdown: string, fallbackTitle: string): string {
@@ -341,7 +444,7 @@ export function findMatchingSourceSection(
 }
 
 export function isNewOptimizeSection(title: string, audit?: string): boolean {
-  if (/quick answer|key takeaways|^faq$|^conclusion$|introduction/i.test(title.trim())) {
+  if (/quick answer|key takeaways|^faq$|^conclusion$|^introduction$/i.test(title.trim())) {
     return true
   }
   if (audit && isAuditRecommendedNewSection(title, audit)) {
@@ -359,26 +462,36 @@ export function buildAnchoredOutline(
   const auditText = `${audit}\n${skillsText}`.toLowerCase()
   const needsQuickAnswer =
     /quick answer|key takeaways|缺少.*首屏|missing.*quick/i.test(auditText) &&
-    !sourceSections.some((item) => /quick answer|key takeaways/i.test(item.title))
+    !hasQuickAnswerSection(sourceSections)
   const needsFaq =
-    /faq|常见问题|missing.*faq/i.test(auditText) &&
-    !sourceSections.some((item) => /^faq$/i.test(item.title.trim()))
+    /faq|常见问题|missing.*faq/i.test(auditText) && !hasFaqSection(sourceSections)
+  const needsIntroduction =
+    !hasIntroductionSection(sourceSections) &&
+    /introduction|开篇|首段|缺少.*intro|missing.*intro|缺少.*引言/i.test(auditText)
 
   let sections = mergeAuditNewH2Sections(sourceSections, audit)
-  const lines: string[] = []
 
-  if (needsQuickAnswer && !sections.some((item) => /quick answer|key takeaways/i.test(item.title))) {
-    lines.push(
-      '## Quick Answer',
-      '- NEW (audit): short bullets from original themes; do not rewrite other sections',
-      ''
-    )
+  if (needsQuickAnswer) {
+    sections.push({ title: 'Quick Answer', body: '' })
   }
+  if (needsIntroduction && !hasIntroductionSection(sections)) {
+    sections.push({ title: 'Introduction', body: '' })
+  }
+  if (needsFaq) {
+    sections.push({ title: 'FAQ', body: '' })
+  }
+
+  sections = normalizeOptimizeSectionOrder(sections)
+
+  const lines: string[] = []
 
   for (const section of sections) {
     const isAuditNew = isAuditRecommendedNewSection(section.title, audit)
     const isBuiltinNew =
-      /quick answer|key takeaways|^faq$|^conclusion$/i.test(section.title.trim()) &&
+      (isQuickAnswerSection(section.title) ||
+        /^introduction$/i.test(section.title.trim()) ||
+        isFaqSection(section.title) ||
+        isConclusionSection(section.title)) &&
       !sourceSections.some(
         (item) => item.title.trim().toLowerCase() === section.title.trim().toLowerCase()
       )
@@ -400,10 +513,6 @@ export function buildAnchoredOutline(
       '- REMOVE/REPLACE: cut stale, broken, or EEAT-weak content; do not pad obsolete text',
       ''
     )
-  }
-
-  if (needsFaq && !sections.some((item) => /^faq$/i.test(item.title.trim()))) {
-    lines.push('## FAQ', '- NEW (audit only): 3+ Q&A grounded in original; no other section rewrites', '')
   }
 
   if (lines.length === 0) {

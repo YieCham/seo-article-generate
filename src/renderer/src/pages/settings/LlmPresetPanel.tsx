@@ -5,7 +5,6 @@ interface LlmPresetPanelProps {
   editingPresetId: string
   saving: boolean
   testing: boolean
-  onEditingPresetChange: (id: string) => void
   onConfigChange: (config: AppConfig) => void
   onSave: () => void
   onTest: () => void
@@ -27,7 +26,6 @@ export default function LlmPresetPanel({
   editingPresetId,
   saving,
   testing,
-  onEditingPresetChange,
   onConfigChange,
   onSave,
   onTest,
@@ -64,22 +62,6 @@ export default function LlmPresetPanel({
         <button type="button" className="secondary" onClick={onAddPreset}>
           新建预设
         </button>
-      </div>
-
-      <div className="llm-preset-list">
-        {config.llmPresets.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={`llm-preset-chip${item.id === preset.id ? ' is-active' : ''}${
-              item.id === config.activeLlmPresetId ? ' is-current' : ''
-            }`}
-            onClick={() => onEditingPresetChange(item.id)}
-          >
-            {item.name}
-            {item.id === config.activeLlmPresetId ? ' · 使用中' : ''}
-          </button>
-        ))}
       </div>
 
       <label htmlFor="presetName">预设名称</label>

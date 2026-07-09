@@ -5,11 +5,14 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:quiet": "wscript //B //nologo scripts/start-dev-hidden.vbs",
+    "shortcut:desktop": "node scripts/create-desktop-shortcut.mjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win"
+    "dist:win": "npm run build && electron-builder --win",
+    "open:win": "powershell -NoProfile -Command \"if (Test-Path 'dist/win-unpacked/AI文章创作Agent.exe') { Start-Process 'dist/win-unpacked/AI文章创作Agent.exe' } else { Write-Host '请先运行 npm run dist:win 完成打包'; exit 1 }\""
   },
   "dependencies": {
     "dotenv": "^16.5.0",

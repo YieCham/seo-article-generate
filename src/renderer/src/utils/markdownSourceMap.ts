@@ -184,12 +184,23 @@ function rangeToMarkdownSelection(
   range: Range,
   selectedText: string
 ): { start: number; end: number; text: string } | null {
-  const start = getMarkdownOffsetFromDomPoint(root, range.startContainer, range.startOffset)
-  const end = getMarkdownOffsetFromDomPoint(root, range.endContainer, range.endOffset)
-  if (start == null || end == null || start === end) return null
+  const startGuess = getMarkdownOffsetFromDomPoint(root, range.startContainer, range.startOffset)
+  const endGuess = getMarkdownOffsetFromDomPoint(root, range.endContainer, range.endOffset)
+  const anchor = startGuess ?? endGuess ?? Math.floor(markdown.length / 2)
 
-  const selectionStart = Math.min(start, end)
-  const selectionEnd = Math.max(start, end)
+  const located = locateTextInMarkdown(markdown, selectedText, anchor)
+  if (located) {
+    return {
+      start: located.start,
+      end: located.end,
+      text: markdown.slice(located.start, located.end)
+    }
+  }
+
+  if (startGuess == null || endGuess == null || startGuess === endGuess) return null
+
+  const selectionStart = Math.min(startGuess, endGuess)
+  const selectionEnd = Math.max(startGuess, endGuess)
   const slice = markdown.slice(selectionStart, selectionEnd)
   if (!slice.trim()) return null
 
@@ -197,21 +208,13 @@ function rangeToMarkdownSelection(
     return { start: selectionStart, end: selectionEnd, text: slice }
   }
 
-  const anchor = Math.round((selectionStart + selectionEnd) / 2)
-  const located = locateTextInMarkdown(markdown, selectedText, anchor)
-  if (!located) return null
-
-  return {
-    start: located.start,
-    end: located.end,
-    text: markdown.slice(located.start, located.end)
-  }
+  return null
 }
 
 export function getMarkdownRangeFromDomSelection(
   root: HTMLElement,
   markdown: string
-): { start: number; end: number; text: string } | null {
+): { start: number; end: number; text: string; displayText: string } | null {
   const selection = window.getSelection()
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null
 
@@ -224,25 +227,36 @@ export function getMarkdownRangeFromDomSelection(
   const anchorNode = selection.anchorNode
   const focusNode = selection.focusNode
 
+  let mapped: { start: number; end: number; text: string } | null = null
+
   if (anchorNode && focusNode && root.contains(anchorNode) && root.contains(focusNode)) {
-    const mapped = rangeToMarkdownSelection(root, markdown, range, selectedText)
-    if (mapped) return mapped
+    mapped = rangeToMarkdownSelection(root, markdown, range, selectedText)
   }
 
-  const clipped = clipRangeToRoot(range, root)
-  if (clipped) {
-    const mapped = rangeToMarkdownSelection(root, markdown, clipped, selectedText)
-    if (mapped) return mapped
+  if (!mapped) {
+    const clipped = clipRangeToRoot(range, root)
+    if (clipped) {
+      mapped = rangeToMarkdownSelection(root, markdown, clipped, selectedText)
+    }
   }
 
-  const startGuess = getMarkdownOffsetFromDomPoint(root, range.startContainer, range.startOffset)
-  const located = locateTextInMarkdown(markdown, selectedText, startGuess ?? Math.floor(markdown.length / 2))
-  if (!located) return null
+  if (!mapped) {
+    const startGuess = getMarkdownOffsetFromDomPoint(root, range.startContainer, range.startOffset)
+    const located = locateTextInMarkdown(markdown, selectedText, startGuess ?? Math.floor(markdown.length / 2))
+    if (located) {
+      mapped = {
+        start: located.start,
+        end: located.end,
+        text: markdown.slice(located.start, located.end)
+      }
+    }
+  }
+
+  if (!mapped) return null
 
   return {
-    start: located.start,
-    end: located.end,
-    text: markdown.slice(located.start, located.end)
+    ...mapped,
+    displayText: selectedText.trim()
   }
 }
 

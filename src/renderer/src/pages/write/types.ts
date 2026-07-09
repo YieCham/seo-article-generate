@@ -1,16 +1,19 @@
 import type { WriteMode } from '../../constants/writeMode'
+import type { PipelineCheckpoint } from '../../../../shared/pipelineCheckpoint'
 
 export interface ReviseArticleSelection {
   start: number
   end: number
   text: string
+  /** Visible text from the browser selection (for UI preview). */
+  displayText: string
 }
 
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
   content: string
-  status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error'
+  status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
   /** Snapshot before a pending AI revision (assistant only). */
   revisionBaseline?: string
   revisionUserMessageId?: string
@@ -22,9 +25,118 @@ export interface ChatSession {
   id: string
   title: string
   customTitle?: string
+  pinned?: boolean
+  pinnedAt?: number
+  /** Manual order within the same pin tier and write mode; lower appears higher. */
+  sortOrder?: number
   messages: ChatMessage[]
   writeMode: WriteMode
   updatedAt: number
+  pipelineCheckpoint?: PipelineCheckpoint
+}
+
+export type SessionListGroup = 'create' | 'optimize'
+
+export function sortSessions(items: ChatSession[]): ChatSession[] {
+  const indexMap = new Map(items.map((item, index) => [item.id, index]))
+  return [...items].sort((a, b) => {
+    const aPinned = a.pinned ? 1 : 0
+    const bPinned = b.pinned ? 1 : 0
+    if (aPinned !== bPinned) return bPinned - aPinned
+
+    const aOrder = typeof a.sortOrder === 'number' ? a.sortOrder : Number.MAX_SAFE_INTEGER
+    const bOrder = typeof b.sortOrder === 'number' ? b.sortOrder : Number.MAX_SAFE_INTEGER
+    if (aOrder !== bOrder) return aOrder - bOrder
+
+    return (indexMap.get(a.id) ?? 0) - (indexMap.get(b.id) ?? 0)
+  })
+}
+
+/** Assign sortOrder within each pin tier and list group from current array order. */
+export function normalizeAllSessionSortOrders(sessions: ChatSession[]): ChatSession[] {
+  const indexMap = new Map(sessions.map((session, index) => [session.id, index]))
+  const next = sessions.map((session) => ({ ...session }))
+
+  for (const group of ['create', 'optimize'] as SessionListGroup[]) {
+    for (const pinned of [false, true]) {
+      const bucket = next
+        .filter(
+          (session) =>
+            sessionMatchesListGroup(session, group) && Boolean(session.pinned) === pinned
+        )
+        .sort((a, b) => (indexMap.get(a.id) ?? 0) - (indexMap.get(b.id) ?? 0))
+
+      bucket.forEach((session, index) => {
+        const itemIndex = next.findIndex((item) => item.id === session.id)
+        if (itemIndex >= 0) next[itemIndex] = { ...next[itemIndex], sortOrder: index }
+      })
+    }
+  }
+
+  return next
+}
+
+export function insertSessionAtListTop(
+  sessions: ChatSession[],
+  session: ChatSession
+): ChatSession[] {
+  const group: SessionListGroup = session.writeMode === 'optimize' ? 'optimize' : 'create'
+  const pinned = Boolean(session.pinned)
+  const bumped = sessions.map((item) => {
+    if (!sessionMatchesListGroup(item, group) || Boolean(item.pinned) !== pinned) {
+      return item
+    }
+    const baseOrder = typeof item.sortOrder === 'number' ? item.sortOrder : 0
+    return { ...item, sortOrder: baseOrder + 1 }
+  })
+
+  return [...bumped, { ...session, sortOrder: 0 }]
+}
+
+function sessionMatchesListGroup(session: ChatSession, group: SessionListGroup): boolean {
+  return group === 'optimize' ? session.writeMode === 'optimize' : session.writeMode !== 'optimize'
+}
+
+export function canReorderSessionsTogether(a: ChatSession, b: ChatSession): boolean {
+  if (a.id === b.id) return false
+  if (sessionMatchesListGroup(a, 'optimize') !== sessionMatchesListGroup(b, 'optimize')) return false
+  return Boolean(a.pinned) === Boolean(b.pinned)
+}
+
+export function reorderSessions(
+  sessions: ChatSession[],
+  group: SessionListGroup,
+  draggedId: string,
+  targetId: string,
+  position: 'before' | 'after'
+): ChatSession[] {
+  const dragged = sessions.find((session) => session.id === draggedId)
+  const target = sessions.find((session) => session.id === targetId)
+  if (!dragged || !target || !canReorderSessionsTogether(dragged, target)) {
+    return sessions
+  }
+
+  const bucket = sessions.filter(
+    (session) =>
+      sessionMatchesListGroup(session, group) && Boolean(session.pinned) === Boolean(dragged.pinned)
+  )
+  const orderedIds = sortSessions(bucket).map((session) => session.id)
+  const fromIndex = orderedIds.indexOf(draggedId)
+  const targetIndex = orderedIds.indexOf(targetId)
+  if (fromIndex < 0 || targetIndex < 0) return sessions
+
+  const nextIds = orderedIds.filter((id) => id !== draggedId)
+  let insertIndex = position === 'before' ? targetIndex : targetIndex + 1
+  if (fromIndex < targetIndex) insertIndex -= 1
+  insertIndex = Math.max(0, Math.min(insertIndex, nextIds.length))
+  nextIds.splice(insertIndex, 0, draggedId)
+
+  const orderMap = new Map(nextIds.map((id, index) => [id, index]))
+  return sessions.map((session) => {
+    const sortOrder = orderMap.get(session.id)
+    if (sortOrder === undefined) return session
+    return { ...session, sortOrder }
+  })
 }
 
 export function createSession(writeMode: WriteMode = 'create'): ChatSession {
@@ -88,6 +200,14 @@ export function getSessionDisplayTitle(session: ChatSession): string {
   return session.title
 }
 
+/** Top bar title; hidden for brand-new empty sessions until the user sends a message. */
+export function getSessionTopbarTitle(session: ChatSession): string | null {
+  if (!session.customTitle?.trim() && session.messages.length === 0) {
+    return null
+  }
+  return getSessionDisplayTitle(session)
+}
+
 export function getLatestDoneAssistantMessage(session: ChatSession): ChatMessage | null {
   for (let index = session.messages.length - 1; index >= 0; index -= 1) {
     const message = session.messages[index]
@@ -96,6 +216,23 @@ export function getLatestDoneAssistantMessage(session: ChatSession): ChatMessage
     }
   }
   return null
+}
+
+/** Mark idle streaming assistants as done so follow-up revision UI becomes available. */
+export function normalizeIdleStreamingAssistants(session: ChatSession): ChatSession {
+  let changed = false
+  const messages = session.messages.map((message) => {
+    if (
+      message.role === 'assistant' &&
+      message.status === 'streaming' &&
+      message.content.trim()
+    ) {
+      changed = true
+      return { ...message, status: 'done' as const }
+    }
+    return message
+  })
+  return changed ? { ...session, messages } : session
 }
 
 export function sessionHasCompletedArticle(session: ChatSession): boolean {
@@ -131,6 +268,38 @@ export function canDeleteChatMessage(message: ChatMessage, isRunning: boolean): 
     }
   }
   return true
+}
+
+export function getInterruptedAssistantMessage(session: ChatSession): ChatMessage | null {
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index]
+    if (message.role === 'assistant' && message.status === 'interrupted') {
+      return message
+    }
+  }
+  return null
+}
+
+export function sessionCanResume(session: ChatSession): boolean {
+  return Boolean(session.pipelineCheckpoint && getInterruptedAssistantMessage(session))
+}
+
+export function getResumeStatusLabel(session: ChatSession): string {
+  const checkpoint = session.pipelineCheckpoint
+  if (!checkpoint?.statusLabel) return '从上次进度继续'
+  return checkpoint.statusLabel
+}
+
+export function getSessionInitialUserMessage(session: ChatSession): ChatMessage | null {
+  return (
+    session.messages.find(
+      (message) => message.role === 'user' && !message.content.startsWith('**修改说明**')
+    ) ?? null
+  )
+}
+
+export function sessionCanRegenerate(session: ChatSession): boolean {
+  return getSessionInitialUserMessage(session) != null
 }
 
 /** True after the first article is generated, including while a revision is in progress. */

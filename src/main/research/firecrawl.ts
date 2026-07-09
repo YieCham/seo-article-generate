@@ -20,6 +20,33 @@ export interface ScrapedPage {
 const DEFAULT_MAX_MARKDOWN_CHARS = 6000
 export const OPTIMIZE_MAX_MARKDOWN_CHARS = 28000
 
+/** Remove WordPress comment blocks and other CMS footer noise before section parsing. */
+export function stripScrapedMarkdownJunk(markdown: string): string {
+  let text = markdown.trim()
+  if (!text) return text
+
+  const cutPatterns = [
+    /(?:^|\n)#{1,2}\s+Leave a Reply\b/im,
+    /(?:^|\n)#{1,2}\s+Related Posts?\b/im,
+    /(?:^|\n)#{1,2}\s+You May Also Like\b/im,
+    /(?:^|\n)#{1,2}\s+Comments?\s*$/im
+  ]
+
+  let cutAt = -1
+  for (const pattern of cutPatterns) {
+    const match = pattern.exec(text)
+    if (match && match.index >= 0) {
+      if (cutAt < 0 || match.index < cutAt) cutAt = match.index
+    }
+  }
+
+  if (cutAt >= 0 && cutAt > text.length * 0.25) {
+    text = text.slice(0, cutAt).trimEnd()
+  }
+
+  return text
+}
+
 function truncateMarkdown(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text
   return `${text.slice(0, maxChars)}\n\n…（内容已截断）`
@@ -56,7 +83,7 @@ export async function scrapeToMarkdown(
   return {
     url,
     title: payload.data.metadata?.title ?? url,
-    markdown: truncateMarkdown(payload.data.markdown.trim(), maxChars)
+    markdown: truncateMarkdown(stripScrapedMarkdownJunk(payload.data.markdown.trim()), maxChars)
   }
 }
 

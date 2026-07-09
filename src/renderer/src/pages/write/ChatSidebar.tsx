@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ChatSession } from './types'
-import { getSessionDisplayTitle } from './types'
-import { IconPlus, IconSettings, IconRename, IconClear, IconDelete } from '../../components/Icons'
+import type { ChatSession, SessionListGroup } from './types'
+import {
+  canReorderSessionsTogether,
+  getSessionDisplayTitle,
+  sessionCanRegenerate,
+  sortSessions
+} from './types'
+import { IconPlus, IconSettings, IconRename, IconPin, IconPinnedSession, IconClear, IconDelete, IconRegenerate } from '../../components/Icons'
 import SessionRenameDialog from './SessionRenameDialog'
 import SessionConfirmDialog, { type SessionConfirmAction } from './SessionConfirmDialog'
 
@@ -14,7 +19,16 @@ interface ChatSidebarProps {
   onClear: (id: string) => void
   onDelete: (id: string) => void
   onRename: (id: string, title: string) => void
+  onTogglePin: (id: string) => void
+  onRegenerate: (id: string) => void
+  onReorder: (
+    group: SessionListGroup,
+    draggedId: string,
+    targetId: string,
+    position: 'before' | 'after'
+  ) => void
   onOpenSettings: () => void
+  isRunning?: boolean
 }
 
 interface SessionContextMenuState {
@@ -33,10 +47,6 @@ function formatTime(timestamp: number): string {
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
-function sortSessions(items: ChatSession[]): ChatSession[] {
-  return [...items].sort((a, b) => b.updatedAt - a.updatedAt)
-}
-
 export default function ChatSidebar({
   sessions,
   activeSessionId,
@@ -46,7 +56,11 @@ export default function ChatSidebar({
   onClear,
   onDelete,
   onRename,
-  onOpenSettings
+  onTogglePin,
+  onRegenerate,
+  onReorder,
+  onOpenSettings,
+  isRunning = false
 }: ChatSidebarProps) {
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
@@ -55,6 +69,11 @@ export default function ChatSidebar({
     action: SessionConfirmAction
   } | null>(null)
   const [optimizeCollapsed, setOptimizeCollapsed] = useState(false)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<{
+    id: string
+    position: 'before' | 'after'
+  } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
   const createSessions = useMemo(
@@ -108,7 +127,7 @@ export default function ChatSidebar({
     event.stopPropagation()
 
     const menuWidth = 148
-    const menuHeight = 132
+    const menuHeight = 204
     const padding = 8
     const x = Math.min(event.clientX, window.innerWidth - menuWidth - padding)
     const y = Math.min(event.clientY, window.innerHeight - menuHeight - padding)
@@ -116,7 +135,7 @@ export default function ChatSidebar({
     setContextMenu({ sessionId, x, y })
   }
 
-  function handleMenuAction(action: 'rename' | 'clear' | 'delete'): void {
+  function handleMenuAction(action: 'rename' | 'pin' | 'regenerate' | 'clear' | 'delete'): void {
     if (!contextMenu) return
     const { sessionId } = contextMenu
     closeContextMenu()
@@ -124,26 +143,92 @@ export default function ChatSidebar({
       setRenamingSessionId(sessionId)
       return
     }
+    if (action === 'pin') {
+      onTogglePin(sessionId)
+      return
+    }
     setPendingConfirm({ sessionId, action })
   }
 
-  function renderSessionItem(session: ChatSession) {
+  function handleDragStart(event: React.DragEvent<HTMLButtonElement>, sessionId: string): void {
+    if (runningSessionId === sessionId) {
+      event.preventDefault()
+      return
+    }
+    setDraggingId(sessionId)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', sessionId)
+  }
+
+  function handleDragOver(
+    event: React.DragEvent<HTMLButtonElement>,
+    session: ChatSession
+  ): void {
+    if (!draggingId || draggingId === session.id) return
+    const dragged = sessions.find((item) => item.id === draggingId)
+    if (!dragged || !canReorderSessionsTogether(dragged, session)) return
+
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    const rect = event.currentTarget.getBoundingClientRect()
+    const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+    setDropTarget({ id: session.id, position })
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLButtonElement>, group: SessionListGroup): void {
+    event.preventDefault()
+    if (!draggingId || !dropTarget) return
+    onReorder(group, draggingId, dropTarget.id, dropTarget.position)
+    setDraggingId(null)
+    setDropTarget(null)
+  }
+
+  function handleDragEnd(): void {
+    setDraggingId(null)
+    setDropTarget(null)
+  }
+
+  function renderSessionItem(session: ChatSession, group: SessionListGroup) {
     const isActive = session.id === activeSessionId
     const isRunning = runningSessionId === session.id
     const displayTitle = getSessionDisplayTitle(session)
+    const isDragging = draggingId === session.id
+    const isDropBefore = dropTarget?.id === session.id && dropTarget.position === 'before'
+    const isDropAfter = dropTarget?.id === session.id && dropTarget.position === 'after'
     return (
       <button
         key={session.id}
         type="button"
-        className={['session-item', isActive ? 'active' : '', isRunning ? 'running' : '']
+        className={[
+          'session-item',
+          isActive ? 'active' : '',
+          isRunning ? 'running' : '',
+          session.pinned ? 'pinned' : '',
+          isDragging ? 'is-dragging' : '',
+          isDropBefore ? 'is-drop-before' : '',
+          isDropAfter ? 'is-drop-after' : ''
+        ]
           .filter(Boolean)
           .join(' ')}
         title={`${displayTitle} · ${formatTime(session.updatedAt)}`}
+        draggable={!isRunning}
+        onDragStart={(event) => handleDragStart(event, session.id)}
+        onDragOver={(event) => handleDragOver(event, session)}
+        onDrop={(event) => handleDrop(event, group)}
+        onDragEnd={handleDragEnd}
+        onDragLeave={(event) => {
+          if (dropTarget?.id === session.id && !event.currentTarget.contains(event.relatedTarget as Node)) {
+            setDropTarget(null)
+          }
+        }}
         onClick={() => onSelect(session.id)}
         onContextMenu={(event) => handleContextMenu(event, session.id)}
       >
         <span className="session-dot" aria-hidden="true" />
         <span className="session-title">{displayTitle}</span>
+        {session.pinned ? (
+          <IconPinnedSession size={12} className="session-pin-indicator" aria-hidden="true" />
+        ) : null}
       </button>
     )
   }
@@ -158,6 +243,15 @@ export default function ChatSidebar({
     ? sessions.find((session) => session.id === pendingConfirm.sessionId)
     : null
   const contextRunning = contextMenu ? runningSessionId === contextMenu.sessionId : false
+  const contextCanRegenerate = contextSession ? sessionCanRegenerate(contextSession) : false
+  const regenerateDisabled = isRunning || contextRunning || !contextCanRegenerate
+  const regenerateDisabledReason = isRunning
+    ? '当前有任务正在运行'
+    : contextRunning
+      ? '生成中无法重新生成'
+      : !contextCanRegenerate
+        ? '尚无初始请求'
+        : undefined
 
   return (
     <aside className="chat-sidebar">
@@ -179,7 +273,7 @@ export default function ChatSidebar({
             <>
               {createSessions.length > 0 ? (
                 <div className="session-group" data-group="create">
-                  {createSessions.map(renderSessionItem)}
+                  {createSessions.map((session) => renderSessionItem(session, 'create'))}
                 </div>
               ) : null}
 
@@ -203,7 +297,9 @@ export default function ChatSidebar({
                   className={`session-group${optimizeCollapsed ? ' is-collapsed' : ''}`}
                   data-group="optimize"
                 >
-                  {!optimizeCollapsed ? optimizeSessions.map(renderSessionItem) : null}
+                  {!optimizeCollapsed
+                    ? optimizeSessions.map((session) => renderSessionItem(session, 'optimize'))
+                    : null}
                 </div>
               ) : null}
             </>
@@ -230,10 +326,30 @@ export default function ChatSidebar({
             type="button"
             className="session-context-menu-item"
             role="menuitem"
+            onClick={() => handleMenuAction('pin')}
+          >
+            <IconPin size={14} className="session-context-menu-icon" />
+            <span>{contextSession.pinned ? '取消置顶' : '置顶'}</span>
+          </button>
+          <button
+            type="button"
+            className="session-context-menu-item"
+            role="menuitem"
             onClick={() => handleMenuAction('rename')}
           >
             <IconRename size={14} className="session-context-menu-icon" />
             <span>重命名</span>
+          </button>
+          <button
+            type="button"
+            className="session-context-menu-item"
+            role="menuitem"
+            disabled={regenerateDisabled}
+            title={regenerateDisabledReason}
+            onClick={() => handleMenuAction('regenerate')}
+          >
+            <IconRegenerate size={14} className="session-context-menu-icon" />
+            <span>重新生成</span>
           </button>
           <button
             type="button"
@@ -278,7 +394,8 @@ export default function ChatSidebar({
         onConfirm={() => {
           if (!pendingConfirm) return
           if (pendingConfirm.action === 'clear') onClear(pendingConfirm.sessionId)
-          else onDelete(pendingConfirm.sessionId)
+          else if (pendingConfirm.action === 'delete') onDelete(pendingConfirm.sessionId)
+          else onRegenerate(pendingConfirm.sessionId)
           setPendingConfirm(null)
         }}
       />

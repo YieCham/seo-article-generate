@@ -45,7 +45,7 @@ export default function TitleBar() {
             type="button"
             className="title-bar-control title-bar-control-close"
             aria-label="关闭"
-            onClick={() => window.app.windowClose()}
+            onClick={() => window.app.windowRequestClose()}
           >
             <IconClose size={10} />
           </button>

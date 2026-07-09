@@ -20,6 +20,7 @@ export interface ReviseArticleSelection {
   start: number
   end: number
   text: string
+  displayText?: string
 }
 
 export interface ReviseArticleOptions {

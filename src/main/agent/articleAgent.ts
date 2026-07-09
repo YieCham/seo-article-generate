@@ -12,8 +12,8 @@ import type { ResearchConfig } from '../config/types'
 import { getEnabledSkillsText } from './skillManager'
 import {
   chatCompletion,
+  createRateLimitRetryStatus,
   parseOutlineSections,
-  streamChatCompletion,
   type LlmConfig
 } from './llmClient'
 import {
@@ -38,6 +38,15 @@ import {
   TOP_LIST_OUTLINE_SKELETON,
   TOP_LIST_PLAN_GUIDANCE
 } from './topListStructure'
+import {
+  getProductMentionSupplement,
+  getExtractProductHint,
+  getDraftProductPartHint,
+  getDraftGenericPartHint,
+  getDraftQuickAnswerHint,
+  getPolishProductHint,
+  isQuickAnswerSection
+} from './productMention'
 import {
   getReviewPromptBlock,
   getReviewSectionDraftHint,
@@ -79,11 +88,19 @@ import {
   getPrimaryKeywordSectionHint,
   getWritingPromptBlocks
 } from './topicKeyword'
+import {
+  type CreatePipelineCheckpoint,
+  type DraftSectionResume,
+  type OptimizePipelineCheckpoint,
+  type PipelineCheckpoint,
+  shouldRunPipelineStep
+} from './pipelineCheckpoint'
 
 export interface GenerateArticleOptions {
   topic: string
   extraInstructions?: string
   outputLanguage?: OutputLanguageCode | string
+  resume?: CreatePipelineCheckpoint
 }
 
 export interface ResearchSourcePreview {
@@ -109,13 +126,26 @@ export type PipelineStep =
   | 'meta'
 
 export interface GenerateProgressEvent {
-  type: 'chunk' | 'status' | 'error' | 'done' | 'cancelled' | 'replace' | 'research' | 'reset' | 'planning' | 'prepend'
+  type:
+    | 'chunk'
+    | 'status'
+    | 'error'
+    | 'done'
+    | 'cancelled'
+    | 'replace'
+    | 'research'
+    | 'reset'
+    | 'planning'
+    | 'prepend'
+    | 'checkpoint'
+    | 'clearCheckpoint'
   text?: string
   message?: string
   step?: PipelineStep
   researchSummary?: string
   planningSummary?: string
   sources?: ResearchSourcePreview[]
+  checkpoint?: PipelineCheckpoint
 }
 
 interface ArticleLanguageContext {
@@ -151,13 +181,20 @@ function getStructurePromptBlocks(
   const reviewBlock = getReviewPromptBlock(skillsText)
   const wordBounds = getArticleLengthBounds(skillsText)
   const lengthBlock = getArticleLengthPromptBlock(skillsText)
+  const productMentionBlock = getProductMentionSupplement(productName, {
+    review: Boolean(reviewBlock),
+    topList: Boolean(topListBlock),
+    geo: Boolean(geoBlock)
+  })
   return {
     geoBlock,
     reviewBlock,
     topListBlock,
     lengthBlock,
     wordBounds,
-    combined: [lengthBlock, topListBlock, geoBlock, reviewBlock].filter(Boolean).join('\n\n')
+    combined: [lengthBlock, productMentionBlock, topListBlock, geoBlock, reviewBlock]
+      .filter(Boolean)
+      .join('\n\n')
   }
 }
 
@@ -227,9 +264,7 @@ async function extractEeatInsights(
           '- 可引用的专家观点或方法框架（勿伪造具体人名机构）',
           '- 真实场景案例、用户痛点、常见误区',
           '- 竞品文章的共性套路与内容缺口',
-          userContext.productName
-            ? `- 注意：终稿需突出产品「${userContext.productName}」，萃取时可记录如何自然植入 How-to 的切入点`
-            : '',
+          userContext.productName ? getExtractProductHint(userContext.productName) : '',
           '',
           '忽略：水词、同质化废话、硬广、导航残留。',
           '',
@@ -396,7 +431,8 @@ async function draftBySections(
   userContext: UserWritingContext,
   articleLang: ArticleLanguageContext,
   globalMaxTokens: number,
-  emit: (event: GenerateProgressEvent) => void
+  emit: (event: GenerateProgressEvent) => void,
+  resume?: DraftSectionResume
 ): Promise<string> {
   const sections = parseOutlineSections(outline)
   const { combined, geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
@@ -404,9 +440,11 @@ async function draftBySections(
     userContext.productName
   )
   const sectionTitles = sections.map((section) => section.title)
-  let fullDraft = `# ${topic}\n\n`
+  let fullDraft = resume?.initialDraft ?? `# ${topic}\n\n`
+  const startIndex = resume?.startIndex ?? 0
 
-  for (let i = 0; i < sections.length; i += 1) {
+  for (let i = startIndex; i < sections.length; i += 1) {
+    throwIfAborted()
     const section = sections[i]
     const sectionContext = `${section.title} ${section.body}`
     const reviewSectionBudget = reviewBlock
@@ -489,6 +527,8 @@ async function draftBySections(
             userContext.briefForPrompt,
             introConclusionHint
               ? introConclusionHint
+              : isQuickAnswerSection(section.title)
+                ? getDraftQuickAnswerHint(productName || undefined)
               : reviewSectionHint
                 ? reviewSectionHint
                 : isTopListEntriesSection
@@ -496,13 +536,13 @@ async function draftBySections(
                   : isAlsoWorthSection && productName
                     ? `本节为榜单外补充：说明「${productName}」的适用场景、与 Topic 的差异，以及为何未进入主榜；客观不硬塞进 Top 列表。`
                 : isGenericGeoSection
-                  ? `本节为通用/调研驱动内容：展开大纲要点，优先使用 E-E-A-T 参考中的行业与竞品洞察（深度改写）。**禁止出现产品名「${productName}」及推销语气。**`
+                  ? getDraftGenericPartHint(productName)
                   : isComparisonSection && productName
                     ? `本节为对比表格：输出 Markdown 表格，对比被测评产品与「${productName}」，至少 5 个维度；表格后 1–2 段说明为何推荐我方产品。`
                     : isHowToSection && productName
-                      ? `本节为产品 Part：先 1–2 段过渡承接前文，再 ### 推荐 + ### Step-by-Step Tutorial（≥4 步），逐步演示「${productName}」，多次使用产品全名，插入 [Image: …]。`
+                      ? getDraftProductPartHint(productName)
                       : productName && !isGeoMode
-                        ? `若本节涉及解决方案，须自然提及「${productName}」，勿用泛称替代。`
+                        ? getDraftGenericPartHint(productName)
                         : '',
             '',
             '大纲上下文（仅相邻节）：',
@@ -531,6 +571,7 @@ async function draftBySections(
     const block = `## ${section.title}\n\n${sectionText.trim()}\n\n`
     fullDraft += block
     emit({ type: 'chunk', text: block, step: 'draft' })
+    resume?.onSectionComplete?.(i, sections.length, fullDraft.trim())
   }
 
   return fullDraft.trim()
@@ -554,9 +595,7 @@ async function polishDraft(
     skillsText,
     userContext.productName
   )
-  let polished = ''
-
-  await streamChatCompletion(
+  const polished = await chatCompletion(
     llm,
     [
       {
@@ -577,11 +616,11 @@ async function polishDraft(
           `对以下关于「${topic}」的文章进行「降 AI 味」润色重写：`,
           `- 全文必须保持${articleLang.label}，与主题语言一致`,
           userContext.productName
-            ? reviewBlock
-              ? `- 必须保留并强化产品「${userContext.productName}」的提及、对比表格及推荐结论，润色时不得删除对比表或改成泛称`
-              : topListBlock
-                ? `- 必须保留 Top N 榜单结构与「${userContext.productName}」的排位规则（符合则 #1，不符合则保留 Also Worth Considering Part），润色时不得删除榜单条目或改成泛称`
-                : `- 必须保留并强化产品「${userContext.productName}」的提及与 How-to，润色时不得删除或改成泛称`
+            ? getPolishProductHint(userContext.productName, {
+                review: Boolean(reviewBlock),
+                topList: Boolean(topListBlock),
+                geo: Boolean(geoBlock)
+              })
             : userContext.raw
               ? '- 润色时必须保留用户补充要求中的关键信息（含产品/工具名称）'
               : '',
@@ -595,7 +634,7 @@ async function polishDraft(
           topListBlock
             ? `- 保留 Quick Answer、Introduction、选型标准 Part、Top N 榜单（### 1…N 每条含 Pros/Cons）、可选对比表、FAQ（≥5 问）、Conclusion；移除 <thinking>`
             : geoBlock
-            ? '- 保留 Quick Answer、Introduction（≤150 词、≤3 段）、通用 Part（无产品硬广）+ **单一产品 Part**（推广与教程合一，禁止拆成两个 Part）、FAQ（≥5 问）、[Image: …]；Conclusion ≤150 词、≤3 段；移除 <thinking>'
+            ? '- 保留 Quick Answer、Introduction（≤150 词、≤3 段）、通用 Part（行业价值为主，联动时可轻量提及产品）+ **单一产品 Part**（推广与教程合一，禁止拆成两个 Part）、FAQ（≥5 问）、[Image: …]；Conclusion ≤150 词、≤3 段；移除 <thinking>'
             : reviewBlock
               ? '- 保留对被测评产品的充分描述（Overview、Pros & Cons、Features、How to Use、Value/Experience 各 Part 不可删减合并）；保留对比表格与 FAQ；移除任何 <thinking> 标签'
               : '',
@@ -610,13 +649,14 @@ async function polishDraft(
           .join('\n')
       }
     ],
-    (text) => {
-      polished += text
-      onChunk(text)
-    },
-    { temperature: 0.55, maxTokens: maxTokens }
+    { temperature: 0.55, maxTokens: maxTokens, step: 'polish', label: '润色',
+      onRateLimitRetry: createRateLimitRetryStatus('⑧ 润色并降低 AI 味…', (message) =>
+        emit({ type: 'status', step: 'polish', message })
+      )
+    }
   )
 
+  onChunk(polished)
   return polished.trim()
 }
 
@@ -639,14 +679,20 @@ export async function generateArticle(
     return { ok: false, message: '未配置 API Key，请在「AI 配置」页填写 LLM 设置。' }
   }
 
-  const topic = options.topic?.trim()
+  const topic = (options.resume?.options.topic ?? options.topic)?.trim()
   if (!topic) {
     return { ok: false, message: '请输入文章主题。' }
   }
 
   return runWithTokenContext(createTokenRunContext('create', topic), async () => {
-  const articleLang = buildArticleLanguageContext(normalizeOutputLanguage(options.outputLanguage))
-  const userContext = parseUserWritingContext(options.extraInstructions)
+  const resume = options.resume
+  const nextStep = resume?.nextStep ?? 'skills'
+  const articleLang = buildArticleLanguageContext(
+    normalizeOutputLanguage(resume?.options.outputLanguage ?? options.outputLanguage)
+  )
+  const userContext = parseUserWritingContext(
+    resume?.options.extraInstructions ?? options.extraInstructions
+  )
 
   const emit = (event: GenerateProgressEvent): void => {
     if (event.step) {
@@ -655,23 +701,47 @@ export async function generateArticle(
     sender.send('article:progress', event)
   }
 
+  const emitCreateCheckpoint = (checkpoint: CreatePipelineCheckpoint): void => {
+    emit({ type: 'checkpoint', checkpoint })
+  }
+
+  const buildCreateCheckpoint = (
+    step: PipelineStep,
+    partial: Omit<CreatePipelineCheckpoint, 'kind' | 'assistantMessageId' | 'nextStep' | 'options'> &
+      Partial<Pick<CreatePipelineCheckpoint, 'options'>>
+  ): CreatePipelineCheckpoint => ({
+    kind: 'create',
+    assistantMessageId: resume?.assistantMessageId ?? '',
+    nextStep: step,
+    options: {
+      topic,
+      extraInstructions: resume?.options.extraInstructions ?? options.extraInstructions,
+      outputLanguage: resume?.options.outputLanguage ?? options.outputLanguage
+    },
+    ...partial
+  })
+
+  let outline = resume?.outline
+  let writingBrief = resume?.writingBrief
+  let plan = resume?.plan
+  let extracted = resume?.extracted
+  let searchIntentSummary = resume?.searchIntentSummary ?? ''
+
   try {
     emit({
       type: 'status',
       step: 'skills',
-      message: `① 加载 Skills…（成文语言：${articleLang.label}${userContext.productName ? ` · 产品：${userContext.productName}` : ''}）`
+      message: resume?.statusLabel
+        ? `继续生成：${resume.statusLabel}`
+        : `① 加载 Skills…（成文语言：${articleLang.label}${userContext.productName ? ` · 产品：${userContext.productName}` : ''}）`
     })
     const skillsText = await getEnabledSkillsText('create')
 
     let searchQueries = [topic]
-    let searchIntentSummary = ''
     let sources: ResearchSource[] = []
-    let extracted =
-      articleLang.code === 'en'
-        ? '(Research disabled; writing from topic and Skills.)'
-        : '（未启用竞品调研，将基于主题与 Skills 创作。）'
 
-    if (canRunResearch(research)) {
+    if (shouldRunPipelineStep(nextStep, 'extract', 'create')) {
+      if (canRunResearch(research)) {
       emit({ type: 'status', step: 'expand', message: '② 搜索意图分析 & 拆解搜索词…' })
       const intentResult = await analyzeAndExpandSearchQueries(llm, {
         topic,
@@ -737,125 +807,269 @@ export async function generateArticle(
         }),
         sources: mapSources(sources)
       })
-    } else if (research.enabled) {
-      emit({ type: 'status', message: '未配置 Tavily / Firecrawl，跳过调研阶段…' })
-    }
-
-    emit({ type: 'status', step: 'extract', message: '④b 生成写作简报…' })
-    const writingBrief = await generateWritingBrief(
-      llm,
-      topic,
-      extracted,
-      articleLang.label,
-      userContext,
-      globalMaxTokens,
-      searchIntentSummary || undefined
-    )
-
-    emit({
-      type: 'status',
-      step: 'plan',
-      message: '⑤ 分析与规划（搜索意图 / FAQ / 大纲构思）…'
-    })
-    const plan = await generateArticlePlan(
-      llm,
-      topic,
-      writingBrief,
-      skillsText,
-      articleLang,
-      userContext,
-      maxTokensForPlanning(globalMaxTokens)
-    )
-    emit({
-      type: 'planning',
-      step: 'plan',
-      message: '创作规划完成',
-      planningSummary: plan
-    })
-
-    emit({
-      type: 'status',
-      step: 'outline',
-      message: `⑥ 生成差异化大纲（${articleLang.label}）…`
-    })
-    const outline = await generateDifferentiatedOutline(
-      llm,
-      topic,
-      writingBrief,
-      plan,
-      skillsText,
-      userContext,
-      articleLang,
-      maxTokensForOutlineSkeleton(globalMaxTokens, estimateOutlineSectionCount(topic, skillsText))
-    )
-
-    if (sources.length > 0) {
-      emit({
-        type: 'research',
-        step: 'outline',
-        message: '大纲已生成',
-        researchSummary: buildResearchDisplayMarkdown(topic, searchQueries, sources, research, {
-          intentSummary: searchIntentSummary,
-          extractedPreview: extracted,
-          outlinePreview: outline
-        }),
-        sources: mapSources(sources)
-      })
-    }
-
-    emit({
-      type: 'status',
-      step: 'draft',
-      message: `⑦ 分段撰写正文（${articleLang.label}）…`
-    })
-    const draft = await draftBySections(
-      llm,
-      topic,
-      outline,
-      writingBrief,
-      skillsText,
-      userContext,
-      articleLang,
-      globalMaxTokens,
-      emit
-    )
-
-    const polished = await polishDraft(
-      llm,
-      draft,
-      topic,
-      skillsText,
-      userContext,
-      articleLang,
-      maxTokensForFullArticleOutput(countArticleWords(draft), globalMaxTokens, 'polish'),
-      emit,
-      (text) => {
-        emit({ type: 'chunk', text, step: 'polish' })
+      } else if (research.enabled) {
+        emit({ type: 'status', message: '未配置 Tavily / Firecrawl，跳过调研阶段…' })
+        extracted =
+          articleLang.code === 'en'
+            ? '(Research disabled; writing from topic and Skills.)'
+            : '（未启用竞品调研，将基于主题与 Skills 创作。）'
+      } else {
+        extracted =
+          articleLang.code === 'en'
+            ? '(Research disabled; writing from topic and Skills.)'
+            : '（未启用竞品调研，将基于主题与 Skills 创作。）'
       }
-    )
 
-    const lengthAdjusted = await enforceArticleWordCount(
-      llm,
-      polished,
-      topic,
-      articleLang,
-      maxTokensForFullArticleOutput(countArticleWords(polished), globalMaxTokens, 'lengthAdjust'),
-      emit,
-      (text) => emit({ type: 'chunk', text, step: 'length' }),
-      skillsText
-    )
+      emit({ type: 'status', step: 'extract', message: '④b 生成写作简报…' })
+      writingBrief = await generateWritingBrief(
+        llm,
+        topic,
+        extracted!,
+        articleLang.label,
+        userContext,
+        globalMaxTokens,
+        searchIntentSummary || undefined
+      )
+    } else if (!extracted) {
+      extracted =
+        articleLang.code === 'en'
+          ? '(Research disabled; writing from topic and Skills.)'
+          : '（未启用竞品调研，将基于主题与 Skills 创作。）'
+    }
 
-    emit({ type: 'status', step: 'meta', message: '⑩ 生成 SEO Meta Title & Description…' })
-    const seoMeta = await generateSeoMeta(
-      llm,
-      topic,
-      lengthAdjusted,
-      articleLang,
-      userContext,
-      stepTokens.seoMeta
-    )
-    emit({ type: 'prepend', text: formatSeoMetaBlock(seoMeta), step: 'meta' })
+    if (shouldRunPipelineStep(nextStep, 'plan', 'create')) {
+      if (!writingBrief) {
+        emit({ type: 'status', step: 'extract', message: '④b 生成写作简报…' })
+        writingBrief = await generateWritingBrief(
+          llm,
+          topic,
+          extracted!,
+          articleLang.label,
+          userContext,
+          globalMaxTokens,
+          searchIntentSummary || undefined
+        )
+      }
 
+      emit({
+        type: 'status',
+        step: 'plan',
+        message: '⑤ 分析与规划（搜索意图 / FAQ / 大纲构思）…'
+      })
+      plan = await generateArticlePlan(
+        llm,
+        topic,
+        writingBrief,
+        skillsText,
+        articleLang,
+        userContext,
+        maxTokensForPlanning(globalMaxTokens)
+      )
+      emit({
+        type: 'planning',
+        step: 'plan',
+        message: '创作规划完成',
+        planningSummary: plan
+      })
+      emitCreateCheckpoint(
+        buildCreateCheckpoint('outline', {
+          statusLabel: '⑤ 分析与规划已完成',
+          extracted,
+          writingBrief,
+          plan,
+          searchIntentSummary
+        })
+      )
+    }
+
+    if (shouldRunPipelineStep(nextStep, 'outline', 'create')) {
+      if (!writingBrief || !plan) {
+        return { ok: false, message: '无法继续：缺少写作简报或规划，请重新开始。' }
+      }
+
+      emit({
+        type: 'status',
+        step: 'outline',
+        message: `⑥ 生成差异化大纲（${articleLang.label}）…`
+      })
+      outline = await generateDifferentiatedOutline(
+        llm,
+        topic,
+        writingBrief,
+        plan,
+        skillsText,
+        userContext,
+        articleLang,
+        maxTokensForOutlineSkeleton(globalMaxTokens, estimateOutlineSectionCount(topic, skillsText))
+      )
+
+      if (sources.length > 0) {
+        emit({
+          type: 'research',
+          step: 'outline',
+          message: '大纲已生成',
+          researchSummary: buildResearchDisplayMarkdown(topic, searchQueries, sources, research, {
+            intentSummary: searchIntentSummary,
+            extractedPreview: extracted,
+            outlinePreview: outline
+          }),
+          sources: mapSources(sources)
+        })
+      }
+
+      const sectionCount = parseOutlineSections(outline).length
+      emitCreateCheckpoint(
+        buildCreateCheckpoint('draft', {
+          statusLabel: `⑥ 大纲已完成 · 共 ${sectionCount} 节`,
+          extracted,
+          writingBrief,
+          plan,
+          outline,
+          searchIntentSummary,
+          partialDraft: `# ${topic}\n\n`,
+          draftSectionIndex: 0,
+          draftSectionCount: sectionCount
+        })
+      )
+    }
+
+    if (!outline || !writingBrief) {
+      return { ok: false, message: '无法继续：缺少大纲或写作简报，请重新开始。' }
+    }
+
+    let draft = resume?.workText ?? resume?.partialDraft ?? ''
+    if (shouldRunPipelineStep(nextStep, 'draft', 'create')) {
+      const sectionCount = parseOutlineSections(outline).length
+      emit({
+        type: 'status',
+        step: 'draft',
+        message:
+          resume?.draftSectionIndex != null && resume.draftSectionIndex > 0
+            ? `⑦ 继续分段撰写（${resume.draftSectionIndex + 1}/${sectionCount} 起）…`
+            : `⑦ 分段撰写正文（${articleLang.label}）…`
+      })
+      draft = await draftBySections(
+        llm,
+        topic,
+        outline,
+        writingBrief,
+        skillsText,
+        userContext,
+        articleLang,
+        globalMaxTokens,
+        emit,
+        {
+          startIndex: resume?.draftSectionIndex ?? 0,
+          initialDraft: resume?.partialDraft ?? `# ${topic}\n\n`,
+          onSectionComplete: (sectionIndex, total, partial) => {
+            const nextIndex = sectionIndex + 1
+            if (nextIndex < total) {
+              emitCreateCheckpoint(
+                buildCreateCheckpoint('draft', {
+                  statusLabel: `⑦ 已完成第 ${nextIndex}/${total} 节`,
+                  extracted,
+                  writingBrief,
+                  plan,
+                  outline,
+                  searchIntentSummary,
+                  partialDraft: partial,
+                  draftSectionIndex: nextIndex,
+                  draftSectionCount: total
+                })
+              )
+            } else {
+              emitCreateCheckpoint(
+                buildCreateCheckpoint('polish', {
+                  statusLabel: '⑦ 正文撰写完成',
+                  extracted,
+                  writingBrief,
+                  plan,
+                  outline,
+                  searchIntentSummary,
+                  partialDraft: partial,
+                  workText: partial,
+                  draftSectionCount: total
+                })
+              )
+            }
+          }
+        }
+      )
+    }
+
+    let polished = resume?.workText && !shouldRunPipelineStep(nextStep, 'polish', 'create') ? resume.workText : ''
+    if (shouldRunPipelineStep(nextStep, 'polish', 'create')) {
+      if (!draft) {
+        return { ok: false, message: '无法继续：缺少正文草稿，请重新开始。' }
+      }
+      polished = await polishDraft(
+        llm,
+        draft,
+        topic,
+        skillsText,
+        userContext,
+        articleLang,
+        maxTokensForFullArticleOutput(countArticleWords(draft), globalMaxTokens, 'polish'),
+        emit,
+        (text) => {
+          emit({ type: 'chunk', text, step: 'polish' })
+        }
+      )
+      emitCreateCheckpoint(
+        buildCreateCheckpoint('length', {
+          statusLabel: '⑧ 润色完成',
+          extracted,
+          writingBrief,
+          plan,
+          outline,
+          searchIntentSummary,
+          workText: polished
+        })
+      )
+    }
+
+    let lengthAdjusted = polished
+    if (shouldRunPipelineStep(nextStep, 'length', 'create')) {
+      if (!polished) {
+        return { ok: false, message: '无法继续：缺少润色稿，请重新开始。' }
+      }
+      lengthAdjusted = await enforceArticleWordCount(
+        llm,
+        polished,
+        topic,
+        articleLang,
+        maxTokensForFullArticleOutput(countArticleWords(polished), globalMaxTokens, 'lengthAdjust'),
+        emit,
+        (text) => emit({ type: 'chunk', text, step: 'length' }),
+        skillsText
+      )
+      emitCreateCheckpoint(
+        buildCreateCheckpoint('meta', {
+          statusLabel: '⑨ 词数校准完成',
+          extracted,
+          writingBrief,
+          plan,
+          outline,
+          searchIntentSummary,
+          workText: lengthAdjusted
+        })
+      )
+    }
+
+    if (shouldRunPipelineStep(nextStep, 'meta', 'create')) {
+      emit({ type: 'status', step: 'meta', message: '⑩ 生成 SEO Meta Title & Description…' })
+      const seoMeta = await generateSeoMeta(
+        llm,
+        topic,
+        lengthAdjusted,
+        articleLang,
+        userContext,
+        stepTokens.seoMeta
+      )
+      emit({ type: 'prepend', text: formatSeoMetaBlock(seoMeta), step: 'meta' })
+    }
+
+    emit({ type: 'clearCheckpoint' })
     emit({ type: 'done' })
     return { ok: true }
   } catch (error) {

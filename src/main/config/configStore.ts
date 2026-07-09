@@ -9,6 +9,7 @@ import {
   normalizeModePrompts,
   normalizeQuickPicks,
   normalizeResearchConfig,
+  normalizeWindowClose,
   resolveActiveLlmConfig,
   type AppConfig,
   type LlmConfig,
@@ -44,7 +45,8 @@ function mergeWithDefaults(partial: ConfigPartial): AppConfig {
       partial.skillEnablementInitialized ?? DEFAULT_CONFIG.skillEnablementInitialized
     ),
     skillEnablementInitialized:
-      partial.skillEnablementInitialized ?? DEFAULT_CONFIG.skillEnablementInitialized
+      partial.skillEnablementInitialized ?? DEFAULT_CONFIG.skillEnablementInitialized,
+    windowClose: normalizeWindowClose(partial.windowClose ?? DEFAULT_CONFIG.windowClose)
   }
 }
 

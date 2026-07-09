@@ -5,6 +5,8 @@ import remarkGfm from 'remark-gfm'
 interface MarkdownContentProps {
   content: string
   streaming?: boolean
+  waitingLabel?: string
+  waitingElapsedSec?: number
   sourceMapping?: boolean
   editableSelection?: boolean
   className?: string
@@ -133,17 +135,29 @@ function mergeMarkdownComponents(base?: Components): Components {
 export default function MarkdownContent({
   content,
   streaming,
+  waitingLabel,
+  waitingElapsedSec = 0,
   sourceMapping = false,
   editableSelection = false,
   className,
   bodyRef
 }: MarkdownContentProps) {
+  const elapsedSuffix =
+    waitingElapsedSec >= 5 ? ` · 已等待 ${waitingElapsedSec}s` : ''
+
+  const statusLine =
+    waitingLabel && streaming ? (
+      <p className="thinking-label pipeline-status-label">
+        <span className="status-pill-dot" aria-hidden="true" />
+        {waitingLabel}
+        {elapsedSuffix}
+      </p>
+    ) : null
+
   if (!content && streaming) {
     return (
-      <div className="thinking-row">
-        <span className="thinking-dot" />
-        <span className="thinking-dot" />
-        <span className="thinking-dot" />
+      <div className="thinking-row" aria-live="polite">
+        {statusLine}
       </div>
     )
   }
@@ -159,14 +173,21 @@ export default function MarkdownContent({
     .join(' ')
 
   return (
-    <div ref={bodyRef} className={bodyClass}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={mergeMarkdownComponents(sourceMapping ? sourceMappingComponents : undefined)}
-      >
-        {content}
-      </ReactMarkdown>
-      {streaming ? <span className="stream-cursor" aria-hidden="true" /> : null}
-    </div>
+    <>
+      <div ref={bodyRef} className={bodyClass}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={mergeMarkdownComponents(sourceMapping ? sourceMappingComponents : undefined)}
+        >
+          {content}
+        </ReactMarkdown>
+        {streaming ? <span className="stream-cursor" aria-hidden="true" /> : null}
+      </div>
+      {statusLine ? (
+        <div className="pipeline-status-bar" aria-live="polite">
+          {statusLine}
+        </div>
+      ) : null}
+    </>
   )
 }

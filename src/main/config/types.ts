@@ -131,6 +131,20 @@ export interface QuickPicksConfig {
   defaultOutputLanguage: string
 }
 
+export type WindowCloseAction = 'minimize-to-tray' | 'quit'
+
+export interface WindowCloseBehavior {
+  skipPrompt: boolean
+  defaultAction: WindowCloseAction
+}
+
+export function normalizeWindowClose(partial?: Partial<WindowCloseBehavior>): WindowCloseBehavior {
+  return {
+    skipPrompt: partial?.skipPrompt ?? false,
+    defaultAction: partial?.defaultAction === 'quit' ? 'quit' : 'minimize-to-tray'
+  }
+}
+
 export interface AppConfig {
   llmPresets: LlmPreset[]
   activeLlmPresetId: string
@@ -140,6 +154,7 @@ export interface AppConfig {
   quickPicks: QuickPicksConfig
   enabledSkills: ModeEnabledSkillsConfig
   skillEnablementInitialized: boolean
+  windowClose?: WindowCloseBehavior
 }
 
 export interface SkillItem {
@@ -287,7 +302,11 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   quickPicks: DEFAULT_QUICK_PICKS,
   enabledSkills: DEFAULT_MODE_ENABLED_SKILLS,
-  skillEnablementInitialized: false
+  skillEnablementInitialized: false,
+  windowClose: {
+    skipPrompt: false,
+    defaultAction: 'minimize-to-tray'
+  }
 }
 
 /** @deprecated fields from older configs */

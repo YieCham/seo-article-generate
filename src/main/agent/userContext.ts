@@ -1,3 +1,5 @@
+import { buildProductMentionLock } from './productMention'
+
 export interface UserWritingContext {
   raw: string
   productName?: string
@@ -45,13 +47,7 @@ function stripWriterMetaLines(raw: string): string {
 
 function buildMentionLock(raw: string, productName?: string): string {
   if (productName) {
-    return [
-      `【硬性要求 — 必须提及产品：${productName}】`,
-      `终稿必须多次自然出现产品全名「${productName}」。`,
-      `必须包含以「${productName}」为例的分步 How-to 教程（至少 4 步）。`,
-      `禁止用 "the converter tool"、"this software"、"某工具" 等泛称替代产品名。`,
-      `润色/改写时不得删除或淡化对「${productName}」的提及。`
-    ].join('\n')
+    return buildProductMentionLock(productName)
   }
 
   const contentBrief = stripWriterMetaLines(raw)

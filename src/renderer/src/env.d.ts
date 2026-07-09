@@ -8,13 +8,26 @@ export interface ResearchSourcePreview {
 }
 
 export interface GenerateProgressEvent {
-  type: 'chunk' | 'status' | 'error' | 'done' | 'cancelled' | 'replace' | 'research' | 'reset' | 'planning' | 'prepend'
+  type:
+    | 'chunk'
+    | 'status'
+    | 'error'
+    | 'done'
+    | 'cancelled'
+    | 'replace'
+    | 'research'
+    | 'reset'
+    | 'planning'
+    | 'prepend'
+    | 'checkpoint'
+    | 'clearCheckpoint'
   text?: string
   message?: string
   step?: string
   researchSummary?: string
   planningSummary?: string
   sources?: ResearchSourcePreview[]
+  checkpoint?: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
 }
 
 export interface GenerateArticleResult {
@@ -75,6 +88,13 @@ export interface QuickPicksConfig {
   defaultOutputLanguage: string
 }
 
+export type WindowCloseAction = 'minimize-to-tray' | 'quit'
+
+export interface WindowCloseBehavior {
+  skipPrompt: boolean
+  defaultAction: WindowCloseAction
+}
+
 export interface AppConfig {
   llmPresets: LlmPreset[]
   activeLlmPresetId: string
@@ -84,6 +104,7 @@ export interface AppConfig {
   quickPicks: QuickPicksConfig
   enabledSkills: ModeEnabledSkillsConfig
   skillEnablementInitialized?: boolean
+  windowClose?: WindowCloseBehavior
 }
 
 export interface SkillItem {
@@ -101,14 +122,18 @@ export interface ChatStoreData {
     id: string
     title: string
     customTitle?: string
+    pinned?: boolean
+    pinnedAt?: number
+    sortOrder?: number
     messages: Array<{
       id: string
       role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
       content: string
-      status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error'
+      status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
     }>
     updatedAt: number
     writeMode?: 'create' | 'optimize'
+    pipelineCheckpoint?: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
   }>
 }
 
@@ -153,6 +178,7 @@ export interface ReviseArticleSelection {
   start: number
   end: number
   text: string
+  displayText: string
 }
 
 declare global {
@@ -168,6 +194,9 @@ declare global {
         extraInstructions?: string
         outputLanguage?: string
       }) => Promise<GenerateArticleResult>
+      resumeArticle: (
+        checkpoint: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
+      ) => Promise<GenerateArticleResult>
       cancelArticle: () => Promise<{ ok: boolean }>
       reviseArticle: (request: {
         article: string
@@ -196,9 +225,13 @@ declare global {
       windowMinimize: () => void
       windowMaximize: () => void
       windowClose: () => void
+      windowRequestClose: () => void
+      windowMinimizeToTray: () => void
+      windowQuit: () => void
       windowIsMaximized: () => Promise<boolean>
       popupAppMenu: (label: string, x: number, y: number) => Promise<void>
       onWindowMaximized: (callback: (maximized: boolean) => void) => () => void
+      onCloseRequested: (callback: () => void) => () => void
     }
   }
 }

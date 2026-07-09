@@ -4,12 +4,15 @@ import MarkdownContent from './MarkdownContent'
 import CollapsibleMarkdownCard from './CollapsibleMarkdownCard'
 import { formatPlanningMarkdown } from './planningContent'
 import { getMarkdownRangeFromDomSelection } from '../../utils/markdownSourceMap'
-import { IconCopy, IconMessage } from '../../components/Icons'
+import { getArticleCopyMarkdown } from '../../utils/articleCopy'
+import { IconCopyArticle, IconMessage } from '../../components/Icons'
 
 interface ChatMessageItemProps {
   message: ChatMessage
   onCopy?: (content: string) => void
   onContextMenu?: (event: ReactMouseEvent) => void
+  waitingLabel?: string
+  waitingElapsedSec?: number
   reviseSelectionEnabled?: boolean
   reviseSelection?: ReviseArticleSelection | null
   onReviseSelectionChange?: (selection: ReviseArticleSelection | null) => void
@@ -21,6 +24,8 @@ export default function ChatMessageItem({
   message,
   onCopy,
   onContextMenu,
+  waitingLabel,
+  waitingElapsedSec = 0,
   reviseSelectionEnabled = false,
   reviseSelection = null,
   onReviseSelectionChange,
@@ -34,10 +39,17 @@ export default function ChatMessageItem({
     const root = markdownRef.current
     if (!root || !onReviseSelectionChange) return false
 
+    const domText = window.getSelection()?.toString().trim() ?? ''
     const range = getMarkdownRangeFromDomSelection(root, message.content)
-    if (!range) return false
+    if (!range) {
+      if (domText.length > (lastSelectionRef.current?.displayText.length ?? 0)) {
+        lastSelectionRef.current = null
+        onReviseSelectionChange(null)
+      }
+      return false
+    }
 
-    const next = { start: range.start, end: range.end, text: range.text }
+    const next = { start: range.start, end: range.end, text: range.text, displayText: range.displayText }
     lastSelectionRef.current = next
     onReviseSelectionChange(next)
     return true
@@ -68,13 +80,18 @@ export default function ChatMessageItem({
 
         const target = event.target
         const inArticle = target instanceof Node && markdownRef.current.contains(target)
-        const domSelection = window.getSelection()
-        const hasVisibleSelection =
-          Boolean(domSelection && !domSelection.isCollapsed && domSelection.toString().trim())
+        const selection = window.getSelection()
+        const visibleText = selection?.toString().trim() ?? ''
+        const hasVisibleSelection = Boolean(selection && !selection.isCollapsed && visibleText)
 
         if (inArticle) {
           if (hasVisibleSelection || lastSelectionRef.current) {
-            restoreLastSelection()
+            if (
+              !hasVisibleSelection ||
+              visibleText.length <= (lastSelectionRef.current?.displayText.length ?? 0) + 2
+            ) {
+              restoreLastSelection()
+            }
             return
           }
 
@@ -153,6 +170,7 @@ export default function ChatMessageItem({
   const streaming = message.status === 'streaming'
   const revising = message.status === 'revising'
   const pendingApply = message.status === 'pendingApply'
+  const interrupted = message.status === 'interrupted'
   const showRevisionActions =
     isUser &&
     Boolean(message.content.startsWith('**修改说明**')) &&
@@ -189,25 +207,22 @@ export default function ChatMessageItem({
     )
   }
 
+  const showArticleCopy =
+    Boolean(message.content.trim()) &&
+    message.status !== 'streaming' &&
+    message.status !== 'error' &&
+    message.status !== 'interrupted'
+
   return (
     <article className="chat-message is-assistant" onContextMenu={onContextMenu}>
       <div className="assistant-block">
-        {message.content ? (
-          <button
-            type="button"
-            className="assistant-copy-btn"
-            onClick={() => onCopy?.(message.content)}
-            aria-label="复制回复"
-          >
-            <IconCopy size={13} />
-          </button>
-        ) : null}
         <div
           className={[
             'assistant-card',
             reviseSelectionEnabled ? 'is-revise-selectable' : '',
             revising ? 'is-revising' : '',
-            pendingApply ? 'is-pending-apply' : ''
+            pendingApply ? 'is-pending-apply' : '',
+            interrupted ? 'is-interrupted' : ''
           ]
             .filter(Boolean)
             .join(' ')}
@@ -217,6 +232,8 @@ export default function ChatMessageItem({
               bodyRef={markdownRef}
               content={message.content}
               streaming={streaming}
+              waitingLabel={waitingLabel}
+              waitingElapsedSec={waitingElapsedSec}
               sourceMapping={reviseSelectionEnabled}
               editableSelection={reviseSelectionEnabled}
             />
@@ -232,7 +249,25 @@ export default function ChatMessageItem({
               待确认修改
             </div>
           ) : null}
+          {interrupted ? (
+            <div className="assistant-interrupted-badge" aria-live="polite">
+              生成已中断 · 可点击下方继续生成
+            </div>
+          ) : null}
         </div>
+        {showArticleCopy ? (
+          <div className="assistant-copy-footer">
+            <button
+              type="button"
+              className="assistant-copy-mini-btn"
+              onClick={() => onCopy?.(getArticleCopyMarkdown(message.content))}
+              aria-label="复制全文"
+              title="复制全文（Markdown）"
+            >
+              <IconCopyArticle size={13} />
+            </button>
+          </div>
+        ) : null}
         {message.status === 'error' ? <p className="message-error">生成失败，请检查 AI 配置后重试。</p> : null}
       </div>
     </article>

@@ -8,6 +8,10 @@ import { IconPlus, IconSend, IconStop, IconClose } from '../../components/Icons'
 interface ComposerProps {
   disabled: boolean
   isGenerating: boolean
+  canResume?: boolean
+  resumeLabel?: string
+  onResume?: () => void
+  onDiscardResume?: () => void
   showOptions: boolean
   writeMode: WriteMode
   quickPicks: QuickPicksConfig
@@ -25,11 +29,16 @@ interface ComposerProps {
   onDraftExtraChange: (value: string) => void
   reviseSelectionPreview?: string | null
   onClearReviseSelection?: () => void
+  onBatchWrite?: () => void
 }
 
 export default function Composer({
   disabled,
   isGenerating,
+  canResume = false,
+  resumeLabel = '继续生成',
+  onResume,
+  onDiscardResume,
   showOptions,
   writeMode,
   quickPicks,
@@ -46,7 +55,8 @@ export default function Composer({
   onDraftInputChange,
   onDraftExtraChange,
   reviseSelectionPreview = null,
-  onClearReviseSelection
+  onClearReviseSelection,
+  onBatchWrite
 }: ComposerProps) {
   const [showExtra, setShowExtra] = useState(false)
   const isOptimize = writeMode === 'optimize'
@@ -92,8 +102,21 @@ export default function Composer({
         {showOptions ? (
           <>
             <div className={`composer-options${isOptimize ? ' is-optimize' : ''}`}>
+              {onBatchWrite ? (
+                <div className="composer-option composer-option-fixed">
+                  <button
+                    type="button"
+                    className="composer-control composer-batch-btn"
+                    onClick={onBatchWrite}
+                    disabled={panelDisabled}
+                  >
+                    {isOptimize ? '批量优化' : '批量创作'}
+                  </button>
+                </div>
+              ) : null}
               <label className="composer-option">
                 <select
+                  className="composer-control"
                   value={selectedProductId}
                   onChange={(e) => onProductChange(e.target.value)}
                   disabled={panelDisabled || quickPicks.products.length === 0}
@@ -112,6 +135,7 @@ export default function Composer({
 
               <label className="composer-option">
                 <select
+                  className="composer-control"
                   value={outputLanguage}
                   onChange={(e) => onOutputLanguageChange(e.target.value as OutputLanguageCode)}
                   disabled={panelDisabled}
@@ -128,6 +152,7 @@ export default function Composer({
               {!isOptimize ? (
                 <label className="composer-option">
                   <select
+                    className="composer-control"
                     value={articleType}
                     onChange={(e) => onArticleTypeChange(e.target.value as ArticleType)}
                     disabled={panelDisabled}
@@ -177,6 +202,32 @@ export default function Composer({
             >
               <IconClose size={10} />
             </button>
+          </div>
+        ) : null}
+
+        {canResume && !isGenerating ? (
+          <div className="composer-resume-bar">
+            <span className="composer-resume-hint">生成已中断，可从当前进度继续</span>
+            <div className="composer-resume-actions">
+              <button
+                type="button"
+                className="composer-resume-btn"
+                onClick={onResume}
+                disabled={disabled}
+              >
+                {resumeLabel}
+              </button>
+              {onDiscardResume ? (
+                <button
+                  type="button"
+                  className="composer-resume-discard"
+                  onClick={onDiscardResume}
+                  disabled={disabled}
+                >
+                  放弃进度
+                </button>
+              ) : null}
+            </div>
           </div>
         ) : null}
 

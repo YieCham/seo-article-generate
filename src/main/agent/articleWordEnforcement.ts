@@ -1,4 +1,4 @@
-import { streamChatCompletion, type LlmConfig } from './llmClient'
+import { chatCompletion, createRateLimitRetryStatus, type LlmConfig } from './llmClient'
 import {
   getArticleLengthBounds,
   countArticleWords,
@@ -6,7 +6,13 @@ import {
 } from './articleLength'
 import type { GenerateProgressEvent } from './articleAgent'
 
-import { getOptimizePromptBlocks } from './optimizeStructure'
+import {
+  getOptimizeLengthPromptBlock,
+  getOptimizePromptBlocks,
+  OPTIMIZE_LENGTH_SKIP_MAX,
+  OPTIMIZE_LENGTH_SKIP_MIN,
+  shouldSkipOptimizeLengthAdjust
+} from './optimizeStructure'
 
 interface ArticleLanguageContext {
   lock: string
@@ -49,31 +55,37 @@ async function runWordCountAdjustment(
     })
     emit({ type: 'reset' })
 
-    let adjusted = ''
-    await streamChatCompletion(
+    const lengthStatusMessage = `⑨ 词数校准：程序计数 ${count} 词 → 目标 ${bounds.label}…`
+
+    const adjusted = await chatCompletion(
       llm,
       [
         {
           role: 'system',
           content: [
             options?.optimizeMode
-              ? '你是文章长度编辑。在**保守优化**前提下微调词数：保留原有结构与绝大部分原句，禁止整篇重写。'
+              ? '你是文章长度编辑。在**保守优化**前提下微调词数：保留原有结构与绝大部分原句，禁止整篇重写。终稿词数宜落在原文 ±20% 区间内，但质量优先于字数。'
               : '你是文章长度编辑。根据程序测定的词数，将 Markdown 文章调整到指定区间。',
             articleLang.lock,
-            options?.optimizeMode ? getOptimizePromptBlocks() : getArticleLengthPromptBlock(options?.skillsText)
-          ].join('\n\n')
+            options?.optimizeMode ? getOptimizePromptBlocks() : getArticleLengthPromptBlock(options?.skillsText),
+            options?.optimizeMode ? getOptimizeLengthPromptBlock(bounds) : ''
+          ]
+            .filter(Boolean)
+            .join('\n\n')
         },
         {
           role: 'user',
           content: [
             `主题/页面：${topicLabel}`,
-            `程序计词结果：**${count}** English words（系统会再次程序计数，输出须落在区间内）`,
+            `程序计词结果：**${count}** English words（系统会再次程序计数${options?.optimizeMode ? '' : '，输出须落在区间内'}）`,
             `目标区间：**${bounds.min}–${bounds.max}** words（${bounds.label}）`,
             expand
               ? options?.optimizeMode
-                ? `- 当前过短：在**不改变章节结构**的前提下，于相关章节**插入**诊断/竞品中的缺失要点；禁止整节重写`
+                ? `- 当前偏短：在**不改变章节结构**的前提下，于相关章节**插入**诊断/竞品中的缺失要点；禁止整节重写或水字数`
                 : `- 当前过短：在保留结构与关键信息的前提下，补充**与主题相关且对读者有帮助**的实质内容（实用示例、操作细节、常见误区、使用场景等），至少达到 ${bounds.min} 词；**禁止**用重复句、同义反复、空话套话等方式水字数`
-              : `- 当前过长：删减重复与低价值表述，保留结构与关键信息，不超过 ${bounds.max} 词`,
+              : options?.optimizeMode
+                ? `- 当前偏长：删减重复与低价值表述，保留结构与关键信息；若因删减过时内容而略低于下限也可接受`
+                : `- 当前过长：删减重复与低价值表述，保留结构与关键信息，不超过 ${bounds.max} 词`,
             '- 保留 Markdown 结构（H1/H2/FAQ/表格/[Image: …] 占位符）',
             '- 不要输出词数说明或修改过程，直接输出完整 Markdown 正文',
             options?.sourcePreview
@@ -86,13 +98,18 @@ async function runWordCountAdjustment(
             .join('\n')
         }
       ],
-      (text) => {
-        adjusted += text
-        onChunk(text)
-      },
-      { temperature: options?.optimizeMode ? 0.2 : 0.35, maxTokens }
+      {
+        temperature: options?.optimizeMode ? 0.2 : 0.35,
+        maxTokens,
+        step: 'length',
+        label: '词数校准',
+        onRateLimitRetry: createRateLimitRetryStatus(lengthStatusMessage, (message) =>
+          emit({ type: 'status', step: 'length', message })
+        )
+      }
     )
 
+    onChunk(adjusted)
     result = adjusted.trim()
   }
 
@@ -134,7 +151,19 @@ export async function enforceOptimizeArticleWordCount(
   emit: (event: GenerateProgressEvent) => void,
   onChunk: (text: string) => void
 ): Promise<string> {
-  return runWordCountAdjustment(llm, article, topicLabel, articleLang, bounds, maxTokens, emit, onChunk, {
+  const trimmed = article.trim()
+  const count = countArticleWords(trimmed)
+
+  if (shouldSkipOptimizeLengthAdjust(count)) {
+    emit({
+      type: 'status',
+      step: 'length',
+      message: `⑨ 词数校准：程序计数 ${count} 词，已在 ${OPTIMIZE_LENGTH_SKIP_MIN}–${OPTIMIZE_LENGTH_SKIP_MAX} 区间内，跳过校准`
+    })
+    return trimmed
+  }
+
+  return runWordCountAdjustment(llm, trimmed, topicLabel, articleLang, bounds, maxTokens, emit, onChunk, {
     optimizeMode: true,
     sourcePreview: sourceMarkdown
   })

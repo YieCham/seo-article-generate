@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 
-export type SessionConfirmAction = 'clear' | 'delete'
+export type SessionConfirmAction = 'clear' | 'delete' | 'regenerate'
 
 const CONFIRM_COPY: Record<
   SessionConfirmAction,
@@ -15,6 +15,11 @@ const CONFIRM_COPY: Record<
     title: '删除话题',
     message: '确定要删除该话题吗？删除后无法恢复。',
     confirmLabel: '确定删除'
+  },
+  regenerate: {
+    title: '重新生成',
+    message: '将根据最初的用户请求重新生成文章，当前对话内容将被替换。此操作不可撤销。',
+    confirmLabel: '确定重新生成'
   }
 }
 

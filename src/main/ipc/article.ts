@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { generateArticle } from '../agent/articleAgent'
 import { optimizeArticle } from '../agent/articleOptimizer'
 import { reviseArticle } from '../agent/articleReviser'
+import type { PipelineCheckpoint } from '../agent/pipelineCheckpoint'
 import {
   beginArticleRun,
   cancelArticleRun,
@@ -37,6 +38,38 @@ export function registerArticleIpc(): void {
     const signal = beginArticleRun(event.sender.id)
     try {
       return await runWithAbortSignal(signal, () => reviseArticle(options, event.sender))
+    } finally {
+      endArticleRun(event.sender.id)
+    }
+  })
+
+  ipcMain.handle('article:resume', async (event, checkpoint: PipelineCheckpoint) => {
+    const signal = beginArticleRun(event.sender.id)
+    try {
+      if (checkpoint.kind === 'create') {
+        return await runWithAbortSignal(signal, () =>
+          generateArticle(
+            {
+              topic: checkpoint.options.topic,
+              extraInstructions: checkpoint.options.extraInstructions,
+              outputLanguage: checkpoint.options.outputLanguage,
+              resume: checkpoint
+            },
+            event.sender
+          )
+        )
+      }
+      return await runWithAbortSignal(signal, () =>
+        optimizeArticle(
+          {
+            sourceUrl: checkpoint.options.sourceUrl,
+            extraInstructions: checkpoint.options.extraInstructions,
+            outputLanguage: checkpoint.options.outputLanguage,
+            resume: checkpoint
+          },
+          event.sender
+        )
+      )
     } finally {
       endArticleRun(event.sender.id)
     }

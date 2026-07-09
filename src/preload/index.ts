@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { PipelineCheckpoint } from '../shared/pipelineCheckpoint'
 
 export interface GenerateArticleRequest {
   topic: string
@@ -22,19 +23,33 @@ export interface ResearchSourcePreview {
 }
 
 export interface GenerateProgressEvent {
-  type: 'chunk' | 'status' | 'error' | 'done' | 'cancelled' | 'replace' | 'research' | 'reset' | 'planning' | 'prepend'
+  type:
+    | 'chunk'
+    | 'status'
+    | 'error'
+    | 'done'
+    | 'cancelled'
+    | 'replace'
+    | 'research'
+    | 'reset'
+    | 'planning'
+    | 'prepend'
+    | 'checkpoint'
+    | 'clearCheckpoint'
   text?: string
   message?: string
   step?: string
   researchSummary?: string
   planningSummary?: string
   sources?: ResearchSourcePreview[]
+  checkpoint?: PipelineCheckpoint
 }
 
 export interface ReviseArticleSelection {
   start: number
   end: number
   text: string
+  displayText: string
 }
 
 export interface ReviseArticleRequest {
@@ -167,6 +182,8 @@ export interface ChatStoreData {
     id: string
     title: string
     customTitle?: string
+    pinned?: boolean
+    pinnedAt?: number
     messages: Array<{
       id: string
       role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
@@ -183,6 +200,8 @@ const api = {
     ipcRenderer.invoke('article:generate', request),
   optimizeArticle: (request: OptimizeArticleRequest): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:optimize', request),
+  resumeArticle: (checkpoint: PipelineCheckpoint): Promise<GenerateArticleResult> =>
+    ipcRenderer.invoke('article:resume', checkpoint),
   cancelArticle: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('article:cancel'),
   reviseArticle: (request: ReviseArticleRequest): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:revise', request),
@@ -217,6 +236,9 @@ const api = {
   windowMinimize: (): void => ipcRenderer.send('window:minimize'),
   windowMaximize: (): void => ipcRenderer.send('window:maximize'),
   windowClose: (): void => ipcRenderer.send('window:close'),
+  windowRequestClose: (): void => ipcRenderer.send('window:requestClose'),
+  windowMinimizeToTray: (): void => ipcRenderer.send('window:minimizeToTray'),
+  windowQuit: (): void => ipcRenderer.send('window:quit'),
   windowIsMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
   popupAppMenu: (label: string, x: number, y: number): Promise<void> =>
     ipcRenderer.invoke('window:popupMenu', label, x, y),
@@ -226,6 +248,13 @@ const api = {
     }
     ipcRenderer.on('window:maximized', listener)
     return () => ipcRenderer.removeListener('window:maximized', listener)
+  },
+  onCloseRequested: (callback: () => void): (() => void) => {
+    const listener = (): void => {
+      callback()
+    }
+    ipcRenderer.on('window:closeRequested', listener)
+    return () => ipcRenderer.removeListener('window:closeRequested', listener)
   }
 }
 

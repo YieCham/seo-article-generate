@@ -1,5 +1,6 @@
 import { BrowserWindow, ipcMain, shell } from 'electron'
 import { isAppMenuLabel, popupAppSubmenu } from '../menu/appMenu'
+import { hideMainWindowToTray, quitApplication } from '../window/trayManager'
 
 function isExternalLink(url: string, currentUrl: string): boolean {
   try {
@@ -55,7 +56,19 @@ export function registerWindowIpc(): void {
   })
 
   ipcMain.on('window:close', (event) => {
-    getSenderWindow(event)?.close()
+    getSenderWindow(event)?.webContents.send('window:closeRequested')
+  })
+
+  ipcMain.on('window:requestClose', (event) => {
+    getSenderWindow(event)?.webContents.send('window:closeRequested')
+  })
+
+  ipcMain.on('window:minimizeToTray', () => {
+    hideMainWindowToTray()
+  })
+
+  ipcMain.on('window:quit', () => {
+    quitApplication()
   })
 
   ipcMain.handle('window:isMaximized', (event) => {

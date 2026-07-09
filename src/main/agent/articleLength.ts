@@ -85,6 +85,7 @@ export const CONTENT_READABILITY_GUIDANCE = `
 - Use bullet lists and ### subheadings when they clarify steps or comparisons — not to artificially split every thought.
 - Never quote writing brief labels in the article (e.g. "Target audience", "for US reader", "Product name:", "Article type:").
 - **Anti-filler rule:** every added sentence must help the reader — no throat-clearing, no saying the same point twice in different words to hit word count.
+- **Anti-promo rule:** when a product name is specified, mention it in designated sections (Quick Answer, product Part, comparison, conclusion) and in generic Parts only when content naturally links; do not repeat the name in every paragraph or FAQ answer.
 `.trim()
 
 export function getArticleLengthPromptBlock(skillsText?: string): string {

@@ -18,8 +18,11 @@ import {
   buildExtraInstructions,
   formatOptimizeUserMessageContent,
   formatReviseUserMessageContent,
-  formatUserMessageContent
+  formatUserMessageContent,
+  parseCreateUserMessage,
+  parseOptimizeUserMessage
 } from '../utils/extraInstructions'
+import { parseBatchTopics } from '../utils/parseBatchTopics'
 
 import ChatSidebar from './write/ChatSidebar'
 
@@ -27,9 +30,34 @@ import ChatThread from './write/ChatThread'
 
 import Composer from './write/Composer'
 
+import BatchWriteDialog from './write/BatchWriteDialog'
+
 import WriteModePickerDialog from './write/WriteModePickerDialog'
 
-import { createMessage, createSession, getLatestDoneAssistantMessage, getSessionDisplayTitle, sessionHasPendingRevision, sessionIsInFollowUpMode, sessionTitleFromPrompt, sessionTitleFromUrl, type ChatSession, type ReviseArticleSelection } from './write/types'
+import type { PipelineCheckpoint } from '../../../shared/pipelineCheckpoint'
+import {
+  createMessage,
+  createSession,
+  getInterruptedAssistantMessage,
+  getLatestDoneAssistantMessage,
+  getResumeStatusLabel,
+  getSessionDisplayTitle,
+  getSessionTopbarTitle,
+  getSessionInitialUserMessage,
+  insertSessionAtListTop,
+  normalizeAllSessionSortOrders,
+  normalizeIdleStreamingAssistants,
+  reorderSessions,
+  sessionCanResume,
+  sessionHasPendingRevision,
+  sessionIsInFollowUpMode,
+  sessionTitleFromPrompt,
+  sessionTitleFromUrl,
+  sortSessions,
+  type ChatSession,
+  type ReviseArticleSelection,
+  type SessionListGroup
+} from './write/types'
 
 
 
@@ -58,12 +86,27 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [articleType, setArticleType] = useState<ArticleType>('how-to')
   const [modePickerOpen, setModePickerOpen] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
+  const [pipelineStatusMessage, setPipelineStatusMessage] = useState('')
+  const [pipelineElapsedSec, setPipelineElapsedSec] = useState(0)
   const [reviseSelection, setReviseSelection] = useState<ReviseArticleSelection | null>(null)
   const [runningSessionId, setRunningSessionId] = useState('')
+  const [batchDialogMode, setBatchDialogMode] = useState<WriteMode | null>(null)
+  const [batchProgress, setBatchProgress] = useState<{
+    mode: WriteMode
+    current: number
+    total: number
+    item: string
+  } | null>(null)
 
   const [toast, setToast] = useState('')
 
   const generatingSessionIdRef = useRef<string>('')
+  const batchActiveRef = useRef(false)
+  const activeSessionIdRef = useRef(activeSessionId)
+  const batchAbortRef = useRef(false)
+  const finishedGenerationSessionsRef = useRef<Set<string>>(new Set())
+  const pipelineStepStartedAtRef = useRef<number | null>(null)
+  const pipelineCheckpointRef = useRef<Map<string, PipelineCheckpoint>>(new Map())
 
   const revisionBaselineRef = useRef<{
     messageId: string
@@ -78,6 +121,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const activeSession =
 
     sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null
+
+  activeSessionIdRef.current = activeSessionId
 
   const activeWriteMode: WriteMode = activeSession?.writeMode ?? 'create'
 
@@ -98,11 +143,19 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       if (store.sessions.length > 0) {
 
         setSessions(
-          store.sessions.map((session) => ({
-            ...session,
-            writeMode: session.writeMode === 'optimize' ? 'optimize' : 'create'
-          }))
+          normalizeAllSessionSortOrders(
+            store.sessions.map((session) => ({
+              ...session,
+              writeMode: session.writeMode === 'optimize' ? 'optimize' : 'create'
+            }))
+          )
         )
+
+        for (const session of store.sessions) {
+          if (session.pipelineCheckpoint) {
+            pipelineCheckpointRef.current.set(session.id, session.pipelineCheckpoint)
+          }
+        }
 
         setActiveSessionId(store.activeSessionId || store.sessions[0].id)
 
@@ -197,57 +250,85 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }, [sessions, activeSessionId, hydrated])
 
+  useEffect(() => {
+    if (!isRunning) {
+      setPipelineStatusMessage('')
+      setPipelineElapsedSec(0)
+      pipelineStepStartedAtRef.current = null
+      return
+    }
 
+    const timer = window.setInterval(() => {
+      if (pipelineStepStartedAtRef.current != null) {
+        setPipelineElapsedSec(
+          Math.floor((Date.now() - pipelineStepStartedAtRef.current) / 1000)
+        )
+      }
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [isRunning])
 
   useEffect(() => {
 
     const unsubscribe = window.app.onProgress((event: GenerateProgressEvent) => {
+      const targetSessionId = generatingSessionIdRef.current
+      if (!targetSessionId) return
+
+      const isStaleGenerationEvent =
+        finishedGenerationSessionsRef.current.has(targetSessionId) &&
+        (event.type === 'chunk' ||
+          event.type === 'replace' ||
+          event.type === 'prepend' ||
+          event.type === 'reset' ||
+          event.type === 'research' ||
+          event.type === 'planning' ||
+          event.type === 'checkpoint' ||
+          event.type === 'clearCheckpoint')
+      if (isStaleGenerationEvent) return
 
       if (event.type === 'status' && event.message) {
-
-        upsertStatusMessage(event.message)
-
+        setPipelineStatusMessage(event.message)
+        pipelineStepStartedAtRef.current = Date.now()
+        setPipelineElapsedSec(0)
       }
 
       if (event.type === 'research' && event.researchSummary) {
-
-        upsertResearchMessage(event.researchSummary)
-
+        upsertResearchMessage(event.researchSummary, targetSessionId)
       }
 
       if (event.type === 'planning' && event.planningSummary) {
-
-        upsertPlanningMessage(event.planningSummary)
-
+        upsertPlanningMessage(event.planningSummary, targetSessionId)
       }
 
       if (event.type === 'reset') {
-
-        resetAssistantContent()
-
+        resetAssistantContent(targetSessionId)
       }
 
       if (event.type === 'prepend' && event.text) {
-
-        prependAssistantContent(event.text)
-
+        prependAssistantContent(event.text, targetSessionId)
       }
 
       if (event.type === 'chunk' && event.text) {
-
-        appendAssistantChunk(event.text)
-
+        appendAssistantChunk(event.text, targetSessionId)
       }
 
       if (event.type === 'replace' && event.text) {
+        replaceAssistantContent(event.text, targetSessionId)
+      }
 
-        replaceAssistantContent(event.text)
+      if (event.type === 'checkpoint' && event.checkpoint) {
+        persistCheckpoint(event.checkpoint, targetSessionId)
+      }
 
+      if (event.type === 'clearCheckpoint') {
+        clearSessionCheckpoint(targetSessionId)
       }
 
       if (event.type === 'cancelled') {
-        if (!abortRevisionAttempt()) {
-          finalizeAssistantMessage()
+        if (batchActiveRef.current) return
+        if (!abortRevisionAttempt(targetSessionId)) {
+          finalizeOrInterruptAssistant(targetSessionId)
         }
         setIsRunning(false)
         generatingSessionIdRef.current = ''
@@ -257,12 +338,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       }
 
       if (event.type === 'error' && event.message) {
-
-        if (abortRevisionAttempt()) {
+        if (batchActiveRef.current) return
+        if (abortRevisionAttempt(targetSessionId)) {
           setToast(event.message)
           window.setTimeout(() => setToast(''), 2200)
         } else {
-          markAssistantError(event.message)
+          markAssistantInterruptedOrError(event.message, targetSessionId)
         }
         setIsRunning(false)
         setRunningSessionId('')
@@ -270,21 +351,21 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       }
 
       if (event.type === 'done') {
+        if (batchActiveRef.current) return
+        clearSessionCheckpoint(targetSessionId)
         if (revisionBaselineRef.current) {
-          finalizePendingRevision()
+          finalizePendingRevision(targetSessionId)
         } else {
-          finalizeAssistantMessage()
+          finalizeAssistantMessage(targetSessionId)
         }
         setIsRunning(false)
         generatingSessionIdRef.current = ''
         setRunningSessionId('')
       }
-
     })
 
     return unsubscribe
-
-  }, [activeSessionId])
+  }, [])
 
 
 
@@ -297,42 +378,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
   function getTargetSessionId(): string {
-
-    return generatingSessionIdRef.current || activeSessionId
-
+    return generatingSessionIdRef.current || activeSessionIdRef.current
   }
 
+  function upsertResearchMessage(content: string, sessionId = getTargetSessionId()): void {
 
-
-  function upsertStatusMessage(content: string): void {
-
-    updateSession(getTargetSessionId(), (session) => {
-
-      const messages = [...session.messages]
-
-      const last = messages[messages.length - 1]
-
-      if (last?.role === 'status') {
-
-        messages[messages.length - 1] = { ...last, content }
-
-      } else {
-
-        messages.push(createMessage('status', content))
-
-      }
-
-      return { ...session, messages, updatedAt: Date.now() }
-
-    })
-
-  }
-
-
-
-  function upsertResearchMessage(content: string): void {
-
-    updateSession(getTargetSessionId(), (session) => {
+    updateSession(sessionId, (session) => {
 
       const withoutStatus = session.messages.filter((item) => item.role !== 'status')
 
@@ -376,9 +427,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
 
-  function upsertPlanningMessage(content: string): void {
+  function upsertPlanningMessage(content: string, sessionId = getTargetSessionId()): void {
 
-    updateSession(getTargetSessionId(), (session) => {
+    updateSession(sessionId, (session) => {
 
       const withoutStatus = session.messages.filter((item) => item.role !== 'status')
 
@@ -422,9 +473,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
 
-  function resetAssistantContent(): void {
+  function resetAssistantContent(sessionId = getTargetSessionId()): void {
 
-    updateSession(getTargetSessionId(), (session) => ({
+    updateSession(sessionId, (session) => ({
 
       ...session,
 
@@ -446,9 +497,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
 
-  function appendAssistantChunk(text: string): void {
+  function appendAssistantChunk(text: string, sessionId = getTargetSessionId()): void {
 
-    updateSession(getTargetSessionId(), (session) => {
+    updateSession(sessionId, (session) => {
 
       const filtered = session.messages.filter((item) => item.role !== 'status')
 
@@ -459,6 +510,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       if (index >= 0) {
         const current = filtered[index]
         filtered[index] = { ...current, content: current.content + text }
+      } else {
+        for (let i = filtered.length - 1; i >= 0; i -= 1) {
+          const message = filtered[i]
+          if (message.role !== 'assistant') continue
+          if (message.status === 'done' || message.status === 'error') break
+          filtered[i] = {
+            ...message,
+            content: message.content + text,
+            status: 'streaming' as const
+          }
+          break
+        }
       }
 
       return { ...session, messages: filtered, updatedAt: Date.now() }
@@ -467,9 +530,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
-  function replaceAssistantContent(text: string): void {
+  function replaceAssistantContent(text: string, sessionId = getTargetSessionId()): void {
 
-    updateSession(getTargetSessionId(), (session) => ({
+    updateSession(sessionId, (session) => ({
 
       ...session,
 
@@ -493,9 +556,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
-  function removeMessageById(messageId: string): void {
+  function removeMessageById(messageId: string, sessionId = getTargetSessionId()): void {
 
-    updateSession(getTargetSessionId(), (session) => ({
+    updateSession(sessionId, (session) => ({
 
       ...session,
 
@@ -511,15 +574,15 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
-  function abortRevisionAttempt(): boolean {
+  function abortRevisionAttempt(sessionId = getTargetSessionId()): boolean {
 
     const baseline = revisionBaselineRef.current
 
     if (!baseline) return false
 
-    restoreRevisionBaseline()
+    restoreRevisionBaseline(sessionId)
 
-    removeMessageById(baseline.userMessageId)
+    removeMessageById(baseline.userMessageId, sessionId)
 
     revisionBaselineRef.current = null
 
@@ -527,13 +590,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
-  function restoreRevisionBaseline(): boolean {
+  function restoreRevisionBaseline(sessionId = getTargetSessionId()): boolean {
 
     const baseline = revisionBaselineRef.current
 
     if (!baseline) return false
 
-    updateSession(getTargetSessionId(), (session) => ({
+    updateSession(sessionId, (session) => ({
 
       ...session,
 
@@ -559,19 +622,19 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
-  function finalizePendingRevision(): void {
+  function finalizePendingRevision(sessionId = getTargetSessionId()): void {
 
     const baseline = revisionBaselineRef.current
 
     if (!baseline) {
 
-      finalizeAssistantMessage()
+      finalizeAssistantMessage(sessionId)
 
       return
 
     }
 
-    updateSession(getTargetSessionId(), (session) => ({
+    updateSession(sessionId, (session) => ({
 
       ...session,
 
@@ -615,9 +678,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
-  function prependAssistantContent(text: string): void {
+  function prependAssistantContent(text: string, sessionId = getTargetSessionId()): void {
 
-    updateSession(getTargetSessionId(), (session) => {
+    updateSession(sessionId, (session) => {
 
       const filtered = session.messages.filter((item) => item.role !== 'status')
 
@@ -638,9 +701,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
 
-  function markAssistantError(message: string): void {
+  function markAssistantError(message: string, sessionId = getTargetSessionId()): void {
 
-    updateSession(getTargetSessionId(), (session) => {
+    updateSession(sessionId, (session) => {
 
       const messages = session.messages
 
@@ -662,11 +725,86 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
+  function markAssistantInterruptedOrError(errorMessage: string, sessionId = getTargetSessionId()): void {
+    const hasCheckpoint = pipelineCheckpointRef.current.has(sessionId)
+
+    updateSession(sessionId, (session) => {
+      const messages = session.messages
+        .filter((item) => item.role !== 'status')
+        .map((item) => {
+          if (item.role !== 'assistant' || item.status !== 'streaming') return item
+          if (hasCheckpoint) {
+            return { ...item, status: 'interrupted' as const }
+          }
+          return { ...item, status: 'error' as const, content: item.content || errorMessage }
+        })
+
+      return { ...session, messages, updatedAt: Date.now() }
+    })
+
+    if (hasCheckpoint) {
+      setToast(errorMessage)
+      window.setTimeout(() => setToast(''), 2200)
+    }
+  }
+
+  function persistCheckpoint(checkpoint: PipelineCheckpoint, sessionId = getTargetSessionId()): void {
+    pipelineCheckpointRef.current.set(sessionId, checkpoint)
+
+    updateSession(sessionId, (session) => {
+      const assistantId =
+        [...session.messages]
+          .reverse()
+          .find(
+            (message) =>
+              message.role === 'assistant' &&
+              (message.status === 'streaming' || message.status === 'interrupted')
+          )?.id ?? checkpoint.assistantMessageId
+
+      return {
+        ...session,
+        pipelineCheckpoint: {
+          ...checkpoint,
+          assistantMessageId: assistantId || checkpoint.assistantMessageId
+        },
+        updatedAt: Date.now()
+      }
+    })
+  }
+
+  function clearSessionCheckpoint(sessionId = getTargetSessionId()): void {
+    pipelineCheckpointRef.current.delete(sessionId)
+
+    updateSession(sessionId, (session) => ({
+      ...session,
+      pipelineCheckpoint: undefined,
+      updatedAt: Date.now()
+    }))
+  }
+
+  function finalizeOrInterruptAssistant(sessionId = getTargetSessionId()): void {
+    const hasCheckpoint = pipelineCheckpointRef.current.has(sessionId)
+
+    updateSession(sessionId, (session) => ({
+      ...session,
+      messages: session.messages
+        .filter((item) => item.role !== 'status')
+        .map((item) => {
+          if (item.role !== 'assistant' || item.status !== 'streaming') return item
+          return {
+            ...item,
+            status: hasCheckpoint ? ('interrupted' as const) : ('done' as const)
+          }
+        }),
+      updatedAt: Date.now()
+    }))
+  }
 
 
-  function finalizeAssistantMessage(): void {
 
-    updateSession(getTargetSessionId(), (session) => ({
+  function finalizeAssistantMessage(sessionId = getTargetSessionId()): void {
+
+    updateSession(sessionId, (session) => ({
 
       ...session,
 
@@ -690,6 +828,57 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
+  function finishGenerationRun(
+    sessionId: string,
+    result: { ok: boolean; message?: string },
+    errorLabel: string
+  ): { ok: boolean; aborted: boolean; message?: string } {
+    const aborted = !result.ok && result.message === '已中止生成'
+
+    if (aborted) {
+      finalizeOrInterruptAssistant(sessionId)
+      return { ok: false, aborted: true, message: result.message }
+    }
+
+    if (!result.ok) {
+      markAssistantError(result.message ?? errorLabel, sessionId)
+      if (!batchActiveRef.current) {
+        setIsRunning(false)
+        generatingSessionIdRef.current = ''
+        setRunningSessionId('')
+      }
+      return { ok: false, aborted: false, message: result.message }
+    }
+
+    clearSessionCheckpoint(sessionId)
+    finalizeAssistantMessage(sessionId)
+    finishedGenerationSessionsRef.current.add(sessionId)
+    return { ok: true, aborted: false, message: result.message }
+  }
+
+  function buildBatchSession(
+    mode: WriteMode,
+    item: string,
+    extraInstructions: string
+  ): ChatSession {
+    const session = createSession(mode)
+    const userContent =
+      mode === 'create'
+        ? formatUserMessageContent(item, extraInstructions, articleType)
+        : formatOptimizeUserMessageContent(item, extraInstructions)
+    const userMessage = createMessage('user', userContent)
+    const assistantMessage = createMessage('assistant', '')
+    const title =
+      mode === 'create' ? sessionTitleFromPrompt(item) : sessionTitleFromUrl(item)
+
+    return {
+      ...session,
+      title,
+      messages: [userMessage, assistantMessage],
+      updatedAt: Date.now()
+    }
+  }
+
 
 
   function handleNewChat(): void {
@@ -701,7 +890,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     const session = createSession(mode)
 
-    setSessions((prev) => [session, ...prev])
+    setSessions((prev) => insertSessionAtListTop(prev, session))
 
     setActiveSessionId(session.id)
 
@@ -714,7 +903,16 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
   function handleSelectSession(id: string): void {
+    const isTargetRunning = isRunning && runningSessionId === id
+    if (!isTargetRunning) {
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === id ? normalizeIdleStreamingAssistants(session) : session
+        )
+      )
+    }
     setActiveSessionId(id)
+    setReviseSelection(null)
   }
 
   function handleClearSession(id: string): void {
@@ -727,10 +925,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     setSessions((prev) =>
       prev.map((session) =>
         session.id === id
-          ? { ...session, title: '新对话', customTitle: undefined, messages: [], updatedAt: Date.now() }
+          ? {
+              ...session,
+              title: '新对话',
+              customTitle: undefined,
+              messages: [],
+              pipelineCheckpoint: undefined
+            }
           : session
       )
     )
+
+    pipelineCheckpointRef.current.delete(id)
 
     if (activeSessionId === id) {
       setDraftTopic('')
@@ -752,6 +958,120 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     )
   }
 
+  function handleTogglePinSession(id: string): void {
+    setSessions((prev) =>
+      prev.map((session) => {
+        if (session.id !== id) return session
+        const nextPinned = !session.pinned
+        return {
+          ...session,
+          pinned: nextPinned,
+          pinnedAt: nextPinned ? Date.now() : undefined
+        }
+      })
+    )
+  }
+
+  function handleReorderSessions(
+    group: SessionListGroup,
+    draggedId: string,
+    targetId: string,
+    position: 'before' | 'after'
+  ): void {
+    setSessions((prev) => reorderSessions(prev, group, draggedId, targetId, position))
+  }
+
+  async function handleRegenerateSession(id: string): Promise<void> {
+    if (isRunning) {
+      setToast('当前有任务正在运行，请稍后再试')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    const session = sessions.find((item) => item.id === id)
+    if (!session) return
+
+    const firstUser = getSessionInitialUserMessage(session)
+    if (!firstUser) {
+      setToast('找不到初始请求，无法重新生成')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    if (activeSessionId !== id) {
+      setActiveSessionId(id)
+    }
+
+    pipelineCheckpointRef.current.delete(id)
+    revisionBaselineRef.current = null
+    setReviseSelection(null)
+
+    const assistantMessage = createMessage('assistant', '')
+
+    updateSession(id, (current) => ({
+      ...current,
+      messages: [firstUser, assistantMessage],
+      pipelineCheckpoint: undefined,
+      updatedAt: Date.now()
+    }))
+
+    setDraftTopic('')
+    setDraftExtra('')
+
+    setIsRunning(true)
+    generatingSessionIdRef.current = id
+    setRunningSessionId(id)
+
+    if (session.writeMode === 'optimize') {
+      const parsed = parseOptimizeUserMessage(firstUser.content)
+      if (!parsed) {
+        markAssistantError('无法解析优化请求')
+        setIsRunning(false)
+        generatingSessionIdRef.current = ''
+        setRunningSessionId('')
+        return
+      }
+
+      const result = await window.app.optimizeArticle({
+        sourceUrl: parsed.sourceUrl,
+        extraInstructions: parsed.extraInstructions || undefined,
+        outputLanguage
+      })
+
+      if (!result.ok && result.message !== '已中止生成') {
+        markAssistantError(result.message ?? '优化失败')
+        setIsRunning(false)
+        generatingSessionIdRef.current = ''
+        setRunningSessionId('')
+      }
+      return
+    }
+
+    const parsed = parseCreateUserMessage(firstUser.content)
+    if (!parsed) {
+      markAssistantError('无法解析创作请求')
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+      return
+    }
+
+    await syncSkillsForArticleType(parsed.articleType)
+
+    const result = await window.app.generateArticle({
+      topic: parsed.topic,
+      extraInstructions: parsed.extraInstructions || undefined,
+      outputLanguage
+    })
+
+    if (!result.ok && result.message !== '已中止生成') {
+      markAssistantError(result.message ?? '生成失败')
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+    }
+  }
+
   function handleDeleteSession(id: string): void {
     if (generatingSessionIdRef.current === id) {
       setToast('该对话正在生成，无法删除')
@@ -768,8 +1088,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       }
 
       if (activeSessionId === id) {
-        const sorted = [...next].sort((a, b) => b.updatedAt - a.updatedAt)
-        setActiveSessionId(sorted[0].id)
+        const sorted = sortSessions(next)
+        setActiveSessionId(sorted[0]?.id ?? '')
       }
 
       return next
@@ -803,7 +1123,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     const userMessage = createMessage(
       'user',
-      formatReviseUserMessageContent(instruction, reviseSelection?.text)
+      formatReviseUserMessageContent(instruction, reviseSelection?.displayText ?? reviseSelection?.text)
     )
     const sessionId = activeSession.id
     const articleContent = articleMessage.content
@@ -944,6 +1264,39 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     }))
   }
 
+  async function executeCreateArticle(
+    sessionId: string,
+    topic: string,
+    extraInstructions: string,
+    options?: { skipMessageSetup?: boolean }
+  ): Promise<{ ok: boolean; aborted: boolean; message?: string }> {
+    if (!options?.skipMessageSetup) {
+      const userContent = formatUserMessageContent(topic, extraInstructions, articleType)
+      const userMessage = createMessage('user', userContent)
+      const assistantMessage = createMessage('assistant', '')
+
+      updateSession(sessionId, (session) => ({
+        ...session,
+        title: session.messages.length === 0 ? sessionTitleFromPrompt(topic) : session.title,
+        messages: [...session.messages, userMessage, assistantMessage],
+        updatedAt: Date.now()
+      }))
+    }
+
+    finishedGenerationSessionsRef.current.delete(sessionId)
+    setIsRunning(true)
+    generatingSessionIdRef.current = sessionId
+    setRunningSessionId(sessionId)
+
+    const result = await window.app.generateArticle({
+      topic,
+      extraInstructions: extraInstructions || undefined,
+      outputLanguage
+    })
+
+    return finishGenerationRun(sessionId, result, '生成失败')
+  }
+
   async function handleSubmit(topic: string, manualExtra: string): Promise<void> {
     if (isRunning || !activeSession) return
 
@@ -955,74 +1308,33 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       manual: manualExtra,
       articleType
     })
-    const userContent = formatUserMessageContent(topic, extraInstructions, articleType)
-    const userMessage = createMessage('user', userContent)
-
-    const assistantMessage = createMessage('assistant', '')
-
-    const sessionId = activeSession.id
-
-
-
-    updateSession(sessionId, (session) => ({
-
-      ...session,
-
-      title: session.messages.length === 0 ? sessionTitleFromPrompt(topic) : session.title,
-
-      messages: [...session.messages, userMessage, assistantMessage],
-
-      updatedAt: Date.now()
-
-    }))
-
-
 
     setDraftTopic('')
-
     setDraftExtra('')
 
-    setIsRunning(true)
-    generatingSessionIdRef.current = sessionId
-    setRunningSessionId(sessionId)
-
-
-
-    const result = await window.app.generateArticle({
-      topic,
-      extraInstructions: extraInstructions || undefined,
-      outputLanguage
-    })
-
-
-
-    if (!result.ok && result.message !== '已中止生成') {
-      markAssistantError(result.message ?? '生成失败')
-      setIsRunning(false)
-      generatingSessionIdRef.current = ''
-      setRunningSessionId('')
-    }
+    await executeCreateArticle(activeSession.id, topic, extraInstructions)
   }
 
-  async function handleOptimizeSubmit(sourceUrl: string, manualExtra: string): Promise<void> {
-    if (isRunning || !activeSession) return
+  async function executeOptimizeArticle(
+    sessionId: string,
+    sourceUrl: string,
+    extraInstructions: string,
+    options?: { skipMessageSetup?: boolean }
+  ): Promise<{ ok: boolean; aborted: boolean; message?: string }> {
+    if (!options?.skipMessageSetup) {
+      const userContent = formatOptimizeUserMessageContent(sourceUrl, extraInstructions)
+      const userMessage = createMessage('user', userContent)
+      const assistantMessage = createMessage('assistant', '')
 
-    const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
-    const extraInstructions = buildExtraInstructions({ product, manual: manualExtra })
-    const userContent = formatOptimizeUserMessageContent(sourceUrl, extraInstructions)
-    const userMessage = createMessage('user', userContent)
-    const assistantMessage = createMessage('assistant', '')
-    const sessionId = activeSession.id
+      updateSession(sessionId, (session) => ({
+        ...session,
+        title: session.messages.length === 0 ? sessionTitleFromUrl(sourceUrl) : session.title,
+        messages: [...session.messages, userMessage, assistantMessage],
+        updatedAt: Date.now()
+      }))
+    }
 
-    updateSession(sessionId, (session) => ({
-      ...session,
-      title: session.messages.length === 0 ? sessionTitleFromUrl(sourceUrl) : session.title,
-      messages: [...session.messages, userMessage, assistantMessage],
-      updatedAt: Date.now()
-    }))
-
-    setDraftTopic('')
-    setDraftExtra('')
+    finishedGenerationSessionsRef.current.delete(sessionId)
     setIsRunning(true)
     generatingSessionIdRef.current = sessionId
     setRunningSessionId(sessionId)
@@ -1033,12 +1345,123 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       outputLanguage
     })
 
-    if (!result.ok && result.message !== '已中止生成') {
-      markAssistantError(result.message ?? '优化失败')
+    return finishGenerationRun(sessionId, result, '优化失败')
+  }
+
+  async function runBatchWrite(
+    mode: WriteMode,
+    itemsText: string,
+    manualExtra: string
+  ): Promise<void> {
+    if (isRunning) return
+
+    const items = parseBatchTopics(itemsText)
+    const emptyHint = mode === 'optimize' ? '请输入至少一个 URL' : '请输入至少一个主题'
+    if (items.length === 0) {
+      setToast(emptyHint)
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    setBatchDialogMode(null)
+    batchAbortRef.current = false
+    batchActiveRef.current = true
+    setIsRunning(true)
+
+    const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
+    const extraInstructions =
+      mode === 'create'
+        ? buildExtraInstructions({ product, manual: manualExtra, articleType })
+        : buildExtraInstructions({ product, manual: manualExtra })
+
+    if (mode === 'create') {
+      await syncSkillsForArticleType(articleType)
+    }
+
+    let succeeded = 0
+    let failed = 0
+    let aborted = false
+
+    try {
+      for (let index = 0; index < items.length; index += 1) {
+        if (batchAbortRef.current) {
+          aborted = true
+          break
+        }
+
+        const item = items[index]
+        setBatchProgress({ mode, current: index + 1, total: items.length, item })
+
+        const session = buildBatchSession(mode, item, extraInstructions)
+        setSessions((prev) => insertSessionAtListTop(prev, session))
+        activeSessionIdRef.current = session.id
+        setActiveSessionId(session.id)
+        generatingSessionIdRef.current = session.id
+        setRunningSessionId(session.id)
+
+        const result =
+          mode === 'create'
+            ? await executeCreateArticle(session.id, item, extraInstructions, {
+                skipMessageSetup: true
+              })
+            : await executeOptimizeArticle(session.id, item, extraInstructions, {
+                skipMessageSetup: true
+              })
+
+        if (result.aborted) {
+          aborted = true
+          break
+        }
+        if (result.ok) {
+          succeeded += 1
+          setSessions((prev) =>
+            prev.map((item) =>
+              item.id === session.id ? normalizeIdleStreamingAssistants(item) : item
+            )
+          )
+        } else failed += 1
+      }
+    } finally {
+      if (batchAbortRef.current) aborted = true
+      batchActiveRef.current = false
+      setBatchProgress(null)
+      batchAbortRef.current = false
       setIsRunning(false)
       generatingSessionIdRef.current = ''
       setRunningSessionId('')
+      finishedGenerationSessionsRef.current.clear()
+      setSessions((prev) => prev.map((session) => normalizeIdleStreamingAssistants(session)))
     }
+
+    const actionLabel = mode === 'optimize' ? '批量优化' : '批量创作'
+    if (aborted) {
+      setToast(`${actionLabel}已中止`)
+    } else if (failed > 0) {
+      setToast(`${actionLabel}完成：成功 ${succeeded} 篇，失败 ${failed} 篇`)
+    } else {
+      setToast(`${actionLabel}完成：共 ${succeeded} 篇`)
+    }
+    window.setTimeout(() => setToast(''), 2800)
+  }
+
+  async function handleBatchCreate(topicsText: string, manualExtra: string): Promise<void> {
+    await runBatchWrite('create', topicsText, manualExtra)
+  }
+
+  async function handleBatchOptimize(urlsText: string, manualExtra: string): Promise<void> {
+    await runBatchWrite('optimize', urlsText, manualExtra)
+  }
+
+  async function handleOptimizeSubmit(sourceUrl: string, manualExtra: string): Promise<void> {
+    if (isRunning || !activeSession) return
+
+    const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
+    const extraInstructions = buildExtraInstructions({ product, manual: manualExtra })
+
+    setDraftTopic('')
+    setDraftExtra('')
+
+    await executeOptimizeArticle(activeSession.id, sourceUrl, extraInstructions)
   }
 
   function handleComposerSubmit(input: string, manualExtra: string): void {
@@ -1056,15 +1479,70 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   function handleStopGeneration(): void {
     if (!isRunning) return
+    if (batchProgress) {
+      batchAbortRef.current = true
+    }
     void window.app.cancelArticle()
   }
 
+  function handleDiscardResume(): void {
+    if (!activeSession || isRunning) return
 
+    pipelineCheckpointRef.current.delete(activeSession.id)
 
-  function handleSuggest(text: string): void {
+    updateSession(activeSession.id, (session) => ({
+      ...session,
+      pipelineCheckpoint: undefined,
+      messages: session.messages.map((message) =>
+        message.status === 'interrupted' ? { ...message, status: 'done' as const } : message
+      ),
+      updatedAt: Date.now()
+    }))
 
-    setDraftTopic(text)
+    setToast('已放弃未完成的进度')
+    window.setTimeout(() => setToast(''), 1800)
+  }
 
+  async function handleResumeGeneration(): Promise<void> {
+    if (!activeSession || isRunning || !sessionCanResume(activeSession)) return
+
+    const checkpoint = activeSession.pipelineCheckpoint!
+    const assistant = getInterruptedAssistantMessage(activeSession)!
+    const sessionId = activeSession.id
+
+    updateSession(sessionId, (session) => ({
+      ...session,
+      messages: session.messages
+        .filter((message) => message.role !== 'status')
+        .map((message) =>
+          message.id === assistant.id ? { ...message, status: 'streaming' as const } : message
+        ),
+      updatedAt: Date.now()
+    }))
+
+    const assistantContent = assistant.content.trim()
+    const mergedCheckpoint: PipelineCheckpoint = {
+      ...checkpoint,
+      assistantMessageId: assistant.id,
+      partialDraft:
+        assistantContent.length > (checkpoint.partialDraft?.length ?? 0)
+          ? assistant.content
+          : checkpoint.partialDraft,
+      workText: assistantContent || checkpoint.workText
+    }
+
+    setIsRunning(true)
+    generatingSessionIdRef.current = sessionId
+    setRunningSessionId(sessionId)
+
+    const result = await window.app.resumeArticle(mergedCheckpoint)
+
+    if (!result.ok && result.message !== '已中止生成') {
+      markAssistantInterruptedOrError(result.message ?? '继续生成失败')
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+    }
   }
 
 
@@ -1085,10 +1563,16 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   }
 
   const composerShowOptions = activeSession ? !sessionIsInFollowUpMode(activeSession) : true
+  const canResumeSession = activeSession ? sessionCanResume(activeSession) : false
+  const resumeStatusLabel = activeSession ? getResumeStatusLabel(activeSession) : '继续生成'
   const hasPendingRevision = activeSession ? sessionHasPendingRevision(activeSession) : false
+  const isActiveSessionRunning = isRunning && runningSessionId === activeSession?.id
   const latestArticleMessage = activeSession ? getLatestDoneAssistantMessage(activeSession) : null
   const reviseTargetMessageId =
-    composerShowOptions || hasPendingRevision || isRunning ? null : latestArticleMessage?.id ?? null
+    composerShowOptions || hasPendingRevision || isActiveSessionRunning
+      ? null
+      : latestArticleMessage?.id ?? null
+  const topbarTitle = activeSession ? getSessionTopbarTitle(activeSession) : null
 
 
 
@@ -1133,6 +1617,10 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         onClear={handleClearSession}
         onDelete={handleDeleteSession}
         onRename={handleRenameSession}
+        onTogglePin={handleTogglePinSession}
+        onReorder={handleReorderSessions}
+        onRegenerate={(sessionId) => void handleRegenerateSession(sessionId)}
+        isRunning={isRunning}
         onOpenSettings={onOpenSettings}
       />
 
@@ -1141,7 +1629,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       <main className="write-main">
 
         <header className="write-topbar">
-          <h1>{getSessionDisplayTitle(activeSession)}</h1>
+          {topbarTitle ? <h1>{topbarTitle}</h1> : null}
         </header>
 
 
@@ -1149,8 +1637,10 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         <ChatThread
           messages={activeSession.messages}
           onCopy={(content) => void handleCopy(content)}
-          onSuggest={handleSuggest}
-          isRunning={isRunning}
+          writeMode={activeWriteMode}
+          isRunning={isActiveSessionRunning}
+          pipelineStatusMessage={isActiveSessionRunning ? pipelineStatusMessage : ''}
+          pipelineElapsedSec={isActiveSessionRunning ? pipelineElapsedSec : 0}
           reviseTargetMessageId={reviseTargetMessageId}
           reviseSelection={reviseSelection}
           onReviseSelectionChange={setReviseSelection}
@@ -1164,7 +1654,11 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         <div className="composer-area">
           <Composer
             disabled={hasPendingRevision}
-            isGenerating={isRunning}
+            isGenerating={isActiveSessionRunning}
+            canResume={canResumeSession}
+            resumeLabel={resumeStatusLabel}
+            onResume={() => void handleResumeGeneration()}
+            onDiscardResume={handleDiscardResume}
             showOptions={composerShowOptions}
             writeMode={activeWriteMode}
             quickPicks={quickPicks}
@@ -1180,8 +1674,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             draftExtra={draftExtra}
             onDraftInputChange={setDraftTopic}
             onDraftExtraChange={setDraftExtra}
-            reviseSelectionPreview={reviseSelection?.text ?? null}
+            reviseSelectionPreview={reviseSelection?.displayText ?? reviseSelection?.text ?? null}
             onClearReviseSelection={handleClearReviseSelection}
+            onBatchWrite={
+              composerShowOptions
+                ? () => setBatchDialogMode(activeWriteMode)
+                : undefined
+            }
           />
 
           <footer className="write-statusbar">
@@ -1191,10 +1690,16 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             {isRunning ? (
               <span className="write-status-running">
                 <span className="status-pill-dot" aria-hidden="true" />
-                {composerShowOptions ? 'Pipeline 运行中' : '正在修订文章…'}
+                {batchProgress
+                  ? `${batchProgress.mode === 'optimize' ? '批量优化' : '批量创作'} ${batchProgress.current}/${batchProgress.total}：${batchProgress.item}`
+                  : composerShowOptions
+                    ? '运行中'
+                    : '正在修订文章…'}
               </span>
             ) : hasPendingRevision ? (
               <span className="write-status-running">待确认修改</span>
+            ) : canResumeSession ? (
+              <span className="write-status-running">生成已中断 · 可继续</span>
             ) : (
               <span className="write-status-idle">
                 {composerShowOptions
@@ -1215,6 +1720,25 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           open={modePickerOpen}
           onSelect={(mode) => void handleModePick(mode)}
           onClose={() => setModePickerOpen(false)}
+        />
+
+        <BatchWriteDialog
+          open={batchDialogMode != null}
+          mode={batchDialogMode ?? 'create'}
+          disabled={isRunning}
+          quickPicks={quickPicks}
+          selectedProductId={selectedProductId}
+          outputLanguage={outputLanguage}
+          articleType={articleType}
+          draftExtra={draftExtra}
+          onClose={() => setBatchDialogMode(null)}
+          onSubmit={(itemsText, extra) => {
+            if (batchDialogMode === 'optimize') {
+              void handleBatchOptimize(itemsText, extra)
+            } else {
+              void handleBatchCreate(itemsText, extra)
+            }
+          }}
         />
 
       </main>

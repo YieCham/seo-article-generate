@@ -6,6 +6,12 @@ import { registerArticleIpc } from './ipc/article'
 import { registerChatIpc } from './ipc/chat'
 import { registerConfigIpc } from './ipc/config'
 import { registerWindowIpc, attachWindowStateListeners, attachExternalLinkHandlers } from './ipc/window'
+import {
+  attachCloseHandler,
+  destroyTray,
+  initTrayManager,
+  setQuitting
+} from './window/trayManager'
 
 if (!app.isPackaged) {
   loadEnv({ path: join(__dirname, '../../.env') })
@@ -55,6 +61,8 @@ function createWindow(): void {
 
   attachWindowStateListeners(mainWindow)
   attachExternalLinkHandlers(mainWindow)
+  attachCloseHandler(mainWindow)
+  initTrayManager(mainWindow, icon)
 }
 
 app.whenReady().then(() => {
@@ -67,7 +75,13 @@ app.whenReady().then(() => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else mainWindow?.show()
   })
+})
+
+app.on('before-quit', () => {
+  setQuitting(true)
+  destroyTray()
 })
 
 app.on('window-all-closed', () => {

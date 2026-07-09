@@ -51,6 +51,47 @@ export function formatOptimizeUserMessageContent(sourceUrl: string, extraInstruc
   return `${header}\n\n**补充要求**\n${extraInstructions.trim()}`
 }
 
+export function parseCreateUserMessage(content: string): {
+  topic: string
+  extraInstructions: string
+  articleType: ArticleType
+} | null {
+  if (content.startsWith('**模式：**')) return null
+
+  const typeMatch = content.match(/^\*\*文章类型：\*\*\s*(Review|Top rank|How to)/)
+  let articleType: ArticleType = 'how-to'
+  if (typeMatch?.[1] === 'Review') articleType = 'review'
+  else if (typeMatch?.[1] === 'Top rank') articleType = 'top-rank'
+
+  const extraMatch = content.match(/\n\n\*\*补充要求\*\*\n([\s\S]*)$/)
+  const extraInstructions = extraMatch?.[1]?.trim() ?? ''
+
+  let body = content.replace(/^\*\*文章类型：\*\*[^\n]*\n\n?/, '')
+  if (extraMatch) {
+    body = body.replace(/\n\n\*\*补充要求\*\*\n[\s\S]*$/, '')
+  }
+
+  const topic = body.trim()
+  if (!topic) return null
+
+  return { topic, extraInstructions, articleType }
+}
+
+export function parseOptimizeUserMessage(content: string): {
+  sourceUrl: string
+  extraInstructions: string
+} | null {
+  if (!content.startsWith('**模式：** 文章优化')) return null
+
+  const urlMatch = content.match(/\*\*来源 URL：\*\*\s*(\S+)/)
+  if (!urlMatch?.[1]) return null
+
+  const extraMatch = content.match(/\n\n\*\*补充要求\*\*\n([\s\S]*)$/)
+  const extraInstructions = extraMatch?.[1]?.trim() ?? ''
+
+  return { sourceUrl: urlMatch[1].trim(), extraInstructions }
+}
+
 export function formatReviseUserMessageContent(
   instruction: string,
   selectionPreview?: string

@@ -6,8 +6,9 @@ import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../constants/o
 import LlmPresetPanel from './settings/LlmPresetPanel'
 import LlmMaxTokensPanel from './settings/LlmMaxTokensPanel'
 import TokenLogPanel from './settings/TokenLogPanel'
+import WindowClosePanel from './settings/WindowClosePanel'
 
-type SettingsTab = 'llm' | 'tokenLog' | 'research' | 'shortcuts' | 'prompts' | 'skills'
+type SettingsTab = 'general' | 'llm' | 'tokenLog' | 'research' | 'shortcuts' | 'prompts' | 'skills'
 
 const DEFAULT_CREATE_PROMPTS = {
   systemPrompt:
@@ -218,6 +219,13 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     })
   }
 
+  async function handleSaveWindowClose(): Promise<void> {
+    if (!config) return
+    await handleSaveConfig({
+      windowClose: config.windowClose
+    })
+  }
+
   async function handleSwitchActivePreset(id: string): Promise<void> {
     if (!config) return
     setConfig({ ...config, activeLlmPresetId: id })
@@ -366,6 +374,15 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         >
           Skill 管理
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'general'}
+          className={tab === 'general' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('general')}
+        >
+          通用
+        </button>
       </nav>
 
       <div className="settings-content">
@@ -381,7 +398,6 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
             editingPresetId={editingPresetId}
             saving={saving}
             testing={testing}
-            onEditingPresetChange={setEditingPresetId}
             onConfigChange={setConfig}
             onSave={() => void handleSaveLlmPresets()}
             onTest={() => void handleTestConnection()}
@@ -792,6 +808,21 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
             </section>
           )}
         </>
+      )}
+
+      {tab === 'general' && config && (
+        <section className="panel">
+          <h2 className="section-title">关闭窗口</h2>
+          <p className="section-desc">
+            设置点击右上角关闭按钮时的默认行为，可与关闭确认弹窗中的「以后不再提示」联动。
+          </p>
+          <WindowClosePanel
+            config={config}
+            saving={saving}
+            onConfigChange={setConfig}
+            onSave={() => void handleSaveWindowClose()}
+          />
+        </section>
       )}
 
       </div>

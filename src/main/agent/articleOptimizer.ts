@@ -25,8 +25,8 @@ import {
 import { getEnabledSkillsTextForOptimize } from './skillManager'
 import {
   chatCompletion,
+  createRateLimitRetryStatus,
   parseOutlineSections,
-  streamChatCompletion,
   type LlmConfig
 } from './llmClient'
 import {
@@ -41,29 +41,41 @@ import {
   extractSourceH1,
   findMatchingSourceSection,
   getOptimizePolishHint,
+  getOptimizePolishSystemBlocks,
   getOptimizePromptBlocks,
+  getOptimizeLengthPromptBlock,
   getOptimizeSinglePassHint,
   getOptimizeWordRange,
   getSourceSectionEditHint,
   isAuditRecommendedNewSection,
   isNewOptimizeSection,
+  normalizeOptimizeSectionOrder,
   parseSourceSections,
   validateSourceMarkdown,
+  type OptimizeWordRange,
   type OutlineSection
 } from './optimizeStructure'
+import { sanitizeOptimizeSections } from './optimizeSectionSanitize'
 import {
-  getArticleLengthPromptBlock,
+  CONTENT_READABILITY_GUIDANCE,
+  getIntroConclusionSectionHint,
   getSectionWordBudget,
   countArticleWords
 } from './articleLength'
 import { enforceOptimizeArticleWordCount } from './articleWordEnforcement'
 import { formatSeoMetaBlock, generateSeoMeta } from './seoMeta'
 import { getUserContextPromptBlocks, parseUserWritingContext } from './userContext'
+import {
+  type DraftSectionResume,
+  type OptimizePipelineCheckpoint,
+  shouldRunPipelineStep
+} from './pipelineCheckpoint'
 
 export interface OptimizeArticleOptions {
   sourceUrl: string
   extraInstructions?: string
   outputLanguage?: OutputLanguageCode | string
+  resume?: OptimizePipelineCheckpoint
 }
 
 interface ArticleLanguageContext {
@@ -96,8 +108,12 @@ function buildArticleLanguageContext(outputLanguage: OutputLanguageCode): Articl
   }
 }
 
-function getEditorPromptBlocks(): string {
-  return [getOptimizePromptBlocks(), getArticleLengthPromptBlock()].join('\n\n')
+function getEditorPromptBlocks(wordRange: OptimizeWordRange): string {
+  return [
+    getOptimizePromptBlocks(),
+    getOptimizeLengthPromptBlock(wordRange),
+    CONTENT_READABILITY_GUIDANCE
+  ].join('\n\n')
 }
 
 function buildSourcePreviewMarkdown(sourceUrl: string, title: string, markdown: string): string {
@@ -186,6 +202,7 @@ async function auditSourcePage(
   skillsText: string,
   articleLang: ArticleLanguageContext,
   userContext: ReturnType<typeof parseUserWritingContext>,
+  wordRange: OptimizeWordRange,
   maxTokens: number
 ): Promise<string> {
   return chatCompletion(
@@ -198,7 +215,7 @@ async function auditSourcePage(
           '须明确：哪些优质内容保留并增强、哪些缺口应补充、哪些过时/不可用/不符合 E-E-A-T 的内容应删减或替换；禁止默认整节重写，也禁止为保篇幅而保留问题内容。',
           getUserContextPromptBlocks(userContext),
           skillsText ? `优化规范（Skills）：\n${skillsText}` : '',
-          getEditorPromptBlocks()
+          getEditorPromptBlocks(wordRange)
         ]
           .filter(Boolean)
           .join('\n\n')
@@ -281,7 +298,7 @@ async function optimizeArticleSinglePass(
   skillsText: string,
   articleLang: ArticleLanguageContext,
   userContext: ReturnType<typeof parseUserWritingContext>,
-  wordRangeLabel: string,
+  wordRange: OptimizeWordRange,
   globalMaxTokens: number
 ): Promise<string> {
   return chatCompletion(
@@ -294,7 +311,7 @@ async function optimizeArticleSinglePass(
           articleLang.lock,
           getUserContextPromptBlocks(userContext),
           skillsText ? `Skills：\n${skillsText}` : '',
-          getEditorPromptBlocks()
+          getEditorPromptBlocks(wordRange)
         ]
           .filter(Boolean)
           .join('\n\n')
@@ -305,10 +322,12 @@ async function optimizeArticleSinglePass(
           `页面标题：${title}`,
           userContext.briefForPrompt,
           '',
-          getOptimizeSinglePassHint(wordRangeLabel),
+          getOptimizeSinglePassHint(wordRange.label),
           '',
           '请输出**完整优化后 Markdown 文章**：',
           '- 保留原文 H2/H3 顺序；**优质内容**保留有效原句并可增量补充竞品/诊断要点',
+          '- **保留文首导语**：H1 下方、首个正文 Part 前的段落须保留为 ## Introduction 或等价开篇（不可整段删除）',
+          '- **模块顺序**：Quick Answer → Introduction → 正文 Part → FAQ → Conclusion（FAQ 须在 Conclusion 之前）',
           '- **执行诊断 ADD / NEW H2**：补充缺口、新增诊断标记的 H2 章节',
           '- **执行诊断 REMOVE/REPLACE**：删减过时、不可用、误导或不符合 E-E-A-T 的内容；终稿变短是正常结果',
           '- 直接输出正文，不要写修改说明',
@@ -342,6 +361,30 @@ async function generateOptimizedOutline(
   return enrichAnchoredOutline(llm, anchored, audit, articleLang, maxTokens)
 }
 
+function resolveOptimizeDraftSections(
+  outline: string,
+  sourceSections?: OutlineSection[]
+): ReturnType<typeof sanitizeOptimizeSections> {
+  const ordered = normalizeOptimizeSectionOrder(parseOutlineSections(outline))
+  return sanitizeOptimizeSections(ordered, { sourceSections })
+}
+
+function formatSectionSanitizeStatus(log: ReturnType<typeof sanitizeOptimizeSections>['log']): string | null {
+  const parts: string[] = []
+  if (log.dropped.length > 0) parts.push(`过滤 ${log.dropped.length} 个无效节`)
+  if (log.merged.length > 0) parts.push(`合并 ${log.merged.length} 条插入指令`)
+  return parts.length > 0 ? parts.join('，') : null
+}
+
+function outlineSectionsToMarkdown(sections: OutlineSection[]): string {
+  return sections
+    .map((section) => {
+      const body = section.body.trim()
+      return body ? `## ${section.title}\n${body}\n` : `## ${section.title}\n`
+    })
+    .join('\n')
+}
+
 async function draftOptimizedSections(
   llm: LlmConfig,
   title: string,
@@ -353,19 +396,28 @@ async function draftOptimizedSections(
   skillsText: string,
   articleLang: ArticleLanguageContext,
   userContext: ReturnType<typeof parseUserWritingContext>,
-  wordRangeLabel: string,
+  wordRange: OptimizeWordRange,
+  sourceWordTarget: number,
   globalMaxTokens: number,
-  emit: (event: GenerateProgressEvent) => void
+  emit: (event: GenerateProgressEvent) => void,
+  resume?: DraftSectionResume
 ): Promise<string> {
-  const sections = parseOutlineSections(outline)
-  const editorBlocks = getEditorPromptBlocks()
+  const { sections, log } = resolveOptimizeDraftSections(outline, sourceSections)
+  const sanitizeNote = formatSectionSanitizeStatus(log)
+  if (sanitizeNote) {
+    emit({ type: 'status', step: 'draft', message: `大纲消毒：${sanitizeNote}…` })
+  }
+
+  const editorBlocks = getEditorPromptBlocks(wordRange)
   const sectionTitles = sections.map((section) => section.title)
   const articleTitle = extractSourceH1(sourceMarkdown, title)
-  let fullDraft = `# ${articleTitle}\n\n`
+  let fullDraft = resume?.initialDraft ?? `# ${articleTitle}\n\n`
+  const startIndex = resume?.startIndex ?? 0
 
-  for (let i = 0; i < sections.length; i += 1) {
+  for (let i = startIndex; i < sections.length; i += 1) {
+    throwIfAborted()
     const section = sections[i]
-    const sectionWordBudget = getSectionWordBudget(section.title, sectionTitles)
+    const sectionWordBudget = getSectionWordBudget(section.title, sectionTitles, sourceWordTarget)
     const originalSection = findMatchingSourceSection(section.title, sourceSections)
     const isAuditNewH2 = isAuditRecommendedNewSection(section.title, audit)
     const isNewSection =
@@ -405,6 +457,7 @@ async function draftOptimizedSections(
               sectionTitle: section.title,
               isAuditNewH2
             }),
+            getIntroConclusionSectionHint(section.title),
             '',
             originalSection ? `--- 原文本节 ---\n${originalSection.body.trim()}\n---` : '',
             '',
@@ -418,7 +471,7 @@ async function draftOptimizedSections(
             competitorInsights.slice(0, 2000),
             '',
             `输出优化后的「${section.title}」正文。`,
-            `词数参考：${wordRangeLabel}；本节约 ${sectionWordBudget} 词。`
+            `词数参考：${wordRange.label}；本节约 ${sectionWordBudget} 词。`
           ]
             .filter(Boolean)
             .join('\n')
@@ -438,6 +491,7 @@ async function draftOptimizedSections(
     const block = `## ${section.title}\n\n${sectionText.trim()}\n\n`
     fullDraft += block
     emit({ type: 'chunk', text: block, step: 'draft' })
+    resume?.onSectionComplete?.(i, sections.length, fullDraft.trim())
   }
 
   return fullDraft.trim()
@@ -446,34 +500,29 @@ async function draftOptimizedSections(
 async function polishOptimizedArticle(
   llm: LlmConfig,
   draft: string,
-  sourceMarkdown: string,
-  title: string,
-  competitorInsights: string,
-  audit: string,
-  skillsText: string,
   articleLang: ArticleLanguageContext,
   userContext: ReturnType<typeof parseUserWritingContext>,
+  wordRange: OptimizeWordRange,
   globalMaxTokens: number,
   emit: (event: GenerateProgressEvent) => void,
   onChunk: (text: string) => void
 ): Promise<string> {
-  emit({ type: 'status', step: 'polish', message: '⑨ 终稿校对（复核增删与 E-E-A-T）…' })
+  emit({ type: 'status', step: 'polish', message: '⑨ 终稿校对（语法与结构完整性）…' })
   emit({ type: 'reset' })
 
-  let polished = ''
   const polishMaxTokens = maxTokensForOptimizePolish(countWords(draft), globalMaxTokens)
 
-  await streamChatCompletion(
+  const polished = await chatCompletion(
     llm,
     [
       {
         role: 'system',
         content: [
-          '你是校对编辑。终稿校对并**确认内容评估结果已落实**（优质处已增强、问题处已删减/替换），不是整篇重写。',
+          '你是校对编辑。对**已优化稿**做终稿校对：语法、衔接、可读性与模块完整性；不是整篇重写。',
           articleLang.lock,
           getUserContextPromptBlocks(userContext),
-          skillsText ? `Skills：\n${skillsText}` : '',
-          getEditorPromptBlocks()
+          getOptimizePolishSystemBlocks(),
+          CONTENT_READABILITY_GUIDANCE
         ]
           .filter(Boolean)
           .join('\n\n')
@@ -481,35 +530,28 @@ async function polishOptimizedArticle(
       {
         role: 'user',
         content: [
-          `对以下优化稿做终稿校对：`,
+          '对以下优化稿做终稿校对：',
           `- 保持${articleLang.label}`,
           getOptimizePolishHint(),
-          '- 禁止 Target audience 等 brief 标签',
+          `- 全文词数参考：${wordRange.label}`,
           '- 直接输出 Markdown 正文',
           '',
-          '--- 原页面（结构与核心信息勿偏离）---',
-          sourceMarkdown.slice(0, 6000),
-          '',
-          '--- 诊断摘要（KEEP+ENHANCE / ADD / REMOVE 须已落实）---',
-          audit.slice(0, 3500),
-          '',
-          '--- 竞品补充要点 ---',
-          competitorInsights.slice(0, 2500),
-          '',
-          '--- 优化稿 ---',
           draft
-        ]
-          .filter(Boolean)
-          .join('\n')
+        ].join('\n')
       }
     ],
-    (text) => {
-      polished += text
-      onChunk(text)
-    },
-    { temperature: 0.2, maxTokens: polishMaxTokens }
+    {
+      temperature: 0.2,
+      maxTokens: polishMaxTokens,
+      step: 'polish',
+      label: '终稿校对',
+      onRateLimitRetry: createRateLimitRetryStatus('⑨ 终稿校对（语法与结构完整性）…', (message) =>
+        emit({ type: 'status', step: 'polish', message })
+      )
+    }
   )
 
+  onChunk(polished)
   return polished.trim()
 }
 
@@ -539,7 +581,7 @@ export async function optimizeArticle(
 
   let sourceUrl: string
   try {
-    sourceUrl = normalizeSourceUrl(options.sourceUrl)
+    sourceUrl = normalizeSourceUrl(options.resume?.options.sourceUrl ?? options.sourceUrl)
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : 'URL 无效' }
   }
@@ -547,6 +589,9 @@ export async function optimizeArticle(
   const userContext = parseUserWritingContext(options.extraInstructions)
 
   return runWithTokenContext(createTokenRunContext('optimize', sourceUrl), async () => {
+  const resume = options.resume
+  const nextStep = resume?.nextStep ?? 'skills'
+
   const emit = (event: GenerateProgressEvent): void => {
     if (event.step) {
       updateTokenUsageContext({ step: event.step, stepLabel: event.message })
@@ -554,248 +599,443 @@ export async function optimizeArticle(
     sender.send('article:progress', event)
   }
 
+  const emitOptimizeCheckpoint = (checkpoint: OptimizePipelineCheckpoint): void => {
+    emit({ type: 'checkpoint', checkpoint })
+  }
+
+  const buildOptimizeCheckpoint = (
+    step: GenerateProgressEvent['step'] & string,
+    partial: Omit<OptimizePipelineCheckpoint, 'kind' | 'assistantMessageId' | 'nextStep' | 'options'> &
+      Partial<Pick<OptimizePipelineCheckpoint, 'options'>>
+  ): OptimizePipelineCheckpoint => ({
+    kind: 'optimize',
+    assistantMessageId: resume?.assistantMessageId ?? '',
+    nextStep: step as OptimizePipelineCheckpoint['nextStep'],
+    options: {
+      sourceUrl,
+      extraInstructions: resume?.options.extraInstructions ?? options.extraInstructions,
+      outputLanguage: resume?.options.outputLanguage ?? options.outputLanguage
+    },
+    ...partial
+  })
+
+  let outline = resume?.outline
+  let audit = resume?.audit
+  let sourceMarkdown = resume?.sourceMarkdown
+  let sourceTitle = resume?.sourceTitle
+  let competitorInsights = resume?.competitorInsights
+  let wordRange: OptimizeWordRange | undefined
+  let useSinglePass = resume?.useSinglePass
+
   try {
-    emit({ type: 'status', step: 'skills', message: '① 加载优化 Skills…' })
+    emit({
+      type: 'status',
+      step: 'skills',
+      message: resume?.statusLabel ? `继续优化：${resume.statusLabel}` : '① 加载优化 Skills…'
+    })
     const skillsText = await getEnabledSkillsTextForOptimize()
 
-    emit({ type: 'status', step: 'scrape', message: '② 抓取页面正文…' })
-    const scraped = await scrapeToMarkdown(sourceUrl, firecrawlKey, OPTIMIZE_MAX_MARKDOWN_CHARS)
-    validateSourceMarkdown(scraped.markdown)
+    let scraped: Awaited<ReturnType<typeof scrapeToMarkdown>>
+    let sourceSections: OutlineSection[]
 
-    const sourceSections = parseSourceSections(scraped.markdown)
+    if (shouldRunPipelineStep(nextStep, 'scrape', 'optimize') || !sourceMarkdown) {
+      emit({ type: 'status', step: 'scrape', message: '② 抓取页面正文…' })
+      scraped = await scrapeToMarkdown(sourceUrl, firecrawlKey, OPTIMIZE_MAX_MARKDOWN_CHARS)
+      validateSourceMarkdown(scraped.markdown)
+      sourceMarkdown = scraped.markdown
+      sourceTitle = scraped.title
+      sourceSections = parseSourceSections(scraped.markdown)
+      emit({
+        type: 'research',
+        step: 'scrape',
+        message: '页面抓取完成',
+        researchSummary: buildSourcePreviewMarkdown(scraped.url, scraped.title, scraped.markdown)
+      })
+    } else {
+      scraped = {
+        url: sourceUrl,
+        title: sourceTitle ?? sourceUrl,
+        markdown: sourceMarkdown!
+      }
+      sourceSections = parseSourceSections(sourceMarkdown!)
+    }
 
-    emit({
-      type: 'research',
-      step: 'scrape',
-      message: '页面抓取完成',
-      researchSummary: buildSourcePreviewMarkdown(scraped.url, scraped.title, scraped.markdown)
-    })
+    wordRange = getOptimizeWordRange(countWords(scraped.markdown))
 
-    const articleLang = buildArticleLanguageContext(normalizeOutputLanguage(options.outputLanguage))
+    const articleLang = buildArticleLanguageContext(
+      normalizeOutputLanguage(resume?.options.outputLanguage ?? options.outputLanguage)
+    )
     const researchTopic = buildResearchTopicFromSource(
       scraped.title,
       scraped.markdown,
       sourceUrl
     )
 
-    let searchQueries: string[] = [researchTopic]
-    let searchIntentSummary = ''
-    let competitorSources: ResearchSource[] = []
-    let competitorInsights =
-      articleLang.code === 'en'
-        ? '(Competitor research disabled; gap analysis uses source page and Skills only.)'
-        : '（未启用竞品调研，将仅基于原页面与 Skills 做缺口分析。）'
+    if (shouldRunPipelineStep(nextStep, 'extract', 'optimize')) {
+      let searchQueries: string[] = [researchTopic]
+      let searchIntentSummary = ''
+      let competitorSources: ResearchSource[] = []
+      if (!competitorInsights) {
+        competitorInsights =
+          articleLang.code === 'en'
+            ? '(Competitor research disabled; gap analysis uses source page and Skills only.)'
+            : '（未启用竞品调研，将仅基于原页面与 Skills 做缺口分析。）'
+      }
 
-    if (canRunResearch(research)) {
-      emit({ type: 'status', step: 'expand', message: '③ 搜索意图分析 & 拆解竞品搜索词…' })
-      const intentResult = await analyzeAndExpandSearchQueries(llm, {
-        topic: researchTopic,
-        research,
-        articleLang,
-        extraInstructions: options.extraInstructions,
-        userContext,
-        sourceContext: scraped.markdown.slice(0, 1500),
-        globalMaxTokens
-      })
-      searchQueries = intentResult.queries
-      searchIntentSummary = [
-        intentResult.intentSummary,
-        intentResult.primaryKeyword ? `核心词：${intentResult.primaryKeyword}` : '',
-        intentResult.searchIntentType ? `意图类型：${intentResult.searchIntentType}` : ''
-      ]
-        .filter(Boolean)
-        .join('\n')
-
-      emit({
-        type: 'status',
-        step: 'search',
-        message: `④ 竞品调研：${searchQueries.length} 组关键词 → Top ${research.maxSearchResults}`
-      })
-
-      try {
-        competitorSources = await searchWithQueries(
-          searchQueries,
+      if (canRunResearch(research)) {
+        emit({ type: 'status', step: 'expand', message: '③ 搜索意图分析 & 拆解竞品搜索词…' })
+        const intentResult = await analyzeAndExpandSearchQueries(llm, {
+          topic: researchTopic,
           research,
-          (progress) => {
-            throwIfAborted()
-            emit({
-              type: 'status',
-              step: progress.phase === 'scrape' ? 'scrape' : 'search',
-              message: progress.message
-            })
-          },
-          { excludeUrls: [sourceUrl] }
-        )
-
-        emit({
-          type: 'research',
-          step: 'scrape',
-          message: '竞品搜索与抓取完成',
-          researchSummary: buildResearchDisplayMarkdown(researchTopic, searchQueries, competitorSources, research, {
-            intentSummary: searchIntentSummary
-          }),
-          sources: mapSources(competitorSources)
-        })
-
-        emit({ type: 'status', step: 'extract', message: '⑤ 竞品缺口分析…' })
-        const competitorCorpus = buildScrapedCorpus(competitorSources)
-        competitorInsights = await extractCompetitorGapInsights(
-          llm,
-          researchTopic,
-          sourceUrl,
-          scraped.markdown,
-          competitorCorpus,
-          skillsText,
           articleLang,
+          extraInstructions: options.extraInstructions,
           userContext,
-          stepTokens.eeatExtract
-        )
-
-        emit({
-          type: 'research',
-          step: 'extract',
-          message: '竞品缺口分析完成',
-          researchSummary: buildResearchDisplayMarkdown(researchTopic, searchQueries, competitorSources, research, {
-            intentSummary: searchIntentSummary,
-            extractedPreview: competitorInsights
-          }),
-          sources: mapSources(competitorSources)
+          sourceContext: scraped.markdown.slice(0, 1500),
+          globalMaxTokens
         })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '竞品调研失败'
+        searchQueries = intentResult.queries
+        searchIntentSummary = [
+          intentResult.intentSummary,
+          intentResult.primaryKeyword ? `核心词：${intentResult.primaryKeyword}` : '',
+          intentResult.searchIntentType ? `意图类型：${intentResult.searchIntentType}` : ''
+        ]
+          .filter(Boolean)
+          .join('\n')
+
         emit({
           type: 'status',
           step: 'search',
-          message: `竞品调研跳过：${message}`
+          message: `④ 竞品调研：${searchQueries.length} 组关键词 → Top ${research.maxSearchResults}`
+        })
+
+        try {
+          competitorSources = await searchWithQueries(
+            searchQueries,
+            research,
+            (progress) => {
+              throwIfAborted()
+              emit({
+                type: 'status',
+                step: progress.phase === 'scrape' ? 'scrape' : 'search',
+                message: progress.message
+              })
+            },
+            { excludeUrls: [sourceUrl] }
+          )
+
+          emit({
+            type: 'research',
+            step: 'scrape',
+            message: '竞品搜索与抓取完成',
+            researchSummary: buildResearchDisplayMarkdown(researchTopic, searchQueries, competitorSources, research, {
+              intentSummary: searchIntentSummary
+            }),
+            sources: mapSources(competitorSources)
+          })
+
+          emit({ type: 'status', step: 'extract', message: '⑤ 竞品缺口分析…' })
+          const competitorCorpus = buildScrapedCorpus(competitorSources)
+          competitorInsights = await extractCompetitorGapInsights(
+            llm,
+            researchTopic,
+            sourceUrl,
+            scraped.markdown,
+            competitorCorpus,
+            skillsText,
+            articleLang,
+            userContext,
+            stepTokens.eeatExtract
+          )
+
+          emit({
+            type: 'research',
+            step: 'extract',
+            message: '竞品缺口分析完成',
+            researchSummary: buildResearchDisplayMarkdown(researchTopic, searchQueries, competitorSources, research, {
+              intentSummary: searchIntentSummary,
+              extractedPreview: competitorInsights
+            }),
+            sources: mapSources(competitorSources)
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '竞品调研失败'
+          emit({
+            type: 'status',
+            step: 'search',
+            message: `竞品调研跳过：${message}`
+          })
+        }
+      } else if (research.enabled) {
+        emit({
+          type: 'status',
+          step: 'search',
+          message: '未配置 Tavily / Firecrawl 或未启用调研，跳过竞品调研…'
         })
       }
-    } else if (research.enabled) {
+
+      emit({ type: 'status', step: 'extract', message: '⑥ 诊断原页面 SEO/GEO 问题…' })
+      audit = await auditSourcePage(
+        llm,
+        scraped.url,
+        scraped.title,
+        scraped.markdown,
+        competitorInsights!,
+        skillsText,
+        articleLang,
+        userContext,
+        wordRange,
+        stepTokens.optimizeAudit
+      )
+
+      emit({
+        type: 'planning',
+        step: 'plan',
+        message: '诊断完成',
+        planningSummary: audit
+      })
+
+      emitOptimizeCheckpoint(
+        buildOptimizeCheckpoint('outline', {
+          statusLabel: '⑥ 诊断完成',
+          sourceTitle: scraped.title,
+          sourceMarkdown: scraped.markdown,
+          audit,
+          competitorInsights,
+          wordRange
+        })
+      )
+    }
+
+    if (!audit || !competitorInsights || !wordRange) {
+      return { ok: false, message: '无法继续：缺少诊断数据，请重新开始。' }
+    }
+
+    if (shouldRunPipelineStep(nextStep, 'outline', 'optimize')) {
+      emit({ type: 'status', step: 'outline', message: '⑦ 基于原文章节生成优化大纲…' })
+      outline = await generateOptimizedOutline(
+        llm,
+        scraped.markdown,
+        audit,
+        skillsText,
+        articleLang,
+        stepTokens.outline
+      )
+      useSinglePass = sourceSections.length <= 1
+      const { sections: draftSections, log: sanitizeLog } = resolveOptimizeDraftSections(outline, sourceSections)
+      const sanitizeNote = formatSectionSanitizeStatus(sanitizeLog)
+      if (sanitizeNote) {
+        emit({ type: 'status', step: 'outline', message: `⑦ 大纲消毒：${sanitizeNote}` })
+      }
+      if (!useSinglePass) {
+        outline = outlineSectionsToMarkdown(draftSections)
+      }
+      const sectionCount = useSinglePass ? 1 : draftSections.length
+      const articleTitle = extractSourceH1(scraped.markdown, scraped.title)
+      emitOptimizeCheckpoint(
+        buildOptimizeCheckpoint('draft', {
+          statusLabel: `⑦ 大纲已完成 · 共 ${sectionCount} 节`,
+          sourceTitle: scraped.title,
+          sourceMarkdown: scraped.markdown,
+          audit,
+          outline,
+          competitorInsights,
+          wordRange,
+          useSinglePass,
+          partialDraft: `# ${articleTitle}\n\n`,
+          draftSectionIndex: 0,
+          draftSectionCount: sectionCount
+        })
+      )
+    }
+
+    if (!outline) {
+      return { ok: false, message: '无法继续：缺少优化大纲，请重新开始。' }
+    }
+
+    if (useSinglePass == null) {
+      useSinglePass = sourceSections.length <= 1
+    }
+
+    let draft = resume?.workText ?? resume?.partialDraft ?? ''
+    if (shouldRunPipelineStep(nextStep, 'draft', 'optimize')) {
       emit({
         type: 'status',
-        step: 'search',
-        message: '未配置 Tavily / Firecrawl 或未启用调研，跳过竞品调研…'
+        step: 'draft',
+        message: useSinglePass
+          ? `⑧ 就地优化全文（${articleLang.label} · 内容评估 + 按需增删）…`
+          : resume?.draftSectionIndex
+            ? `⑧ 继续按章节优化（${(resume.draftSectionIndex ?? 0) + 1}/${resume.draftSectionCount ?? '?'} 起）…`
+            : `⑧ 按章节优化（${articleLang.label} · 保留增强 / 删减替换）…`
       })
+
+      if (useSinglePass) {
+        const optimized = await optimizeArticleSinglePass(
+          llm,
+          scraped.markdown,
+          scraped.title,
+          audit,
+          competitorInsights,
+          skillsText,
+          articleLang,
+          userContext,
+          wordRange,
+          globalMaxTokens
+        )
+        draft = optimized.startsWith('#')
+          ? optimized
+          : `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n${optimized}`
+        emit({ type: 'chunk', text: draft, step: 'draft' })
+        emitOptimizeCheckpoint(
+          buildOptimizeCheckpoint('polish', {
+            statusLabel: '⑧ 全文优化完成',
+            sourceTitle: scraped.title,
+            sourceMarkdown: scraped.markdown,
+            audit,
+            outline,
+            competitorInsights,
+            wordRange,
+            useSinglePass: true,
+            partialDraft: draft,
+            workText: draft
+          })
+        )
+      } else {
+        draft = await draftOptimizedSections(
+          llm,
+          scraped.title,
+          outline,
+          scraped.markdown,
+          sourceSections,
+          audit,
+          competitorInsights,
+          skillsText,
+          articleLang,
+          userContext,
+          wordRange,
+          countWords(scraped.markdown),
+          globalMaxTokens,
+          emit,
+          {
+            startIndex: resume?.draftSectionIndex ?? 0,
+            initialDraft:
+              resume?.partialDraft ?? `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n`,
+            onSectionComplete: (sectionIndex, total, partial) => {
+              const nextIndex = sectionIndex + 1
+              if (nextIndex < total) {
+                emitOptimizeCheckpoint(
+                  buildOptimizeCheckpoint('draft', {
+                    statusLabel: `⑧ 已完成第 ${nextIndex}/${total} 节`,
+                    sourceTitle: scraped.title,
+                    sourceMarkdown: scraped.markdown,
+                    audit,
+                    outline,
+                    competitorInsights,
+                    wordRange,
+                    useSinglePass: false,
+                    partialDraft: partial,
+                    draftSectionIndex: nextIndex,
+                    draftSectionCount: total
+                  })
+                )
+              } else {
+                emitOptimizeCheckpoint(
+                  buildOptimizeCheckpoint('polish', {
+                    statusLabel: '⑧ 章节优化完成',
+                    sourceTitle: scraped.title,
+                    sourceMarkdown: scraped.markdown,
+                    audit,
+                    outline,
+                    competitorInsights,
+                    wordRange,
+                    useSinglePass: false,
+                    partialDraft: partial,
+                    workText: partial,
+                    draftSectionCount: total
+                  })
+                )
+              }
+            }
+          }
+        )
+      }
     }
 
-    emit({ type: 'status', step: 'extract', message: '⑥ 诊断原页面 SEO/GEO 问题…' })
-    const audit = await auditSourcePage(
-      llm,
-      scraped.url,
-      scraped.title,
-      scraped.markdown,
-      competitorInsights,
-      skillsText,
-      articleLang,
-      userContext,
-      stepTokens.optimizeAudit
-    )
-
-    emit({
-      type: 'planning',
-      step: 'plan',
-      message: '诊断完成',
-      planningSummary: audit
-    })
-
-    const hasCompetitorInsights =
-      !competitorInsights.includes('未抓取到竞品') &&
-      !competitorInsights.includes('No competitor pages scraped') &&
-      competitorInsights.trim().length > 120
-    const sourceWordCount = countWords(scraped.markdown)
-    const wordRange = getOptimizeWordRange(sourceWordCount, hasCompetitorInsights)
-
-    emit({ type: 'status', step: 'outline', message: '⑦ 基于原文章节生成优化大纲…' })
-    const outline = await generateOptimizedOutline(
-      llm,
-      scraped.markdown,
-      audit,
-      skillsText,
-      articleLang,
-      stepTokens.outline
-    )
-
-    const useSinglePass = sourceSections.length <= 1
-
-    emit({
-      type: 'status',
-      step: 'draft',
-      message: useSinglePass
-        ? `⑧ 就地优化全文（${articleLang.label} · 内容评估 + 按需增删）…`
-        : `⑧ 按章节优化（${articleLang.label} · 保留增强 / 删减替换）…`
-    })
-
-    let draft: string
-    if (useSinglePass) {
-      const optimized = await optimizeArticleSinglePass(
+    let polished =
+      resume?.workText && !shouldRunPipelineStep(nextStep, 'polish', 'optimize') ? resume.workText : ''
+    if (shouldRunPipelineStep(nextStep, 'polish', 'optimize')) {
+      if (!draft) {
+        return { ok: false, message: '无法继续：缺少优化稿，请重新开始。' }
+      }
+      polished = await polishOptimizedArticle(
         llm,
-        scraped.markdown,
-        scraped.title,
-        audit,
-        competitorInsights,
-        skillsText,
+        draft,
         articleLang,
         userContext,
-        wordRange.label,
-        globalMaxTokens
-      )
-      draft = optimized.startsWith('#') ? optimized : `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n${optimized}`
-      emit({ type: 'chunk', text: draft, step: 'draft' })
-    } else {
-      draft = await draftOptimizedSections(
-        llm,
-        scraped.title,
-        outline,
-        scraped.markdown,
-        sourceSections,
-        audit,
-        competitorInsights,
-        skillsText,
-        articleLang,
-        userContext,
-        wordRange.label,
+        wordRange,
         globalMaxTokens,
-        emit
+        emit,
+        (text) => emit({ type: 'chunk', text, step: 'polish' })
+      )
+      emitOptimizeCheckpoint(
+        buildOptimizeCheckpoint('length', {
+          statusLabel: '⑨ 终稿校对完成',
+          sourceTitle: scraped.title,
+          sourceMarkdown: scraped.markdown,
+          audit,
+          outline,
+          competitorInsights,
+          wordRange,
+          useSinglePass,
+          workText: polished
+        })
       )
     }
 
-    const polished = await polishOptimizedArticle(
-      llm,
-      draft,
-      scraped.markdown,
-      scraped.title,
-      competitorInsights,
-      audit,
-      skillsText,
-      articleLang,
-      userContext,
-      globalMaxTokens,
-      emit,
-      (text) => emit({ type: 'chunk', text, step: 'polish' })
-    )
+    let lengthAdjusted = polished
+    if (shouldRunPipelineStep(nextStep, 'length', 'optimize')) {
+      if (!polished) {
+        return { ok: false, message: '无法继续：缺少校对稿，请重新开始。' }
+      }
+      lengthAdjusted = await enforceOptimizeArticleWordCount(
+        llm,
+        polished,
+        scraped.title,
+        articleLang,
+        wordRange,
+        scraped.markdown,
+        maxTokensForOptimizeLengthAdjust(countArticleWords(polished), globalMaxTokens),
+        emit,
+        (text) => emit({ type: 'chunk', text, step: 'length' })
+      )
+      emitOptimizeCheckpoint(
+        buildOptimizeCheckpoint('meta', {
+          statusLabel: '⑩ 词数校准完成',
+          sourceTitle: scraped.title,
+          sourceMarkdown: scraped.markdown,
+          audit,
+          outline,
+          competitorInsights,
+          wordRange,
+          useSinglePass,
+          workText: lengthAdjusted
+        })
+      )
+    }
 
-    const lengthAdjusted = await enforceOptimizeArticleWordCount(
-      llm,
-      polished,
-      scraped.title,
-      articleLang,
-      wordRange,
-      scraped.markdown,
-      maxTokensForOptimizeLengthAdjust(countArticleWords(polished), globalMaxTokens),
-      emit,
-      (text) => emit({ type: 'chunk', text, step: 'length' })
-    )
+    if (shouldRunPipelineStep(nextStep, 'meta', 'optimize')) {
+      emit({ type: 'status', step: 'meta', message: '⑪ 生成 SEO Meta Title & Description…' })
+      const seoMeta = await generateSeoMeta(
+        llm,
+        scraped.title,
+        lengthAdjusted,
+        articleLang,
+        userContext,
+        stepTokens.seoMeta
+      )
+      emit({ type: 'prepend', text: formatSeoMetaBlock(seoMeta), step: 'meta' })
+    }
 
-    emit({ type: 'status', step: 'meta', message: '⑪ 生成 SEO Meta Title & Description…' })
-    const seoMeta = await generateSeoMeta(
-      llm,
-      scraped.title,
-      lengthAdjusted,
-      articleLang,
-      userContext,
-      stepTokens.seoMeta
-    )
-    emit({ type: 'prepend', text: formatSeoMetaBlock(seoMeta), step: 'meta' })
-
+    emit({ type: 'clearCheckpoint' })
     emit({ type: 'done' })
     return { ok: true }
   } catch (error) {

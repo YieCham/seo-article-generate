@@ -31,7 +31,7 @@ export function getTopListProductPlacementGuidance(productName?: string): string
     `2. **符合条件** → 列入 Top 榜单，**排名第 1**，H3 标题形如 \`### 1. ${productName} — Best Overall\`（或更贴切副标题）；该条目篇幅可略长于其他项。`,
     `3. **不符合条件**（如 Topic 为 Spotify 下载器但产品不支持 Spotify）→ **不得**强行放入 Top 榜单凑数；在 Top 榜单**之后**单独增加一节，如 \`## Part N. Also Worth Considering: ${productName}\`，说明其适用场景、与用户搜索意图的差异，以及为何作为补充而非主榜入选。`,
     `4. Top List 模式**不要求**独立 Part 写 4 步 How-to；若用户产品位列榜首，可在该条目内用 3–4 个简短要点说明使用流程。`,
-    `5. 正文中须**多次自然出现**产品全名「${productName}」，禁止用 "this tool" 等泛称替代。`
+    `5. 全名「${productName}」**只**出现在其榜单 ### 条目（或 Also Worth Considering Part）内；其他产品条目与选型 Part 不要重复提及；该用全名时勿用 "this tool" 等泛称。`
   ].join('\n')
 }
 
@@ -47,7 +47,7 @@ export const TOP_LIST_OUTLINE_GUIDANCE = `
 1. H1 — 含 Top N + 核心品类词（如 Top 10 Spotify Music Downloaders）
 2. ## Quick Answer — 3–4 bullets，直接给出榜首推荐与选型结论
 3. ## Introduction — ≤150 词、≤3 段；说明读者痛点与本文如何帮他们选型
-4. ## Part 1. How We Picked the Best [Category] — 通用选型维度（音质、格式、平台、速度、合规），**无产品硬广**
+4. ## Part 1. How We Picked the Best [Category] — 通用选型维度（音质、格式、平台、速度、合规）；以标准为主，与产品自然相关时可轻量举例
 5. ## Part 2. Top N [Category] — **核心榜单 Part**；每条产品一个 ### 小节，格式：
    \`### 1. [Product] — [Short verdict]\`
    每条含：1 段简介 + **Pros**（2–3 条）+ **Cons**（1 条）+ **Best for**（1 句）+ 关键参数（加粗）

@@ -95,7 +95,7 @@ description: >-
 （≤150 词、≤3 段）
 
 ## Part 1. How We Picked the Best Spotify Music Downloaders
-（选型标准：音质、格式、速度、平台、易用性、合规；**无产品硬广**）
+（选型标准：音质、格式、速度、平台、易用性、合规；以标准为主，联动时可轻量举例）
 
 ## Part 2. Top 10 Spotify Music Downloaders
 ### 1. [User Product or Best Pick] — Best Overall

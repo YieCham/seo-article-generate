@@ -1,21 +1,26 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { app } from 'electron'
 import { join } from 'path'
+import type { PipelineCheckpoint } from '../../shared/pipelineCheckpoint'
 
 export interface StoredChatMessage {
   id: string
   role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
   content: string
-  status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error'
+  status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
 }
 
 export interface StoredChatSession {
   id: string
   title: string
   customTitle?: string
+  pinned?: boolean
+  pinnedAt?: number
+  sortOrder?: number
   messages: StoredChatMessage[]
   writeMode?: 'create' | 'optimize'
   updatedAt: number
+  pipelineCheckpoint?: PipelineCheckpoint
 }
 
 export interface ChatStoreData {
@@ -37,11 +42,15 @@ function normalizeForSave(data: ChatStoreData): ChatStoreData {
     ...session,
     messages: session.messages
       .filter((message) => message.role !== 'status')
-      .map((message) =>
-        message.role === 'assistant' && message.status === 'streaming'
-          ? { ...message, status: 'done' as const }
-          : message
-      )
+      .map((message) => {
+        if (message.role !== 'assistant' || message.status !== 'streaming') {
+          return message
+        }
+        if (session.pipelineCheckpoint) {
+          return { ...message, status: 'interrupted' as const }
+        }
+        return { ...message, status: 'done' as const }
+      })
   }))
 
   const activeSessionId =
@@ -64,8 +73,12 @@ export async function loadChatStore(): Promise<ChatStoreData> {
         id: session.id,
         title: session.title || '新对话',
         customTitle: typeof session.customTitle === 'string' ? session.customTitle : undefined,
+        pinned: session.pinned === true,
+        pinnedAt: typeof session.pinnedAt === 'number' ? session.pinnedAt : undefined,
+        sortOrder: typeof session.sortOrder === 'number' ? session.sortOrder : undefined,
         writeMode: (session.writeMode === 'optimize' ? 'optimize' : 'create') as 'create' | 'optimize',
         updatedAt: session.updatedAt || Date.now(),
+        pipelineCheckpoint: session.pipelineCheckpoint,
         messages: Array.isArray(session.messages) ? session.messages : []
       }))
 

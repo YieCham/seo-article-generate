@@ -1,5 +1,29 @@
-import { getAbortSignal } from './abortContext'
+import { getAbortSignal, throwIfAborted } from './abortContext'
 import { recordLlmTokenUsage, type ApiTokenUsage } from '../token/tokenUsageRecorder'
+
+/** Retries after the first attempt (429 only): 3 retries → up to 4 total attempts. */
+const LLM_429_MAX_RETRIES = 3
+const LLM_429_INITIAL_BACKOFF_MS = 2000
+
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new DOMException('The operation was aborted.', 'AbortError'))
+    }
+
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 export interface LlmConfig {
   apiKey: string
@@ -15,15 +39,18 @@ export interface LlmCallOptions {
   maxTokens?: number
   step?: string
   label?: string
+  onRateLimitRetry?: (info: RateLimitRetryInfo) => void
+}
+
+export interface RateLimitRetryInfo {
+  /** 0-based retry index (0 = first retry after initial 429). */
+  attempt: number
+  maxAttempts: number
+  delayMs: number
 }
 
 type CompletionResponse = {
   choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
-  usage?: ApiTokenUsage
-}
-
-type StreamChunk = {
-  choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
   usage?: ApiTokenUsage
 }
 
@@ -33,133 +60,72 @@ export async function chatCompletion(
   options?: LlmCallOptions
 ): Promise<string> {
   const signal = getAbortSignal()
-  const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      temperature: options?.temperature ?? config.temperature,
-      max_tokens: options?.maxTokens
-    }),
-    signal
+  const url = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`
+  const body = JSON.stringify({
+    model: config.model,
+    messages,
+    temperature: options?.temperature ?? config.temperature,
+    max_tokens: options?.maxTokens
   })
+  const headers = {
+    Authorization: `Bearer ${config.apiKey}`,
+    'Content-Type': 'application/json'
+  }
 
-  if (!response.ok) {
+  let backoffMs = LLM_429_INITIAL_BACKOFF_MS
+
+  for (let attempt = 0; attempt <= LLM_429_MAX_RETRIES; attempt += 1) {
+    throwIfAborted()
+
+    const response = await fetch(url, { method: 'POST', headers, body, signal })
+
+    if (response.ok) {
+      const data = (await response.json()) as CompletionResponse
+      const content = data.choices?.[0]?.message?.content?.trim() ?? ''
+      const finishReason = data.choices?.[0]?.finish_reason
+
+      await recordLlmTokenUsage({
+        model: config.model,
+        messages,
+        completionText: content,
+        usage: data.usage,
+        maxTokensRequested: options?.maxTokens,
+        finishReason,
+        step: options?.step,
+        label: options?.label
+      })
+
+      return content
+    }
+
     const detail = await response.text()
+    const canRetry = response.status === 429 && attempt < LLM_429_MAX_RETRIES
+
+    if (canRetry) {
+      options?.onRateLimitRetry?.({
+        attempt,
+        maxAttempts: LLM_429_MAX_RETRIES,
+        delayMs: backoffMs
+      })
+      await sleepWithAbort(backoffMs, signal)
+      backoffMs *= 2
+      continue
+    }
+
     throw new Error(`LLM 请求失败 (${response.status})：${detail.slice(0, 200)}`)
   }
 
-  const data = (await response.json()) as CompletionResponse
-  const content = data.choices?.[0]?.message?.content?.trim() ?? ''
-  const finishReason = data.choices?.[0]?.finish_reason
-
-  await recordLlmTokenUsage({
-    model: config.model,
-    messages,
-    completionText: content,
-    usage: data.usage,
-    maxTokensRequested: options?.maxTokens,
-    finishReason,
-    step: options?.step,
-    label: options?.label
-  })
-
-  return content
+  throw new Error('LLM 请求失败 (429)：rate limit 重试次数已用尽')
 }
 
-export async function streamChatCompletion(
-  config: LlmConfig,
-  messages: ChatMessage[],
-  onChunk: (text: string) => void,
-  options?: LlmCallOptions
-): Promise<void> {
-  const signal = getAbortSignal()
-  const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      stream: true,
-      stream_options: { include_usage: true },
-      temperature: options?.temperature ?? config.temperature,
-      max_tokens: options?.maxTokens
-    }),
-    signal
-  })
-
-  if (!response.ok) {
-    const detail = await response.text()
-    throw new Error(`LLM 请求失败 (${response.status})：${detail.slice(0, 200)}`)
+export function createRateLimitRetryStatus(
+  baseMessage: string,
+  onStatus: (message: string) => void
+): (info: RateLimitRetryInfo) => void {
+  return ({ attempt, maxAttempts, delayMs }) => {
+    const seconds = Math.max(1, Math.round(delayMs / 1000))
+    onStatus(`${baseMessage}（API 限流，${seconds} 秒后重试 ${attempt + 1}/${maxAttempts}）`)
   }
-
-  if (!response.body) {
-    throw new Error('LLM 响应不支持流式输出')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let completionText = ''
-  let streamUsage: ApiTokenUsage | undefined
-  let finishReason: string | undefined
-
-  while (true) {
-    if (signal?.aborted) {
-      await reader.cancel().catch(() => undefined)
-      throw new DOMException('The operation was aborted.', 'AbortError')
-    }
-
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) continue
-      const payload = trimmed.slice(5).trim()
-      if (payload === '[DONE]') continue
-
-      try {
-        const json = JSON.parse(payload) as StreamChunk
-        if (json.usage) {
-          streamUsage = json.usage
-        }
-        const reason = json.choices?.[0]?.finish_reason
-        if (reason) {
-          finishReason = reason
-        }
-        const text = json.choices?.[0]?.delta?.content
-        if (text) {
-          completionText += text
-          onChunk(text)
-        }
-      } catch {
-        // ignore malformed SSE chunks
-      }
-    }
-  }
-
-  await recordLlmTokenUsage({
-    model: config.model,
-    messages,
-    completionText,
-    usage: streamUsage,
-    maxTokensRequested: options?.maxTokens,
-    finishReason,
-    step: options?.step,
-    label: options?.label
-  })
 }
 
 export function parseJsonArray(raw: string): string[] {

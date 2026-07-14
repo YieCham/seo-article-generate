@@ -21,7 +21,7 @@ export function initTrayManager(window: BrowserWindow, iconPath?: string): void 
   if (image.isEmpty()) return
 
   tray = new Tray(image.resize({ width: 16, height: 16 }))
-  tray.setToolTip('AI文章写作助手')
+  tray.setToolTip('AIWriting Assistant')
 
   const menu = Menu.buildFromTemplate([
     {

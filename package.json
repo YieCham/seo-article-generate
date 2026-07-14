@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
-    "open:win": "powershell -NoProfile -Command \"if (Test-Path 'dist/win-unpacked/AI文章创作Agent.exe') { Start-Process 'dist/win-unpacked/AI文章创作Agent.exe' } else { Write-Host '请先运行 npm run dist:win 完成打包'; exit 1 }\""
+    "open:win": "powershell -NoProfile -Command \"if (Test-Path 'dist/win-unpacked/AIWriting Assistant.exe') { Start-Process 'dist/win-unpacked/AIWriting Assistant.exe' } else { Write-Host '请先运行 npm run dist:win 完成打包'; exit 1 }\""
   },
   "dependencies": {
     "dotenv": "^16.5.0",
@@ -33,7 +33,7 @@
   },
   "build": {
     "appId": "com.ai-article-agent.app",
-    "productName": "AI文章创作Agent",
+    "productName": "AIWriting Assistant",
     "copyright": "Copyright © 2026",
     "icon": "icons/icon.png",
     "directories": {
@@ -68,7 +68,7 @@
       "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "AI文章创作Agent",
+      "shortcutName": "AIWriting Assistant",
       "installerLanguages": [
         "zh_CN",
         "en_US"

@@ -13,7 +13,7 @@ export default function TitleBar() {
   return (
     <header className="title-bar">
       <div className="title-bar-leading">
-        <span className="title-bar-brand">AI文章写作助手</span>
+        <span className="title-bar-brand">AIWriting Assistant</span>
       </div>
 
       <div

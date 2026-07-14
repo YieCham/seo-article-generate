@@ -1,6 +1,6 @@
 # SEO Article Generate
 
-> **AI 文章创作 Agent** — 基于 Electron 的桌面应用，面向 SEO / GEO 内容生产。支持从零创作、竞品调研、分段写作、文章优化与局部修订，内置可扩展的 Cursor Agent Skills 写作规范。
+> **AIWriting Assistant** — 基于 Electron 的桌面应用，面向 SEO / GEO 内容生产。支持从零创作、竞品调研、分段写作、文章优化与局部修订，内置可扩展的 Cursor Agent Skills 写作规范。
 
 [![GitHub](https://img.shields.io/badge/GitHub-seo--article--generate-blue)](https://github.com/YieCham/seo-article-generate)
 

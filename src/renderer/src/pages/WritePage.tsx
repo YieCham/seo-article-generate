@@ -40,8 +40,6 @@ import Composer from './write/Composer'
 
 import BatchWriteDialog from './write/BatchWriteDialog'
 
-import WriteModePickerDialog from './write/WriteModePickerDialog'
-
 import type { PipelineCheckpoint } from '../../../shared/pipelineCheckpoint'
 import {
   createMessage,
@@ -95,13 +93,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [llmPresets, setLlmPresets] = useState<LlmPreset[]>([])
   const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
   const [selectedLlmModelId, setSelectedLlmModelId] = useState('')
-  const [modePickerOpen, setModePickerOpen] = useState(false)
+  const [batchDialogMode, setBatchDialogMode] = useState<BatchDialogMode | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [pipelineStatusMessage, setPipelineStatusMessage] = useState('')
   const [pipelineElapsedSec, setPipelineElapsedSec] = useState(0)
   const [reviseSelection, setReviseSelection] = useState<ReviseArticleSelection | null>(null)
   const [runningSessionId, setRunningSessionId] = useState('')
-  const [batchDialogMode, setBatchDialogMode] = useState<BatchDialogMode | null>(null)
   const [batchProgress, setBatchProgress] = useState<{
     mode: BatchWriteMode | 'batch-optimize'
     current: number
@@ -924,26 +921,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
 
-  function handleNewChat(): void {
-    setModePickerOpen(true)
-  }
-
-  async function handleModePick(mode: WriteMode): Promise<void> {
-    setModePickerOpen(false)
-
+  function handleModePick(mode: WriteMode): void {
     const session = createSession(mode)
-
     setSessions((prev) => insertSessionAtListTop(prev, session))
-
     setActiveSessionId(session.id)
-
     setDraftTopic('')
-
     setDraftExtra('')
-
   }
-
-
 
   function handleSelectSession(id: string): void {
     const isTargetRunning = isRunning && runningSessionId === id
@@ -1911,7 +1895,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         activeSessionId={activeSession.id}
         runningSessionId={runningSessionId}
         onSelect={handleSelectSession}
-        onNew={handleNewChat}
+        onSelectMode={handleModePick}
         onClear={handleClearSession}
         onDelete={handleDeleteSession}
         onRename={handleRenameSession}
@@ -2024,12 +2008,6 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
         {toast ? <div className="toast">{toast}</div> : null}
-
-        <WriteModePickerDialog
-          open={modePickerOpen}
-          onSelect={(mode) => void handleModePick(mode)}
-          onClose={() => setModePickerOpen(false)}
-        />
 
         <BatchWriteDialog
           open={batchDialogMode != null}

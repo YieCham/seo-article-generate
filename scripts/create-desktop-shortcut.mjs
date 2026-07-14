@@ -10,7 +10,7 @@ const vbsLauncher = path.join(projectRoot, 'scripts', 'start-dev-hidden.vbs')
 const pngIconPath = path.join(projectRoot, 'icons', 'icon.png')
 const icoIconPath = path.join(projectRoot, 'icons', 'icon.ico')
 const desktop = path.join(os.homedir(), 'Desktop')
-const shortcutName = 'AI文章写作助手.lnk'
+const shortcutName = 'AIWriting Assistant.lnk'
 const shortcutPath = path.join(desktop, shortcutName)
 const wscript = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'wscript.exe')
 
@@ -106,7 +106,7 @@ sc.TargetPath = "${escapeVbsPath(wscript)}"
 sc.Arguments = "//B //Nologo ""${launcherArg}"""
 sc.WorkingDirectory = "${escapeVbsPath(projectRoot)}"
 sc.WindowStyle = 7
-sc.Description = "AI文章写作助手"
+sc.Description = "AIWriting Assistant"
 ${iconLocation ? `sc.IconLocation = "${escapeVbsPath(iconLocation.split(',')[0])},0"` : ''}
 sc.Save
 `
@@ -123,4 +123,4 @@ if (iconLocation) {
 console.log(`正在创建桌面快捷方式：${shortcutName}`)
 runVbs(createVbs)
 
-console.log('完成。请使用桌面上的「AI文章写作助手」启动。')
+console.log('完成。请使用桌面上的「AIWriting Assistant」启动。')

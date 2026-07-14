@@ -39,7 +39,7 @@ function buildTemplate(): Electron.MenuItemConstructorOptions[] {
       label: 'Help',
       submenu: [
         {
-          label: '关于 AI文章创作Agent',
+          label: '关于 AIWriting Assistant',
           click: () => {
             // noop — informational label only
           }

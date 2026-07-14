@@ -11,7 +11,7 @@ import {
   type SessionListGroup
 } from './types'
 import {
-  IconPlus,
+  IconStartCreate,
   IconSettings,
   IconRename,
   IconPin,
@@ -22,6 +22,7 @@ import {
   IconPageCompleted,
   IconMoveToActive
 } from '../../components/Icons'
+import { WRITE_MODE_OPTIONS, type WriteMode } from '../../constants/writeMode'
 import SessionRenameDialog from './SessionRenameDialog'
 import SessionConfirmDialog, { type SessionConfirmAction } from './SessionConfirmDialog'
 
@@ -30,7 +31,7 @@ interface ChatSidebarProps {
   activeSessionId: string
   runningSessionId?: string
   onSelect: (id: string) => void
-  onNew: () => void
+  onSelectMode: (mode: WriteMode) => void
   onClear: (id: string) => void
   onDelete: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -79,7 +80,7 @@ export default function ChatSidebar({
   activeSessionId,
   runningSessionId,
   onSelect,
-  onNew,
+  onSelectMode,
   onClear,
   onDelete,
   onRename,
@@ -90,6 +91,7 @@ export default function ChatSidebar({
   onOpenSettings,
   isRunning = false
 }: ChatSidebarProps) {
+  const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [lifecycleGroup, setLifecycleGroup] = useState<SessionLifecycleGroup>(readStoredLifecycleGroup)
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
@@ -97,6 +99,7 @@ export default function ChatSidebar({
     sessionId: string
     action: SessionConfirmAction
   } | null>(null)
+  const [createCollapsed, setCreateCollapsed] = useState(false)
   const [optimizeCollapsed, setOptimizeCollapsed] = useState(false)
   const [batchOptimizeCollapsed, setBatchOptimizeCollapsed] = useState(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -105,6 +108,8 @@ export default function ChatSidebar({
     position: 'before' | 'after'
   } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const modeMenuRef = useRef<HTMLDivElement>(null)
+  const newChatWrapRef = useRef<HTMLDivElement>(null)
 
   const lifecycleSessions = useMemo(
     () => sessions.filter((session) => getSessionLifecycleGroup(session) === lifecycleGroup),
@@ -133,7 +138,12 @@ export default function ChatSidebar({
 
   const sessionGroups = useMemo(
     () => [
-      { key: 'create' as const, sessions: createSessions, collapsible: false, collapsed: false },
+      {
+        key: 'create' as const,
+        sessions: createSessions,
+        collapsible: true,
+        collapsed: createCollapsed
+      },
       {
         key: 'optimize' as const,
         sessions: optimizeSessions,
@@ -150,6 +160,7 @@ export default function ChatSidebar({
     [
       batchOptimizeCollapsed,
       batchOptimizeSessions,
+      createCollapsed,
       createSessions,
       optimizeCollapsed,
       optimizeSessions
@@ -170,29 +181,55 @@ export default function ChatSidebar({
   }
 
   function toggleSessionGroupCollapse(group: SessionListGroup): void {
+    if (group === 'create') setCreateCollapsed((value) => !value)
     if (group === 'optimize') setOptimizeCollapsed((value) => !value)
     if (group === 'batch-optimize') setBatchOptimizeCollapsed((value) => !value)
   }
 
+  function sessionGroupLabel(group: SessionListGroup): string {
+    if (group === 'create') return '文章创作'
+    if (group === 'optimize') return '文章优化'
+    return '批量优化'
+  }
+
   function sessionGroupCollapseLabel(group: SessionListGroup, collapsed: boolean): string {
-    if (group === 'optimize') {
-      return collapsed ? '展开文章优化对话' : '收起文章优化对话'
-    }
-    return collapsed ? '展开页面批量优化对话' : '收起页面批量优化对话'
+    const label = sessionGroupLabel(group)
+    return collapsed ? `展开${label}对话` : `收起${label}对话`
   }
 
   function sessionGroupCollapseTitle(group: SessionListGroup, collapsed: boolean): string {
-    if (group === 'optimize') {
-      return collapsed ? '展开文章优化' : '收起文章优化'
-    }
-    return collapsed ? '展开页面批量优化' : '收起页面批量优化'
+    const label = sessionGroupLabel(group)
+    return collapsed ? `展开${label}` : `收起${label}`
   }
 
   useEffect(() => {
     const active = sessions.find((session) => session.id === activeSessionId)
+    if (active?.writeMode === 'create') setCreateCollapsed(false)
     if (active?.writeMode === 'optimize') setOptimizeCollapsed(false)
     if (active?.writeMode === 'batch-optimize') setBatchOptimizeCollapsed(false)
   }, [activeSessionId, sessions])
+
+  useEffect(() => {
+    if (!modeMenuOpen) return
+
+    function handlePointerDown(event: MouseEvent): void {
+      const target = event.target as Node
+      if (modeMenuRef.current?.contains(target)) return
+      if (newChatWrapRef.current?.contains(target)) return
+      setModeMenuOpen(false)
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') setModeMenuOpen(false)
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [modeMenuOpen])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -367,12 +404,44 @@ export default function ChatSidebar({
   return (
     <aside className="chat-sidebar">
       <nav className="sidebar-nav" aria-label="侧栏导航">
-        <button type="button" className="sidebar-nav-item" onClick={onNew}>
-          <IconPlus size={14} />
-          <span>新对话</span>
-        </button>
+        <div className="sidebar-new-chat-wrap" ref={newChatWrapRef}>
+          <button
+            type="button"
+            className={`sidebar-nav-item sidebar-new-chat${modeMenuOpen ? ' is-open' : ''}`}
+            aria-expanded={modeMenuOpen}
+            aria-haspopup="menu"
+            onClick={() => setModeMenuOpen((open) => !open)}
+          >
+            <IconStartCreate size={14} />
+            <span>点击开始新对话</span>
+          </button>
 
-        <div className="sidebar-lifecycle-capsule" role="tablist" aria-label="对话分组">
+          {modeMenuOpen ? (
+            <div
+              ref={modeMenuRef}
+              className="sidebar-mode-menu"
+              role="menu"
+              aria-label="选择对话类型"
+            >
+              {WRITE_MODE_OPTIONS.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className="sidebar-mode-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setModeMenuOpen(false)
+                    onSelectMode(item.value)
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="sidebar-lifecycle-switch" role="tablist" aria-label="对话分组">
           <button
             type="button"
             role="tab"
@@ -382,6 +451,7 @@ export default function ChatSidebar({
           >
             进行中
           </button>
+          <span className="sidebar-lifecycle-divider" aria-hidden="true" />
           <button
             type="button"
             role="tab"
@@ -395,46 +465,35 @@ export default function ChatSidebar({
       </nav>
 
       <div className="sidebar-section">
-        <div className="sidebar-section-head">
-          <span className="sidebar-section-title">
-            {lifecycleGroup === 'completed' ? '已完成' : '进行中'}
-          </span>
-        </div>
         <div className="session-list">
           {lifecycleSessions.length === 0 ? (
             <p className="sidebar-empty">{emptyLabel}</p>
           ) : (
-            visibleSessionGroups.map((group, index) => (
+            visibleSessionGroups.map((group) => (
               <div key={group.key} className="session-group-block">
-                {index > 0 ? (
-                  group.collapsible ? (
-                    <button
-                      type="button"
-                      className="session-group-divider"
-                      aria-expanded={!group.collapsed}
-                      aria-label={sessionGroupCollapseLabel(group.key, group.collapsed)}
-                      title={sessionGroupCollapseTitle(group.key, group.collapsed)}
-                      onClick={() => toggleSessionGroupCollapse(group.key)}
-                    >
-                      <span className="session-group-divider-line" aria-hidden="true" />
-                    </button>
-                  ) : (
-                    <div className="session-group-divider is-static" aria-hidden="true">
-                      <span className="session-group-divider-line" />
-                    </div>
-                  )
-                ) : null}
+                <button
+                  type="button"
+                  className="session-group-divider"
+                  aria-expanded={!group.collapsed}
+                  aria-label={sessionGroupCollapseLabel(group.key, group.collapsed)}
+                  title={sessionGroupCollapseTitle(group.key, group.collapsed)}
+                  onClick={() => toggleSessionGroupCollapse(group.key)}
+                >
+                  <span className="session-group-divider-line" aria-hidden="true" />
+                  <span className="session-group-divider-label">{sessionGroupLabel(group.key)}</span>
+                  <span className="session-group-divider-line" aria-hidden="true" />
+                </button>
 
                 <div
                   className={[
                     'session-group',
-                    group.collapsible && group.collapsed ? 'is-collapsed' : ''
+                    group.collapsed ? 'is-collapsed' : ''
                   ]
                     .filter(Boolean)
                     .join(' ')}
                   data-group={group.key}
                 >
-                  {!group.collapsible || !group.collapsed
+                  {!group.collapsed
                     ? group.sessions.map((session) => renderSessionItem(session, group.key))
                     : null}
                 </div>

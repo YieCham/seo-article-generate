@@ -208,6 +208,23 @@ export function IconRegenerate({ size = 14, className }: IconProps) {
   )
 }
 
+export function IconPageCompleted({ size = 14, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 1024 1024" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M512 0C229.688889 0 0 229.688889 0 512s229.688889 512 512 512 512-229.688889 512-512S794.311111 0 512 0z m0 970.112C259.399111 970.112 53.888 764.600889 53.888 512S259.399111 53.888 512 53.888 970.112 259.399111 970.112 512 764.600889 970.112 512 970.112z" />
+      <path d="M415.345778 644.536889l-128.924445-128.924445-38.101333 38.115556 167.025778 167.025778L775.68 360.405333l-38.101333-38.115555z" />
+    </svg>
+  )
+}
+
+export function IconMoveToActive({ size = 14, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 1024 1024" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M588 298.4H256.8l122.8-118c6.4-6 6.4-16.4 0.4-22.8l-22-23.2c-6-6.4-16.4-6.4-22.8-0.4L142.8 318.8c-6.4 6.4-6.4 16.8 0 23.2l192.4 184.4c6.4 6 16.4 6 22.8-0.4l22-23.2c6-6.4 6-16.4-0.4-22.8L256.8 362.4H588c130.4 0 236 106.8 234 237.6-2 128.4-109.2 230.4-237.6 230.4H261.2c-8.8 0-16 7.2-16 16v32c0 8.8 7.2 16 16 16h323.2c164 0 300-131.2 301.6-295.2 1.6-165.6-132.8-300.8-298-300.8z" />
+    </svg>
+  )
+}
+
 export function IconDelete({ size = 14, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 1024 1024" fill="currentColor" className={className} aria-hidden="true">

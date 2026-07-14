@@ -1,5 +1,6 @@
 import { countArticleWords as countWords } from './articleLength'
 import type { OutlineSection } from './optimizeStructure'
+import { classifyArticleModule } from './optimizeStructure'
 
 export interface SectionSanitizeLog {
   dropped: Array<{ title: string; reason: string }>
@@ -22,22 +23,8 @@ const JUNK_TITLE_PATTERNS: RegExp[] = [
   /^comments?\s*$/i
 ]
 
-function isQuickAnswerLike(title: string): boolean {
-  return /quick answer|key takeaways|quick verdict/i.test(title.trim())
-}
-
-function isFaqLike(title: string): boolean {
-  const t = title.trim()
-  return /^faq$/i.test(t) || /frequently asked questions/i.test(t) || /\bfaqs?\b/i.test(t)
-}
-
-function isConclusionLike(title: string): boolean {
-  const t = title.trim()
-  return /^conclusion$/i.test(t) || /^in conclusion$/i.test(t)
-}
-
-function isIntroductionLike(title: string): boolean {
-  return /^introduction$/i.test(title.trim())
+function moduleBucket(title: string): ReturnType<typeof classifyArticleModule> {
+  return classifyArticleModule(title)
 }
 
 export function isJunkOptimizeSection(title: string, body: string): boolean {
@@ -145,25 +132,11 @@ function findMergeTargetIndex(sections: OutlineSection[], anchor?: string): numb
     if (idx >= 0) return idx
   }
 
-  const introIdx = sections.findIndex((item) => isIntroductionLike(item.title))
+  const introIdx = sections.findIndex((item) => classifyArticleModule(item.title) === 'introduction')
   if (introIdx >= 0) return introIdx
 
-  const bodyIdx = sections.findIndex(
-    (item) =>
-      !isQuickAnswerLike(item.title) &&
-      !isIntroductionLike(item.title) &&
-      !isFaqLike(item.title) &&
-      !isConclusionLike(item.title)
-  )
+  const bodyIdx = sections.findIndex((item) => classifyArticleModule(item.title) === 'body')
   return bodyIdx >= 0 ? bodyIdx : 0
-}
-
-function moduleBucket(title: string): 'quickAnswer' | 'introduction' | 'faq' | 'conclusion' | 'body' {
-  if (isQuickAnswerLike(title)) return 'quickAnswer'
-  if (isIntroductionLike(title)) return 'introduction'
-  if (isFaqLike(title)) return 'faq'
-  if (isConclusionLike(title)) return 'conclusion'
-  return 'body'
 }
 
 function deduplicateModuleSections(sections: OutlineSection[], log: SectionSanitizeLog): OutlineSection[] {

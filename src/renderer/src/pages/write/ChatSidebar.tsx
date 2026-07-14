@@ -1,12 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ChatSession, SessionListGroup } from './types'
 import {
   canReorderSessionsTogether,
   getSessionDisplayTitle,
+  getSessionLifecycleGroup,
+  getSessionListGroup,
   sessionCanRegenerate,
-  sortSessions
+  sortSessions,
+  type ChatSession,
+  type SessionLifecycleGroup,
+  type SessionListGroup
 } from './types'
-import { IconPlus, IconSettings, IconRename, IconPin, IconPinnedSession, IconClear, IconDelete, IconRegenerate } from '../../components/Icons'
+import {
+  IconPlus,
+  IconSettings,
+  IconRename,
+  IconPin,
+  IconPinnedSession,
+  IconClear,
+  IconDelete,
+  IconRegenerate,
+  IconPageCompleted,
+  IconMoveToActive
+} from '../../components/Icons'
 import SessionRenameDialog from './SessionRenameDialog'
 import SessionConfirmDialog, { type SessionConfirmAction } from './SessionConfirmDialog'
 
@@ -20,6 +35,7 @@ interface ChatSidebarProps {
   onDelete: (id: string) => void
   onRename: (id: string, title: string) => void
   onTogglePin: (id: string) => void
+  onMarkCompleted: (id: string) => void
   onRegenerate: (id: string) => void
   onReorder: (
     group: SessionListGroup,
@@ -37,6 +53,8 @@ interface SessionContextMenuState {
   y: number
 }
 
+const LIFECYCLE_STORAGE_KEY = 'sidebar.lifecycleGroup'
+
 function formatTime(timestamp: number): string {
   const date = new Date(timestamp)
   const now = new Date()
@@ -45,6 +63,15 @@ function formatTime(timestamp: number): string {
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   }
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
+function readStoredLifecycleGroup(): SessionLifecycleGroup {
+  try {
+    const value = localStorage.getItem(LIFECYCLE_STORAGE_KEY)
+    return value === 'completed' ? 'completed' : 'active'
+  } catch {
+    return 'active'
+  }
 }
 
 export default function ChatSidebar({
@@ -57,11 +84,13 @@ export default function ChatSidebar({
   onDelete,
   onRename,
   onTogglePin,
+  onMarkCompleted,
   onRegenerate,
   onReorder,
   onOpenSettings,
   isRunning = false
 }: ChatSidebarProps) {
+  const [lifecycleGroup, setLifecycleGroup] = useState<SessionLifecycleGroup>(readStoredLifecycleGroup)
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
   const [pendingConfirm, setPendingConfirm] = useState<{
@@ -69,6 +98,7 @@ export default function ChatSidebar({
     action: SessionConfirmAction
   } | null>(null)
   const [optimizeCollapsed, setOptimizeCollapsed] = useState(false)
+  const [batchOptimizeCollapsed, setBatchOptimizeCollapsed] = useState(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<{
     id: string
@@ -76,21 +106,92 @@ export default function ChatSidebar({
   } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
+  const lifecycleSessions = useMemo(
+    () => sessions.filter((session) => getSessionLifecycleGroup(session) === lifecycleGroup),
+    [sessions, lifecycleGroup]
+  )
+
   const createSessions = useMemo(
-    () => sortSessions(sessions.filter((session) => session.writeMode !== 'optimize')),
-    [sessions]
+    () =>
+      sortSessions(lifecycleSessions.filter((session) => getSessionListGroup(session) === 'create')),
+    [lifecycleSessions]
   )
   const optimizeSessions = useMemo(
-    () => sortSessions(sessions.filter((session) => session.writeMode === 'optimize')),
-    [sessions]
+    () =>
+      sortSessions(
+        lifecycleSessions.filter((session) => getSessionListGroup(session) === 'optimize')
+      ),
+    [lifecycleSessions]
   )
-  const showDivider = createSessions.length > 0 && optimizeSessions.length > 0
+  const batchOptimizeSessions = useMemo(
+    () =>
+      sortSessions(
+        lifecycleSessions.filter((session) => getSessionListGroup(session) === 'batch-optimize')
+      ),
+    [lifecycleSessions]
+  )
+
+  const sessionGroups = useMemo(
+    () => [
+      { key: 'create' as const, sessions: createSessions, collapsible: false, collapsed: false },
+      {
+        key: 'optimize' as const,
+        sessions: optimizeSessions,
+        collapsible: true,
+        collapsed: optimizeCollapsed
+      },
+      {
+        key: 'batch-optimize' as const,
+        sessions: batchOptimizeSessions,
+        collapsible: true,
+        collapsed: batchOptimizeCollapsed
+      }
+    ],
+    [
+      batchOptimizeCollapsed,
+      batchOptimizeSessions,
+      createSessions,
+      optimizeCollapsed,
+      optimizeSessions
+    ]
+  )
+
+  const visibleSessionGroups = sessionGroups.filter((group) => group.sessions.length > 0)
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
+
+  function setLifecycleGroupAndPersist(next: SessionLifecycleGroup): void {
+    setLifecycleGroup(next)
+    try {
+      localStorage.setItem(LIFECYCLE_STORAGE_KEY, next)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function toggleSessionGroupCollapse(group: SessionListGroup): void {
+    if (group === 'optimize') setOptimizeCollapsed((value) => !value)
+    if (group === 'batch-optimize') setBatchOptimizeCollapsed((value) => !value)
+  }
+
+  function sessionGroupCollapseLabel(group: SessionListGroup, collapsed: boolean): string {
+    if (group === 'optimize') {
+      return collapsed ? '展开文章优化对话' : '收起文章优化对话'
+    }
+    return collapsed ? '展开页面批量优化对话' : '收起页面批量优化对话'
+  }
+
+  function sessionGroupCollapseTitle(group: SessionListGroup, collapsed: boolean): string {
+    if (group === 'optimize') {
+      return collapsed ? '展开文章优化' : '收起文章优化'
+    }
+    return collapsed ? '展开页面批量优化' : '收起页面批量优化'
+  }
 
   useEffect(() => {
     const active = sessions.find((session) => session.id === activeSessionId)
     if (active?.writeMode === 'optimize') setOptimizeCollapsed(false)
+    if (active?.writeMode === 'batch-optimize') setBatchOptimizeCollapsed(false)
   }, [activeSessionId, sessions])
 
   useEffect(() => {
@@ -126,8 +227,8 @@ export default function ChatSidebar({
     event.preventDefault()
     event.stopPropagation()
 
-    const menuWidth = 148
-    const menuHeight = 204
+    const menuWidth = 160
+    const menuHeight = 240
     const padding = 8
     const x = Math.min(event.clientX, window.innerWidth - menuWidth - padding)
     const y = Math.min(event.clientY, window.innerHeight - menuHeight - padding)
@@ -135,7 +236,9 @@ export default function ChatSidebar({
     setContextMenu({ sessionId, x, y })
   }
 
-  function handleMenuAction(action: 'rename' | 'pin' | 'regenerate' | 'clear' | 'delete'): void {
+  function handleMenuAction(
+    action: 'rename' | 'pin' | 'complete' | 'regenerate' | 'clear' | 'delete'
+  ): void {
     if (!contextMenu) return
     const { sessionId } = contextMenu
     closeContextMenu()
@@ -145,6 +248,10 @@ export default function ChatSidebar({
     }
     if (action === 'pin') {
       onTogglePin(sessionId)
+      return
+    }
+    if (action === 'complete') {
+      onMarkCompleted(sessionId)
       return
     }
     setPendingConfirm({ sessionId, action })
@@ -244,6 +351,9 @@ export default function ChatSidebar({
     : null
   const contextRunning = contextMenu ? runningSessionId === contextMenu.sessionId : false
   const contextCanRegenerate = contextSession ? sessionCanRegenerate(contextSession) : false
+  const contextCompleted = contextSession
+    ? getSessionLifecycleGroup(contextSession) === 'completed'
+    : false
   const regenerateDisabled = isRunning || contextRunning || !contextCanRegenerate
   const regenerateDisabledReason = isRunning
     ? '当前有任务正在运行'
@@ -252,6 +362,7 @@ export default function ChatSidebar({
       : !contextCanRegenerate
         ? '尚无初始请求'
         : undefined
+  const emptyLabel = lifecycleGroup === 'completed' ? '暂无已完成对话' : '暂无进行中对话'
 
   return (
     <aside className="chat-sidebar">
@@ -260,49 +371,75 @@ export default function ChatSidebar({
           <IconPlus size={14} />
           <span>新对话</span>
         </button>
+
+        <div className="sidebar-lifecycle-capsule" role="tablist" aria-label="对话分组">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={lifecycleGroup === 'active'}
+            className={`sidebar-lifecycle-tab${lifecycleGroup === 'active' ? ' is-active' : ''}`}
+            onClick={() => setLifecycleGroupAndPersist('active')}
+          >
+            进行中
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={lifecycleGroup === 'completed'}
+            className={`sidebar-lifecycle-tab${lifecycleGroup === 'completed' ? ' is-active' : ''}`}
+            onClick={() => setLifecycleGroupAndPersist('completed')}
+          >
+            已完成
+          </button>
+        </div>
       </nav>
 
       <div className="sidebar-section">
         <div className="sidebar-section-head">
-          <span className="sidebar-section-title">对话记录</span>
+          <span className="sidebar-section-title">
+            {lifecycleGroup === 'completed' ? '已完成' : '进行中'}
+          </span>
         </div>
         <div className="session-list">
-          {sessions.length === 0 ? (
-            <p className="sidebar-empty">暂无对话</p>
+          {lifecycleSessions.length === 0 ? (
+            <p className="sidebar-empty">{emptyLabel}</p>
           ) : (
-            <>
-              {createSessions.length > 0 ? (
-                <div className="session-group" data-group="create">
-                  {createSessions.map((session) => renderSessionItem(session, 'create'))}
-                </div>
-              ) : null}
+            visibleSessionGroups.map((group, index) => (
+              <div key={group.key} className="session-group-block">
+                {index > 0 ? (
+                  group.collapsible ? (
+                    <button
+                      type="button"
+                      className="session-group-divider"
+                      aria-expanded={!group.collapsed}
+                      aria-label={sessionGroupCollapseLabel(group.key, group.collapsed)}
+                      title={sessionGroupCollapseTitle(group.key, group.collapsed)}
+                      onClick={() => toggleSessionGroupCollapse(group.key)}
+                    >
+                      <span className="session-group-divider-line" aria-hidden="true" />
+                    </button>
+                  ) : (
+                    <div className="session-group-divider is-static" aria-hidden="true">
+                      <span className="session-group-divider-line" />
+                    </div>
+                  )
+                ) : null}
 
-              {showDivider ? (
-                <button
-                  type="button"
-                  className="session-group-divider"
-                  aria-expanded={!optimizeCollapsed}
-                  aria-label={
-                    optimizeCollapsed ? '展开文章优化对话' : '收起文章优化对话'
-                  }
-                  title={optimizeCollapsed ? '展开文章优化' : '收起文章优化'}
-                  onClick={() => setOptimizeCollapsed((value) => !value)}
-                >
-                  <span className="session-group-divider-line" aria-hidden="true" />
-                </button>
-              ) : null}
-
-              {optimizeSessions.length > 0 ? (
                 <div
-                  className={`session-group${optimizeCollapsed ? ' is-collapsed' : ''}`}
-                  data-group="optimize"
+                  className={[
+                    'session-group',
+                    group.collapsible && group.collapsed ? 'is-collapsed' : ''
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  data-group={group.key}
                 >
-                  {!optimizeCollapsed
-                    ? optimizeSessions.map((session) => renderSessionItem(session, 'optimize'))
+                  {!group.collapsible || !group.collapsed
+                    ? group.sessions.map((session) => renderSessionItem(session, group.key))
                     : null}
                 </div>
-              ) : null}
-            </>
+              </div>
+            ))
           )}
         </div>
       </div>
@@ -339,6 +476,19 @@ export default function ChatSidebar({
           >
             <IconRename size={14} className="session-context-menu-icon" />
             <span>重命名</span>
+          </button>
+          <button
+            type="button"
+            className="session-context-menu-item"
+            role="menuitem"
+            onClick={() => handleMenuAction('complete')}
+          >
+            {contextCompleted ? (
+              <IconMoveToActive size={14} className="session-context-menu-icon" />
+            ) : (
+              <IconPageCompleted size={14} className="session-context-menu-icon" />
+            )}
+            <span>{contextCompleted ? '移回进行中' : '页面已完成'}</span>
           </button>
           <button
             type="button"

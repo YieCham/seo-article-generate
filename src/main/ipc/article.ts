@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import { generateArticle } from '../agent/articleAgent'
 import { optimizeArticle } from '../agent/articleOptimizer'
+import { batchOptimizePage } from '../agent/batchPageOptimizer'
 import { reviseArticle } from '../agent/articleReviser'
 import type { PipelineCheckpoint } from '../agent/pipelineCheckpoint'
 import {
@@ -24,6 +25,15 @@ export function registerArticleIpc(): void {
     const signal = beginArticleRun(event.sender.id)
     try {
       return await runWithAbortSignal(signal, () => optimizeArticle(options, event.sender))
+    } finally {
+      endArticleRun(event.sender.id)
+    }
+  })
+
+  ipcMain.handle('article:batchOptimize', async (event, options) => {
+    const signal = beginArticleRun(event.sender.id)
+    try {
+      return await runWithAbortSignal(signal, () => batchOptimizePage(options, event.sender))
     } finally {
       endArticleRun(event.sender.id)
     }

@@ -1,11 +1,16 @@
-import { MIN_ARTICLE_WORDS, MAX_ARTICLE_WORDS } from './articleLength'
+import { MIN_ARTICLE_WORDS, MAX_ARTICLE_WORDS, isFaqSection } from './articleLength'
 
 export const REVIEW_SKILL_ID = 'product-review'
+
+import { isReviewSkillEnabled } from './skillPipeline'
 
 const REVIEW_SKILL_PATTERN =
   /product-review|Review类|测评文章|comparison table|优缺点|product review guide/i
 
-export function shouldApplyReviewStructure(skillsText: string): boolean {
+export function shouldApplyReviewStructure(skillsText: string, enabledSkillIds?: string[]): boolean {
+  if (enabledSkillIds && enabledSkillIds.length > 0) {
+    return isReviewSkillEnabled(enabledSkillIds) || REVIEW_SKILL_PATTERN.test(skillsText)
+  }
   return REVIEW_SKILL_PATTERN.test(skillsText)
 }
 
@@ -18,7 +23,8 @@ export function isReviewAlternativeSection(title: string, body = ''): boolean {
 
 export function isReviewedProductBodySection(title: string, body = ''): boolean {
   const normalized = title.trim().toLowerCase()
-  if (/^introduction$|^conclusion$|^faq$|quick answer|key takeaways/i.test(normalized)) return false
+  if (/^introduction$|^conclusion$/i.test(normalized) || isFaqSection(normalized)) return false
+  if (/quick answer|key takeaways/i.test(normalized)) return false
   if (isReviewAlternativeSection(title, body)) return false
   return true
 }
@@ -103,13 +109,13 @@ Full article length: **${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} English words
 Paragraphs: write **naturally flowing prose** — no per-paragraph word cap; use bullets or ### subheadings when they add clarity.
 `.trim()
 
-export function getReviewPromptBlock(skillsText: string): string {
-  if (!shouldApplyReviewStructure(skillsText)) return ''
+export function getReviewPromptBlock(skillsText: string, enabledSkillIds?: string[]): string {
+  if (!shouldApplyReviewStructure(skillsText, enabledSkillIds)) return ''
   return REVIEW_ARTICLE_STRUCTURE
 }
 
 export const REVIEW_OUTLINE_SKELETON = `
-Review 大纲骨架：Quick Answer → Introduction → 被测评产品 5 个 ## Part（各 3–4 bullets 角度）→ 对比表 Part（1 bullet 列维度）→ FAQ（仅问题）→ Conclusion（2–3 bullets）。禁止写段落与表格内容。
+Review 大纲骨架：首行 \`# …\` SEO H1（含被测评产品/主题核心词，**不得**与 Topic 逐字相同）→ Quick Answer → Introduction → 被测评产品 5 个 ## Part（各 3–4 bullets 角度）→ 对比表 Part（1 bullet 列维度）→ 与主题相关的 FAQ 节（仅问题）→ Conclusion（2–3 bullets）。禁止写段落与表格内容。
 `.trim()
 
 export const REVIEW_OUTLINE_GUIDANCE = `

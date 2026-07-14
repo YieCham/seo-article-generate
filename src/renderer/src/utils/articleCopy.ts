@@ -1,11 +1,13 @@
-/** Copy-ready markdown: from first H1 through end, without code-fence language tags. */
+import { normalizeArticleMarkdown } from '../../../shared/normalizeArticleMarkdown'
+
+/** Copy-ready markdown: from first H1 through end, without outer code fences. */
 export function getArticleCopyMarkdown(content: string): string {
-  const trimmed = content.trim()
-  if (!trimmed) return ''
+  const normalized = normalizeArticleMarkdown(content)
+  if (!normalized.trim()) return ''
 
-  const h1Match = trimmed.match(/^#\s+.+$/m)
+  const h1Match = normalized.match(/^#\s+.+$/m)
   const fromH1 =
-    h1Match && h1Match.index !== undefined ? trimmed.slice(h1Match.index) : trimmed
+    h1Match && h1Match.index !== undefined ? normalized.slice(h1Match.index) : normalized
 
-  return fromH1.replace(/^```[^\n`]*\n/gm, '```\n').trimEnd()
+  return fromH1.trimEnd()
 }

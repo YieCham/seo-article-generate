@@ -52,9 +52,7 @@ export default function WriteModePickerDialog({ open, onSelect, onClose }: Write
               onClick={() => onSelect(item.value)}
             >
               <span className="write-mode-picker-option-label">{item.label}</span>
-              <span className="write-mode-picker-option-hint">
-                {item.value === 'create' ? '从零撰写 SEO/GEO 软文' : '优化已有页面内容'}
-              </span>
+              <span className="write-mode-picker-option-hint">{item.hint}</span>
             </button>
           ))}
         </div>

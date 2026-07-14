@@ -1,5 +1,6 @@
 import type { WebContents } from 'electron'
 import { getEffectiveConfig } from '../config/configStore'
+import type { LlmConfig } from '../config/types'
 import { countArticleWords } from './articleLength'
 import { maxTokensForFullArticleOutput, resolveStepMaxTokens } from '../config/llmTokenLimits'
 import {
@@ -15,6 +16,7 @@ import { chatCompletion } from './llmClient'
 import { normalizeOutputLanguage } from './outputLanguage'
 import { getArticleLanguageLock } from './topicLanguage'
 import { getLanguageLabel } from '../research/localeOptions'
+import { stripOuterCodeFence } from '../../shared/normalizeArticleMarkdown'
 
 export interface ReviseArticleSelection {
   start: number
@@ -30,12 +32,8 @@ export interface ReviseArticleOptions {
   pipeline?: TokenUsagePipeline
   topic?: string
   selection?: ReviseArticleSelection
-}
-
-function stripOuterCodeFence(text: string): string {
-  const trimmed = text.trim()
-  const match = trimmed.match(/^```(?:markdown|md)?\s*\n?([\s\S]*?)```$/i)
-  return match ? match[1].trim() : trimmed
+  llmPresetId?: string
+  llmModel?: string
 }
 
 function getContextSnippet(article: string, start: number, end: number, radius = 400): string {
@@ -62,9 +60,9 @@ async function reviseSelectedFragment(
   selection: ReviseArticleSelection,
   articleLangLabel: string,
   articleLangLock: string,
-  globalMaxTokens: number
+  globalMaxTokens: number,
+  llm: LlmConfig
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const llm = (await getEffectiveConfig()).llm
   const start = Math.round(selection.start)
   const end = Math.round(selection.end)
   const selectionError = validateSelection(article, start, end)
@@ -161,9 +159,9 @@ async function reviseFullArticle(
   article: string,
   articleLangLabel: string,
   articleLangLock: string,
-  globalMaxTokens: number
+  globalMaxTokens: number,
+  llm: LlmConfig
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const llm = (await getEffectiveConfig()).llm
   const instruction = options.instruction.trim()
   const wordCount = countArticleWords(article)
   const maxTokens = maxTokensForFullArticleOutput(wordCount, globalMaxTokens, 'articleRevise')
@@ -237,7 +235,13 @@ export async function reviseArticle(
   options: ReviseArticleOptions,
   sender: WebContents
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const appConfig = await getEffectiveConfig()
+  const llmSelection =
+    options.llmPresetId && options.llmModel
+      ? { presetId: options.llmPresetId, model: options.llmModel }
+      : options.llmModel
+        ? { presetId: '', model: options.llmModel }
+        : null
+  const appConfig = await getEffectiveConfig(llmSelection)
   const llm = appConfig.llm
 
   if (!llm.apiKey) {
@@ -274,7 +278,8 @@ export async function reviseArticle(
         options.selection,
         articleLangLabel,
         articleLangLock,
-        globalMaxTokens
+        globalMaxTokens,
+        llm
       )
     }
 
@@ -284,7 +289,8 @@ export async function reviseArticle(
       article,
       articleLangLabel,
       articleLangLock,
-      globalMaxTokens
+      globalMaxTokens,
+      llm
     )
   })
 }

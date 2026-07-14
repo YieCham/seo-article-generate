@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { QuickPicksConfig } from '../../env.d'
 import { ARTICLE_TYPE_OPTIONS, type ArticleType } from '../../constants/articleTypes'
-import type { WriteMode } from '../../constants/writeMode'
+import type { BatchDialogMode } from '../../constants/writeMode'
 import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../../constants/outputLanguage'
 import { parseBatchTopics } from '../../utils/parseBatchTopics'
 
 interface BatchWriteDialogProps {
   open: boolean
-  mode: WriteMode
+  mode: BatchDialogMode
   disabled: boolean
   quickPicks: QuickPicksConfig
   selectedProductId: string
@@ -32,6 +32,16 @@ const COPY = {
   optimize: {
     title: '批量优化',
     desc: '每行输入一个页面 URL，将按顺序依次为每个 URL 创建新对话并优化内容。优化流程与单篇相同。',
+    listLabel: 'URL 列表',
+    extraLabel: '补充要求（应用于全部 URL）',
+    placeholder:
+      '每行一个 URL，例如：\nhttps://example.com/blog/spotify-guide\nhttps://example.com/blog/tidal-converter',
+    countUnit: '个 URL',
+    submit: '开始批量优化'
+  },
+  'batch-optimize': {
+    title: '页面批量优化',
+    desc: '每行输入一个页面 URL，将依次为每个 URL 创建独立对话，使用 Firecrawl 抓取后直接生成优化全文。',
     listLabel: 'URL 列表',
     extraLabel: '补充要求（应用于全部 URL）',
     placeholder:

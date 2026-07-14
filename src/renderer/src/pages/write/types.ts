@@ -1,4 +1,4 @@
-import type { WriteMode } from '../../constants/writeMode'
+import { normalizeWriteMode, type WriteMode } from '../../constants/writeMode'
 import type { PipelineCheckpoint } from '../../../../shared/pipelineCheckpoint'
 
 export interface ReviseArticleSelection {
@@ -21,6 +21,8 @@ export interface ChatMessage {
   revisionTargetAssistantId?: string
 }
 
+export type SessionLifecycleGroup = 'active' | 'completed'
+
 export interface ChatSession {
   id: string
   title: string
@@ -29,13 +31,25 @@ export interface ChatSession {
   pinnedAt?: number
   /** Manual order within the same pin tier and write mode; lower appears higher. */
   sortOrder?: number
+  /** Sidebar lifecycle bucket; default active (进行中). */
+  listStatus?: SessionLifecycleGroup
   messages: ChatMessage[]
   writeMode: WriteMode
+  llmPresetId?: string
+  llmModel?: string
   updatedAt: number
   pipelineCheckpoint?: PipelineCheckpoint
 }
 
-export type SessionListGroup = 'create' | 'optimize'
+export function getSessionLifecycleGroup(session: ChatSession): SessionLifecycleGroup {
+  return session.listStatus === 'completed' ? 'completed' : 'active'
+}
+
+export type SessionListGroup = 'create' | 'optimize' | 'batch-optimize'
+
+export function getSessionListGroup(session: ChatSession): SessionListGroup {
+  return normalizeWriteMode(session.writeMode)
+}
 
 export function sortSessions(items: ChatSession[]): ChatSession[] {
   const indexMap = new Map(items.map((item, index) => [item.id, index]))
@@ -52,21 +66,24 @@ export function sortSessions(items: ChatSession[]): ChatSession[] {
   })
 }
 
-/** Assign sortOrder within each pin tier and list group from current array order. */
+/** Assign sortOrder only for sessions that do not have one yet (migration). */
 export function normalizeAllSessionSortOrders(sessions: ChatSession[]): ChatSession[] {
-  const indexMap = new Map(sessions.map((session, index) => [session.id, index]))
+  if (!sessions.some((session) => typeof session.sortOrder !== 'number')) {
+    return sessions
+  }
+
   const next = sessions.map((session) => ({ ...session }))
 
-  for (const group of ['create', 'optimize'] as SessionListGroup[]) {
+  for (const group of ['create', 'optimize', 'batch-optimize'] as SessionListGroup[]) {
     for (const pinned of [false, true]) {
-      const bucket = next
-        .filter(
-          (session) =>
-            sessionMatchesListGroup(session, group) && Boolean(session.pinned) === pinned
-        )
-        .sort((a, b) => (indexMap.get(a.id) ?? 0) - (indexMap.get(b.id) ?? 0))
+      const bucket = next.filter(
+        (session) =>
+          sessionMatchesListGroup(session, group) && Boolean(session.pinned) === pinned
+      )
+      if (!bucket.some((session) => typeof session.sortOrder !== 'number')) continue
 
-      bucket.forEach((session, index) => {
+      const ordered = sortSessions(bucket)
+      ordered.forEach((session, index) => {
         const itemIndex = next.findIndex((item) => item.id === session.id)
         if (itemIndex >= 0) next[itemIndex] = { ...next[itemIndex], sortOrder: index }
       })
@@ -80,7 +97,7 @@ export function insertSessionAtListTop(
   sessions: ChatSession[],
   session: ChatSession
 ): ChatSession[] {
-  const group: SessionListGroup = session.writeMode === 'optimize' ? 'optimize' : 'create'
+  const group = getSessionListGroup(session)
   const pinned = Boolean(session.pinned)
   const bumped = sessions.map((item) => {
     if (!sessionMatchesListGroup(item, group) || Boolean(item.pinned) !== pinned) {
@@ -90,16 +107,17 @@ export function insertSessionAtListTop(
     return { ...item, sortOrder: baseOrder + 1 }
   })
 
-  return [...bumped, { ...session, sortOrder: 0 }]
+  return [{ ...session, sortOrder: 0 }, ...bumped]
 }
 
 function sessionMatchesListGroup(session: ChatSession, group: SessionListGroup): boolean {
-  return group === 'optimize' ? session.writeMode === 'optimize' : session.writeMode !== 'optimize'
+  return getSessionListGroup(session) === group
 }
 
 export function canReorderSessionsTogether(a: ChatSession, b: ChatSession): boolean {
   if (a.id === b.id) return false
-  if (sessionMatchesListGroup(a, 'optimize') !== sessionMatchesListGroup(b, 'optimize')) return false
+  if (getSessionLifecycleGroup(a) !== getSessionLifecycleGroup(b)) return false
+  if (getSessionListGroup(a) !== getSessionListGroup(b)) return false
   return Boolean(a.pinned) === Boolean(b.pinned)
 }
 

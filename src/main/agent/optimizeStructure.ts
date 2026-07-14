@@ -1,6 +1,9 @@
-import { countArticleWords as countWords } from './articleLength'
-import { filterJunkSourceSections } from './optimizeSectionSanitize'
+import { countArticleWords as countWords, isFaqSection } from './articleLength'
+import { MULTI_METHOD_POLISH_PRESERVATION_HINT } from './outlineSkeleton'
+import { MULTI_METHOD_STRUCTURE_PRESERVE_RULE } from './articleStructurePreserve'
 import { parseOutlineSections } from './llmClient'
+import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
+import { filterJunkSourceSections } from './optimizeSectionSanitize'
 
 export type OutlineSection = { title: string; body: string }
 
@@ -246,12 +249,23 @@ function isQuickAnswerSection(title: string): boolean {
   return /quick answer|key takeaways/i.test(title.trim())
 }
 
-function isFaqSection(title: string): boolean {
-  return /^faq$|frequently asked questions/i.test(title.trim())
+function isConclusionSection(title: string): boolean {
+  const t = title.trim()
+  if (/^conclusion$/i.test(t)) return true
+  if (/^in conclusion$/i.test(t)) return true
+  if (/^(?:final thoughts|wrapping up|bottom line)$/i.test(t)) return true
+  return false
 }
 
-function isConclusionSection(title: string): boolean {
-  return /^conclusion$/i.test(title.trim())
+export type ArticleModuleKind = 'quickAnswer' | 'introduction' | 'faq' | 'conclusion' | 'body'
+
+export function classifyArticleModule(title: string): ArticleModuleKind {
+  const trimmed = title.trim()
+  if (isQuickAnswerSection(trimmed)) return 'quickAnswer'
+  if (/^introduction$/i.test(trimmed)) return 'introduction'
+  if (isFaqSection(trimmed)) return 'faq'
+  if (isConclusionSection(trimmed)) return 'conclusion'
+  return 'body'
 }
 
 function hasFaqSection(sections: OutlineSection[]): boolean {
@@ -260,6 +274,23 @@ function hasFaqSection(sections: OutlineSection[]): boolean {
 
 function hasQuickAnswerSection(sections: OutlineSection[]): boolean {
   return sections.some((item) => isQuickAnswerSection(item.title))
+}
+
+/** GEO front modules missing from source should always be planned for optimize output. */
+export function ensureOptimizeGeoModules(
+  sections: OutlineSection[],
+  sourceSections: OutlineSection[]
+): OutlineSection[] {
+  const result = sections.map((section) => ({ ...section }))
+
+  if (!hasQuickAnswerSection(sourceSections) && !hasQuickAnswerSection(result)) {
+    result.unshift({
+      title: 'Quick Answer',
+      body: '- NEW (GEO): 3–4 bullets directly answering the core query from source themes + diagnosis ADD items'
+    })
+  }
+
+  return normalizeOptimizeSectionOrder(result)
 }
 
 /** GEO module order: Quick Answer → Introduction → body → FAQ → Conclusion */
@@ -271,12 +302,22 @@ export function normalizeOptimizeSectionOrder(sections: OutlineSection[]): Outli
   const body: OutlineSection[] = []
 
   for (const section of sections) {
-    const title = section.title.trim()
-    if (isQuickAnswerSection(title)) quickAnswer.push(section)
-    else if (/^introduction$/i.test(title)) introduction.push(section)
-    else if (isFaqSection(title)) faq.push(section)
-    else if (/^conclusion$/i.test(title)) conclusion.push(section)
-    else body.push(section)
+    switch (classifyArticleModule(section.title)) {
+      case 'quickAnswer':
+        quickAnswer.push(section)
+        break
+      case 'introduction':
+        introduction.push(section)
+        break
+      case 'faq':
+        faq.push(section)
+        break
+      case 'conclusion':
+        conclusion.push(section)
+        break
+      default:
+        body.push(section)
+    }
   }
 
   return [
@@ -289,7 +330,43 @@ export function normalizeOptimizeSectionOrder(sections: OutlineSection[]): Outli
 }
 
 export const OPTIMIZE_MODULE_ORDER_GUIDANCE =
-  '模块顺序（硬性）：## Quick Answer / Key Takeaways → ## Introduction → 正文 Part（保持相对顺序）→ ## FAQ → ## Conclusion。'
+  '模块顺序（硬性）：## Quick Answer / Key Takeaways → ## Introduction → 正文 Part（保持相对顺序）→ FAQ 章节（H2 可含主题，如 FAQs About …）→ ## Conclusion（FAQ 必须在 Conclusion 之前）。'
+
+/** Reorder ## sections in a finished article so FAQ always precedes Conclusion. */
+export function reorderArticleMarkdown(markdown: string): string {
+  let text = normalizeArticleMarkdown(markdown.trim())
+  if (!text || !/^##\s/m.test(text)) return markdown
+
+  let prefix = ''
+  const seoMetaMatch = text.match(/^(## SEO Meta[\s\S]*?\n---\n+)/i)
+  if (seoMetaMatch) {
+    prefix = seoMetaMatch[1]
+    text = text.slice(prefix.length).trimStart()
+  }
+
+  let h1 = ''
+  const h1Match = text.match(/^(#\s[^\n]+\n+)/)
+  if (h1Match) {
+    h1 = h1Match[1]
+    text = text.slice(h1Match[1].length).trimStart()
+  }
+
+  if (!/^##\s/m.test(text)) {
+    return markdown
+  }
+
+  const sections = normalizeOptimizeSectionOrder(parseOutlineSections(text))
+  if (sections.length === 0) return markdown
+
+  const reorderedBody = sections
+    .map((section) => {
+      const body = section.body.trim()
+      return body ? `## ${section.title}\n\n${body}` : `## ${section.title}`
+    })
+    .join('\n\n')
+
+  return [prefix, h1, reorderedBody].filter(Boolean).join('\n').trim()
+}
 
 /** Text between H1 removal and the first ## heading — often the page intro. */
 function extractLeadInBeforeFirstH2(markdownWithoutH1: string): string {
@@ -378,16 +455,18 @@ export function getOptimizePolishHint(): string {
     '【终稿校对】',
     OPTIMIZE_MODULE_ORDER_GUIDANCE,
     '- 修正错别字、语法、明显 AI 套话、段落衔接问题',
-    '- **检查 Introduction / FAQ / Conclusion 等模块是否齐全、顺序是否正确**',
+    '- **检查 Quick Answer / Introduction / FAQ / Conclusion 等模块是否齐全、顺序是否正确**',
     '- **保留现有 H2/H3 与实质内容**；仅局部润色弱句，禁止整篇重写或大幅增删章节',
+    MULTI_METHOD_POLISH_PRESERVATION_HINT,
     '- 禁止 Target audience、for US reader 等 brief 标签渗入正文'
   ].join('\n')
 }
 
 export function getOptimizePolishSystemBlocks(): string {
   return [
-    '前一阶段（分段优化）已落实内容评估与增删；本步仅做语言校对与结构完整性检查，勿重新展开内容策略。'
-  ].join('\n')
+    '前一阶段（分段优化）已落实内容评估与增删；本步仅做语言校对与结构完整性检查，勿重新展开内容策略。',
+    MULTI_METHOD_STRUCTURE_PRESERVE_RULE
+  ].join('\n\n')
 }
 
 export function validateSourceMarkdown(markdown: string): void {
@@ -444,7 +523,7 @@ export function findMatchingSourceSection(
 }
 
 export function isNewOptimizeSection(title: string, audit?: string): boolean {
-  if (/quick answer|key takeaways|^faq$|^conclusion$|^introduction$/i.test(title.trim())) {
+  if (/quick answer|key takeaways|^conclusion$|^introduction$/i.test(title.trim()) || isFaqSection(title)) {
     return true
   }
   if (audit && isAuditRecommendedNewSection(title, audit)) {
@@ -460,9 +539,7 @@ export function buildAnchoredOutline(
 ): string {
   const sourceSections = parseSourceSections(sourceMarkdown)
   const auditText = `${audit}\n${skillsText}`.toLowerCase()
-  const needsQuickAnswer =
-    /quick answer|key takeaways|缺少.*首屏|missing.*quick/i.test(auditText) &&
-    !hasQuickAnswerSection(sourceSections)
+  const needsQuickAnswer = !hasQuickAnswerSection(sourceSections)
   const needsFaq =
     /faq|常见问题|missing.*faq/i.test(auditText) && !hasFaqSection(sourceSections)
   const needsIntroduction =

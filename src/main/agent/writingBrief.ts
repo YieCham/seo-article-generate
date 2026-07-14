@@ -62,7 +62,7 @@ function fallbackWritingBrief(topic: string, extracted: string, searchIntentSumm
     intentOneLiner: searchIntentSummary?.split('\n')[0]?.trim() || topic,
     keyFacts: lines.slice(0, 10),
     competitorGaps: lines.slice(10, 15),
-    faqSeeds: lines.filter((line) => /\?|？|faq|question/i.test(line)).slice(0, 6),
+    faqSeeds: lines.filter((line) => /\?|？|faq|question/i.test(line)).slice(0, 5),
     toneNotes: 'Expert, helpful, compliance-aware; match article output language.',
     mustAvoid: ['keyword stuffing', 'off-topic news', 'hard-sell in generic Parts']
   }
@@ -119,7 +119,7 @@ export async function generateWritingBrief(
         content: [
           '你是内容策略编辑。将 E-E-A-T 竞品萃取笔记压缩为「写作简报」，供后续规划与分段撰写复用。',
           '只输出 JSON，不要 markdown 说明。',
-          '字段：intentOneLiner, keyFacts(8-12), competitorGaps(3-5), faqSeeds(≥5), toneNotes, mustAvoid(3-6)',
+          '字段：intentOneLiner, keyFacts(8-12), competitorGaps(3-5), faqSeeds(3-5), toneNotes, mustAvoid(3-6)',
           '保留可写进正文的事实与差异化角度；删除导航残留与水词。'
         ].join('\n')
       },

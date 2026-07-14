@@ -13,7 +13,7 @@ export const STEP_TOKEN_CAPS: Record<string, number> = {
   sectionDraft: 12288,
   polish: 49152,
   lengthAdjust: 49152,
-  seoMeta: 2460,
+  seoMeta: 3000,
   sectionEdit: 12288,
   articleRevise: 49152,
   optimizeAudit: 16384,

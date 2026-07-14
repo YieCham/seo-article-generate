@@ -41,6 +41,34 @@ export function formatUserMessageContent(
   return `${header}\n\n${topic}\n\n**补充要求**\n${extraInstructions.trim()}`
 }
 
+export function formatBatchOptimizeUserMessageContent(
+  sourceUrl: string,
+  extraInstructions: string
+): string {
+  const header = `**模式：** 页面批量优化\n**来源 URL：** ${sourceUrl.trim()}`
+
+  if (!extraInstructions.trim()) {
+    return header
+  }
+
+  return `${header}\n\n**补充要求**\n${extraInstructions.trim()}`
+}
+
+export function parseBatchOptimizeUserMessage(content: string): {
+  sourceUrl: string
+  extraInstructions: string
+} | null {
+  if (!content.startsWith('**模式：** 页面批量优化')) return null
+
+  const urlMatch = content.match(/\*\*来源 URL：\*\*\s*(\S+)/)
+  if (!urlMatch?.[1]) return null
+
+  const extraMatch = content.match(/\n\n\*\*补充要求\*\*\n([\s\S]*)$/)
+  const extraInstructions = extraMatch?.[1]?.trim() ?? ''
+
+  return { sourceUrl: urlMatch[1].trim(), extraInstructions }
+}
+
 export function formatOptimizeUserMessageContent(sourceUrl: string, extraInstructions: string): string {
   const header = `**模式：** 文章优化\n**来源 URL：** ${sourceUrl.trim()}`
 

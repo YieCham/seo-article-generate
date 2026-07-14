@@ -12,14 +12,16 @@
 |------|------|
 | **文章创作** | 输入主题，自动完成调研 → 规划 → 大纲 → 分段撰写 → 润色 → 字数校验 → SEO Meta |
 | **文章优化** | 提交原文 URL，抓取正文后做 E-E-A-T 导向的就地优化，吸纳竞品要点、删减过时内容 |
+| **页面批量优化** | 批量输入 URL，每个页面独立会话；Firecrawl 抓取正文后就地优化（不走 Tavily 竞品检索） |
 | **局部修订** | 在已生成文章中选中段落，追加修改指令进行针对性改写 |
 | **竞品调研** | 集成 Tavily 搜索 + Firecrawl 抓取，自动扩展搜索词并汇总参考来源 |
 | **多写作模式** | How-to 教程、Top Rank 榜单、Product Review 测评，自动匹配对应 Skill |
 | **多语言输出** | 支持英语、中文、西班牙语、法语、德语、日语 |
-| **会话管理** | 多会话并行、重命名、删除确认、历史记录持久化 |
+| **会话管理** | 多会话并行、置顶/排序、进行中与已完成分组、重命名、删除确认 |
+| **模型发现** | 从 API 拉取可用模型列表，按品牌分组展示，写作页可按会话选择模型 |
 | **Token 管控** | 分步骤 Token 预算、可配置上限、用量日志与离线分析脚本 |
-| **LLM 预设** | 多组 API 配置（Base URL / Model / Temperature）一键切换 |
-| **Skills 体系** | 基于 `.cursor/skills/` 的可插拔写作规范，创作与优化模式独立启用 |
+| **LLM 预设** | 多组 API 配置（Base URL / Model / Temperature）一键切换，支持连通性测试 |
+| **Skills 体系** | 可插拔写作规范；`skillPipeline` 按阶段注入节选，结构/字数由代码层注入 |
 
 ---
 
@@ -27,15 +29,18 @@
 
 ### 写作模式
 
-- **文章创作** — 从零生成新文章，走完整创作 Pipeline
-- **文章优化** — 基于 URL 抓取原文，保留骨架做增量 SEO/GEO 优化
+| 模式 | 说明 |
+|------|------|
+| **文章创作** | 从零生成新文章，走完整创作 Pipeline |
+| **文章优化** | 基于单个 URL 抓取原文，保留骨架做增量 SEO/GEO 优化（可联网竞品调研） |
+| **页面批量优化** | 批量 URL → 每页独立对话；仅 Firecrawl 抓取 + `page-batch-optimizer`，不做 Tavily |
 
 ### 文章类型（创作模式）
 
 | 类型 | 说明 | 关联 Skill |
 |------|------|------------|
-| **How to** | 流媒体音频转换等教程软文 | `seo-geo-streaming-audio` |
-| **Top rank** | 榜单 / Top N 类英文推广文 | `seo-geo-streaming-top` |
+| **How to** | 流媒体音频转换等教程软文 | `streaming-audio-domain` + `streaming-audio-compliance`（结构由 Pipeline 注入） |
+| **Top rank** | 榜单 / Top N 类英文推广文 | `streaming-audio-domain` + `streaming-audio-compliance` + `seo-geo-streaming-top` |
 | **Review** | 产品测评对比软文 | `product-review` |
 
 另有独立 Skill `seo-geo-ios-security` 面向 iOS 安全类 SEO/GEO 内容，可在设置中按需启用。
@@ -53,31 +58,35 @@ flowchart TB
   subgraph UI["前端 WritePage / Composer"]
     A1["创作模式<br/>输入主题 + 文章类型"]
     A2["优化模式<br/>输入 URL"]
-    A3["批量创作 / 批量优化"]
-    A4["中断后继续"]
-    A5["生成后追问修改"]
+    A3["页面批量优化<br/>批量 URL"]
+    A4["批量创作 / 单页优化批量"]
+    A5["中断后继续"]
+    A6["生成后追问修改"]
   end
 
   subgraph IPC["IPC 层"]
     B1["article:generate"]
     B2["article:optimize"]
-    B3["article:resume"]
-    B4["article:cancel"]
-    B5["article:revise"]
+    B3["article:batchOptimizePage"]
+    B4["article:resume"]
+    B5["article:cancel"]
+    B6["article:revise"]
   end
 
   A1 --> B1
   A2 --> B2
-  A3 --> B1
-  A3 --> B2
-  A4 --> B3
-  A5 --> B5
+  A3 --> B3
+  A4 --> B1
+  A4 --> B2
+  A5 --> B4
+  A6 --> B6
 
   B1 --> C1["generateArticle()"]
   B2 --> C2["optimizeArticle()"]
-  B3 --> C1
-  B3 --> C2
-  B5 --> C3["reviseArticle()"]
+  B3 --> C3["batchOptimizePage()"]
+  B4 --> C1
+  B4 --> C2
+  B6 --> C4["reviseArticle()"]
 ```
 
 ### 文章创作流程
@@ -87,9 +96,9 @@ flowchart TD
   Start(["用户提交主题"]) --> SyncSkill[同步文章类型 Skills]
   SyncSkill --> SkillType{文章类型}
 
-  SkillType -->|how-to| S1[seo-geo-streaming-audio]
+  SkillType -->|how-to| S1[streaming-audio-domain<br/>+ compliance]
   SkillType -->|review| S2[product-review]
-  SkillType -->|top-rank| S3[seo-geo-streaming-top]
+  SkillType -->|top-rank| S3[domain + compliance<br/>+ streaming-top]
 
   S1 --> LoadSkill[加载 Skill 文本注入 Prompt]
   S2 --> LoadSkill
@@ -124,7 +133,7 @@ flowchart TD
 
 | 阶段 | 核心函数 | 说明 |
 |------|----------|------|
-| Skills | `syncCreateSkillsForArticleType` | 按文章类型启用对应 Skill |
+| Skills | `syncCreateSkillsForArticleType` + `getSkillsTextForStep` | 按文章类型启用 Skill；各阶段注入节选（见 `skillPipeline.ts`） |
 | 调研 | `searchWithQueries` | Tavily 搜索 + Firecrawl 抓取 |
 | 提取 | `extractEeatInsights` | 竞品 E-E-A-T 洞察 |
 | 规划 | `generateArticlePlan` | 内部策略规划 |
@@ -188,6 +197,28 @@ flowchart TD
 | 词数 | ±20% 源文词数 | 1100–2500 词时跳过校准 |
 
 编排入口：`src/main/agent/articleOptimizer.ts` → `optimizeArticle()`
+
+### 页面批量优化流程
+
+面向「多 URL、每页独立会话」的轻量优化：只抓取待优化页正文，不做竞品联网检索。
+
+```mermaid
+flowchart TD
+  Start(["批量提交 URL 列表"]) --> Loop[为每个 URL 创建独立会话]
+  Loop --> Scrape[Firecrawl 抓取正文]
+  Scrape --> Validate{正文有效?}
+  Validate -->|否| Fail(["该会话报错，继续下一页"])
+  Validate -->|是| Skill[加载 page-batch-optimizer]
+  Skill --> Draft[单次 LLM 输出完整优化稿]
+  Draft --> Normalize[normalizeArticleMarkdown]
+  Normalize --> Done(["写入该会话终稿"])
+```
+
+| 要点 | 说明 |
+|------|------|
+| Skill | 仅 `page-batch-optimizer`（与单页 `article-optimizer` 分离） |
+| 调研 | **不调用 Tavily**，避免批量场景高昂的竞品检索成本 |
+| 编排 | `src/main/agent/batchPageOptimizer.ts` → `batchOptimizePage()` |
 
 ### 创作 vs 优化
 
@@ -315,13 +346,16 @@ npm run dist:win
 
 | 页签 | 功能 |
 |------|------|
-| **LLM 预设** | 管理多组 API 配置，切换模型与温度 |
+| **LLM 预设** | 管理多组 API 配置，切换模型与温度；发现模型、连通性测试、品牌图标 |
 | **Token 上限** | 按 Pipeline 步骤配置 `max_tokens` 预算 |
 | **Token 日志** | 查看各次创作的 Token 用量明细 |
 | **调研配置** | 启用/禁用竞品调研，配置搜索区域与语言 |
 | **快捷选项** | 产品列表、默认输出语言等快捷填充 |
 | **Prompt 模板** | 分别自定义「创作」与「优化」模式的 System / User Prompt |
 | **Skills 管理** | 启用/禁用、编辑内置与自定义 Skill |
+| **窗口关闭** | 关闭行为（退出 / 最小化到托盘）等 |
+
+写作页还可为**当前会话**选择 LLM 预设与具体模型；生成时写入会话记录。
 
 ---
 
@@ -329,14 +363,24 @@ npm run dist:win
 
 Skills 存放在 `.cursor/skills/`（开发时）与 `src/main/bundled-skills/`（打包内置），每个 Skill 为包含 YAML frontmatter 的 `SKILL.md` 文件。
 
+创作流水线通过 `skillPipeline.ts` 按阶段注入 Skill 节选（萃取 / 规划 / 撰写 / 润色），结构块与字数约束由代码层注入：
+
+| 文章类型 | 领域 Skill | 结构代码模块 |
+|----------|------------|--------------|
+| How to | `streaming-audio-domain` + `compliance` | `geoSeoStructure.ts` |
+| Top rank | `seo-geo-streaming-top` + domain + compliance | `topListStructure.ts` |
+| Review | `product-review` | `reviewStructure.ts` |
+
 | Skill ID | 用途 |
 |----------|------|
-| `article-writing` | 通用中文长文写作规范 |
-| `seo-geo-streaming-audio` | 流媒体音频转换 SEO+GEO 英文教程 |
+| `streaming-audio-domain` | 流媒体音频领域知识、关键词、E-E-A-T |
+| `streaming-audio-compliance` | 流媒体合规禁词与免责声明 |
+| `seo-geo-streaming-audio` | （兼容壳）已拆分，请勿单独启用 |
 | `seo-geo-streaming-top` | 流媒体 Top 榜单类英文推广文 |
 | `seo-geo-ios-security` | iOS 安全类 SEO+GEO 内容 |
 | `product-review` | 英文产品测评 / 对比软文 |
-| `article-optimizer` | 文章优化模式专用编辑规范 |
+| `article-optimizer` | 单页文章优化模式专用编辑规范 |
+| `page-batch-optimizer` | 页面批量优化专用（无竞品联网检索） |
 
 ### 添加自定义 Skill
 
@@ -374,22 +418,24 @@ node scripts/analyze-optimize-session.mjs
 ```
 seo-article-generate/
 ├── .cursor/skills/          # 开发时 Skills（可自定义）
-├── icons/                   # 应用图标与 UI 图标
+├── icons/                   # 应用图标、UI 图标、LLM 品牌图标
 ├── scripts/                 # 离线分析脚本
 ├── src/
 │   ├── main/                # Electron 主进程
-│   │   ├── agent/           # 文章创作、优化、修订核心逻辑
+│   │   ├── agent/           # 创作 / 优化 / 批量优化 / 修订 / Skill Pipeline
 │   │   ├── config/          # 配置存储与类型
 │   │   ├── ipc/             # IPC 处理器
 │   │   ├── research/        # Tavily / Firecrawl 调研
 │   │   ├── token/           # Token 用量记录
+│   │   ├── window/          # 托盘与窗口行为
 │   │   └── bundled-skills/  # 打包内置 Skills
 │   ├── preload/             # 预加载脚本（Context Bridge）
-│   └── renderer/            # React 前端
-│       └── src/
-│           ├── pages/       # 写作页、设置页
-│           ├── components/  # 通用组件
-│           └── constants/   # 写作模式、语言等常量
+│   ├── renderer/            # React 前端
+│   │   └── src/
+│   │       ├── pages/       # 写作页、设置页
+│   │       ├── components/  # 通用组件
+│   │       └── constants/   # 写作模式、语言等常量
+│   └── shared/              # 主进程与渲染进程共用工具
 ├── .env.example
 ├── electron.vite.config.ts
 └── package.json
@@ -404,6 +450,21 @@ seo-article-generate/
 - **React** 19 + **TypeScript** — 前端界面
 - **react-markdown** + **remark-gfm** — Markdown 流式渲染
 - **electron-builder** — Windows NSIS 安装包打包
+
+---
+
+## 更新日志
+
+### 自 `51bbbcb` 以来（本次推送）
+
+- **页面批量优化模式**：新增 `batch-optimize` 写作模式与 `batchPageOptimizer` Pipeline，配套 `page-batch-optimizer` Skill（仅 Firecrawl，无 Tavily）
+- **流媒体 Skill 拆分**：`seo-geo-streaming-audio` 拆为 `streaming-audio-domain` + `streaming-audio-compliance`；原 Skill 保留为兼容壳
+- **Skill Pipeline**：`skillPipeline.ts` 按 extract / plan / outline / draft / polish 等阶段注入节选，结构与字数由代码模块注入
+- **移除** 通用 `article-writing` Skill，创作路径统一依赖文章类型绑定的领域 Skill
+- **LLM 模型发现**：设置页可拉取并按品牌分组展示可用模型；写作页支持会话级模型选择与品牌图标
+- **会话列表增强**：置顶、拖拽排序、「进行中 / 已完成」分组（标记页面已完成 / 移回进行中）
+- **文稿质量**：`normalizeArticleMarkdown`、结构保留、写作风格、产品提及与 SEO Meta 生成增强
+- **产品测评 / Top 榜单 / 优化器** Skill 与大纲骨架逻辑同步收紧
 
 ---
 

@@ -24,10 +24,21 @@ const DEFAULT_OPTIMIZE_PROMPTS = {
     '请基于以下原文 URL 与抓取内容，输出优化后的完整文章（Markdown）：\n\n原文：{{sourceUrl}}\n{{extraInstructions}}\n\n在动笔前，请结合竞品调研与 E-E-A-T 萃取（如有），在保留原文骨架的前提下做增量优化。\n直接输出正文，不要解释你将如何优化。'
 }
 
-const PIPELINE_MODE_OPTIONS: Array<{ value: PipelineMode; label: string; hint: string }> = [
+const PIPELINE_MODE_OPTIONS: Array<{ value: SettingsPipelineMode; label: string; hint: string }> = [
   { value: 'create', label: '文章创作', hint: '用于从零生成新文章的 Pipeline' },
   { value: 'optimize', label: '文章优化', hint: '用于抓取原页并做 E-E-A-T 增量优化' }
 ]
+
+const SKILL_PIPELINE_MODE_OPTIONS: Array<{ value: PipelineMode; label: string; hint: string }> = [
+  ...PIPELINE_MODE_OPTIONS,
+  {
+    value: 'batch-optimize',
+    label: '页面批量优化',
+    hint: '仅 Firecrawl 抓取 + 单次生成优化全文'
+  }
+]
+
+type SettingsPipelineMode = 'create' | 'optimize'
 
 const EMPTY_SKILL: SkillItem = {
   id: '',
@@ -49,10 +60,12 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   const [editingSkill, setEditingSkill] = useState<SkillItem | null>(null)
   const [status, setStatus] = useState('')
   const [testing, setTesting] = useState(false)
+  const [testingModel, setTestingModel] = useState('')
   const [testingTavily, setTestingTavily] = useState(false)
   const [testingFirecrawl, setTestingFirecrawl] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [pipelineMode, setPipelineMode] = useState<PipelineMode>('create')
+  const [pipelineMode, setPipelineMode] = useState<SettingsPipelineMode>('create')
+  const [skillPipelineMode, setSkillPipelineMode] = useState<PipelineMode>('create')
   const [editingPresetId, setEditingPresetId] = useState('')
 
   useEffect(() => {
@@ -61,9 +74,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
 
   useEffect(() => {
     if (visible && tab === 'skills') {
-      void window.app.listSkills(pipelineMode).then(setSkills)
+      void window.app.listSkills(skillPipelineMode).then(setSkills)
     }
-  }, [visible, tab, pipelineMode])
+  }, [visible, tab, skillPipelineMode])
 
   useEffect(() => {
     if (!status || status === '正在保存…' || status.startsWith('正在测试')) return
@@ -77,7 +90,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     setStatus('')
   }
 
-  async function loadData(mode: PipelineMode = pipelineMode): Promise<void> {
+  async function loadData(mode: PipelineMode = skillPipelineMode): Promise<void> {
     const [nextConfig, nextSkills] = await Promise.all([
       window.app.getConfig(),
       window.app.listSkills(mode)
@@ -87,23 +100,22 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     setEditingPresetId(nextConfig.activeLlmPresetId || nextConfig.llmPresets[0]?.id || '')
   }
 
-  function renderPipelineModeTabs() {
+  function renderPipelineModeTabs(
+    options: Array<{ value: PipelineMode; label: string; hint: string }>,
+    activeMode: PipelineMode,
+    onSelect: (mode: PipelineMode) => void
+  ) {
     return (
       <div className="settings-pipeline-tabs" role="tablist" aria-label="Pipeline 类型">
-        {PIPELINE_MODE_OPTIONS.map((item) => (
+        {options.map((item) => (
           <button
             key={item.value}
             type="button"
             role="tab"
-            className={`settings-pipeline-tab${pipelineMode === item.value ? ' active' : ''}`}
-            aria-selected={pipelineMode === item.value}
+            className={`settings-pipeline-tab${activeMode === item.value ? ' active' : ''}`}
+            aria-selected={activeMode === item.value}
             title={item.hint}
-            onClick={() => {
-              setPipelineMode(item.value)
-              if (tab === 'skills') {
-                void window.app.listSkills(item.value).then(setSkills)
-              }
-            }}
+            onClick={() => onSelect(item.value)}
           >
             {item.label}
           </button>
@@ -128,12 +140,14 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     }
   }
 
-  async function handleTestConnection(): Promise<void> {
+  async function handleTestConnection(presetId: string, model: string): Promise<void> {
     setTesting(true)
-    setStatus('正在测试连接…')
-    const result = await window.app.testLlmConnection()
-    setStatus(result.message ?? (result.ok ? '连接成功' : '连接失败'))
+    setTestingModel(model)
+    setStatus(`正在测试「${model}」…`)
+    const result = await window.app.testLlmConnection({ presetId, model })
+    setStatus(result.message ?? (result.ok ? `「${model}」连接成功` : `「${model}」连接失败`))
     setTesting(false)
+    setTestingModel('')
   }
 
   async function handleTestTavily(): Promise<void> {
@@ -157,7 +171,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   async function handleToggleSkill(id: string, enabled: boolean): Promise<void> {
     setSkills((prev) => prev.map((skill) => (skill.id === id ? { ...skill, enabled } : skill)))
     try {
-      await window.app.setSkillEnabled(id, enabled, pipelineMode)
+      await window.app.setSkillEnabled(id, enabled, skillPipelineMode)
       setStatus(enabled ? 'Skill 已启用' : 'Skill 已禁用')
     } catch {
       await loadData()
@@ -176,7 +190,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     }
     setSaving(true)
     try {
-      await window.app.saveSkill(editingSkill, pipelineMode)
+      await window.app.saveSkill(editingSkill, skillPipelineMode)
       setEditingSkill(null)
       await loadData()
       setStatus('Skill 已保存')
@@ -207,9 +221,19 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   async function handleSaveLlmPresets(): Promise<void> {
     if (!config) return
     await handleSaveConfig({
-      llmPresets: config.llmPresets,
-      activeLlmPresetId: config.activeLlmPresetId
+      llmPresets: config.llmPresets
     })
+  }
+
+  async function handlePersistLlmPresets(presets: LlmPreset[]): Promise<void> {
+    if (!config) return
+    try {
+      const next = await window.app.saveConfig({ llmPresets: presets })
+      setConfig(next)
+      onConfigSaved?.()
+    } catch {
+      setStatus('模型列表保存失败')
+    }
   }
 
   async function handleSaveTokenLimits(): Promise<void> {
@@ -226,11 +250,8 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     })
   }
 
-  async function handleSwitchActivePreset(id: string): Promise<void> {
-    if (!config) return
-    setConfig({ ...config, activeLlmPresetId: id })
+  function handleSelectEditingPreset(id: string): void {
     setEditingPresetId(id)
-    await handleSaveConfig({ activeLlmPresetId: id })
   }
 
   function handleAddLlmPreset(): void {
@@ -240,7 +261,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
       name: '新预设',
       apiKey: '',
       baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o',
+      models: [],
       temperature: 0.7
     }
     setConfig({
@@ -390,7 +411,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         <section className="panel">
           <h2 className="section-title">LLM 预设</h2>
           <p className="section-desc">
-            配置多个 OpenAI 兼容模型预设，通过「当前使用」快速切换。创作时将使用当前选中的预设。
+            配置多个 OpenAI 兼容 API 预设，并在各预设下添加可用模型；新对话中可自由选择模型。
           </p>
 
           <LlmPresetPanel
@@ -398,10 +419,12 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
             editingPresetId={editingPresetId}
             saving={saving}
             testing={testing}
+            testingModel={testingModel}
             onConfigChange={setConfig}
             onSave={() => void handleSaveLlmPresets()}
-            onTest={() => void handleTestConnection()}
-            onSwitchActive={(id) => void handleSwitchActivePreset(id)}
+            onPersistPresets={(presets) => void handlePersistLlmPresets(presets)}
+            onTest={(presetId, model) => void handleTestConnection(presetId, model)}
+            onSelectPreset={handleSelectEditingPreset}
             onAddPreset={handleAddLlmPreset}
             onDeletePreset={(id) => void handleDeleteLlmPreset(id)}
           />
@@ -613,7 +636,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           <p className="section-desc">
             文章创作与文章优化使用独立的提示词配置，分别作用于对应 Pipeline。
           </p>
-          {renderPipelineModeTabs()}
+          {renderPipelineModeTabs(PIPELINE_MODE_OPTIONS, pipelineMode, (mode) =>
+            setPipelineMode(mode as SettingsPipelineMode)
+          )}
           <p className="section-desc">
             {pipelineMode === 'optimize' ? (
               <>
@@ -684,14 +709,14 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
               <div>
                 <h2 className="section-title">Skill 列表</h2>
                 <p className="section-desc">
-                  文章创作列表不含 article-optimizer；文章优化仅展示 article-optimizer。切换上方标签后，开关仅影响对应 Pipeline。
+                  文章创作列表不含 article-optimizer；文章优化仅展示 article-optimizer；页面批量优化仅展示 page-batch-optimizer。切换上方标签后，开关仅影响对应 Pipeline。
                 </p>
               </div>
               <div className="section-actions">
                 <button type="button" className="secondary" onClick={() => void loadData()}>
                   刷新列表
                 </button>
-                {pipelineMode === 'create' ? (
+                {skillPipelineMode === 'create' ? (
                   <button
                     type="button"
                     className="secondary"
@@ -703,7 +728,10 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
               </div>
             </div>
 
-            {renderPipelineModeTabs()}
+            {renderPipelineModeTabs(SKILL_PIPELINE_MODE_OPTIONS, skillPipelineMode, (mode) => {
+              setSkillPipelineMode(mode)
+              void window.app.listSkills(mode).then(setSkills)
+            })}
 
             {skills.length === 0 ? (
               <p className="empty-hint">暂无 Skill，点击「新建 Skill」添加。</p>
@@ -756,7 +784,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
                 value={editingSkill.name}
                 readOnly={editingSkill.bundled}
                 onChange={(e) => setEditingSkill({ ...editingSkill, name: e.target.value })}
-                placeholder="article-writing"
+                placeholder="my-custom-skill"
               />
 
               <label htmlFor="skillDesc">描述</label>

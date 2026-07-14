@@ -20,6 +20,11 @@ export interface WritingBriefCheckpoint {
   mustAvoid: string[]
 }
 
+export interface LlmSelection {
+  presetId: string
+  model: string
+}
+
 export interface CreatePipelineCheckpoint {
   kind: 'create'
   assistantMessageId: string
@@ -28,6 +33,8 @@ export interface CreatePipelineCheckpoint {
     topic: string
     extraInstructions?: string
     outputLanguage?: string
+    llmPresetId?: string
+    llmModel?: string
   }
   statusLabel?: string
   outline?: string
@@ -55,6 +62,8 @@ export interface OptimizePipelineCheckpoint {
     sourceUrl: string
     extraInstructions?: string
     outputLanguage?: string
+    llmPresetId?: string
+    llmModel?: string
   }
   statusLabel?: string
   sourceTitle?: string

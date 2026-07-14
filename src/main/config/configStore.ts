@@ -10,9 +10,10 @@ import {
   normalizeQuickPicks,
   normalizeResearchConfig,
   normalizeWindowClose,
-  resolveActiveLlmConfig,
+  resolveLlmConfigFromSelection,
   type AppConfig,
   type LlmConfig,
+  type LlmSelection,
   type ModeEnabledSkillsConfig,
   type ModePromptsConfig
 } from './types'
@@ -52,23 +53,36 @@ function mergeWithDefaults(partial: ConfigPartial): AppConfig {
 
 export type EffectiveAppConfig = AppConfig & { llm: LlmConfig }
 
-function mergeWithEnv(config: AppConfig): EffectiveAppConfig {
-  const activeLlm = resolveActiveLlmConfig(config)
+function applyEnvToLlmConfig(llm: LlmConfig): LlmConfig {
   const apiKey =
-    activeLlm.apiKey ||
+    llm.apiKey ||
     process.env.LLM_API_KEY ||
     process.env.OPENAI_API_KEY ||
     process.env.CURSOR_API_KEY ||
     ''
 
   return {
+    ...llm,
+    apiKey,
+    baseUrl: llm.baseUrl || process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
+    model: llm.model || process.env.LLM_MODEL || 'gpt-4o'
+  }
+}
+
+function mergeWithEnv(config: AppConfig, selection?: LlmSelection | null): EffectiveAppConfig {
+  const resolved = resolveLlmConfigFromSelection(config, selection)
+  const activeLlm = applyEnvToLlmConfig(
+    resolved ?? {
+      apiKey: '',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      temperature: 0.7
+    }
+  )
+
+  return {
     ...config,
-    llm: {
-      ...activeLlm,
-      apiKey,
-      baseUrl: activeLlm.baseUrl || process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
-      model: activeLlm.model || process.env.LLM_MODEL || 'gpt-4o'
-    },
+    llm: activeLlm,
     research: {
       ...config.research,
       tavilyApiKey: config.research.tavilyApiKey || process.env.TAVILY_API_KEY || '',
@@ -90,9 +104,9 @@ export async function loadConfig(): Promise<AppConfig> {
   return cachedConfig
 }
 
-export async function getEffectiveConfig(): Promise<EffectiveAppConfig> {
+export async function getEffectiveConfig(selection?: LlmSelection | null): Promise<EffectiveAppConfig> {
   const config = await loadConfig()
-  return mergeWithEnv(config)
+  return mergeWithEnv(config, selection)
 }
 
 function mergeModePrompts(
@@ -113,7 +127,8 @@ function mergeModeEnabledSkills(
   if (!partial) return current
   return {
     create: partial.create ?? current.create,
-    optimize: partial.optimize ?? current.optimize
+    optimize: partial.optimize ?? current.optimize,
+    batchOptimize: partial.batchOptimize ?? current.batchOptimize
   }
 }
 

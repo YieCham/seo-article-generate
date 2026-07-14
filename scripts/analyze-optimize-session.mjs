@@ -21,7 +21,7 @@ const STEP_CAPS = {
   optimizeSectionDraft: 8192,
   optimizePolish: 16384,
   optimizeLengthAdjust: 12288,
-  seoMeta: 512
+  seoMeta: 1000
 }
 
 function resolveOptimize(step, globalMax, wordBudget) {

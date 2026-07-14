@@ -3,6 +3,7 @@ import { loadConfig, saveConfig } from '../config/configStore'
 import type { AppConfig, PipelineMode, SkillItem } from '../config/types'
 import { deleteSkillItem, listSkills, saveSkillItem, setSkillEnabled, syncCreateSkillsForArticleType } from '../agent/skillManager'
 import { testLlmConnection } from '../agent/articleAgent'
+import { listLlmModelsForPreset } from '../agent/llmModelCatalog'
 import { testFirecrawlConnection } from '../research/firecrawl'
 import { testTavilyConnection } from '../research/tavily'
 import {
@@ -18,7 +19,12 @@ export function registerConfigIpc(): void {
     return saveConfig(partial)
   })
 
-  ipcMain.handle('config:testLlm', async () => testLlmConnection())
+  ipcMain.handle('config:testLlm', async (_event, options?: { presetId?: string; model?: string }) =>
+    testLlmConnection(options)
+  )
+  ipcMain.handle('config:listLlmModels', async (_event, presetId: string) =>
+    listLlmModelsForPreset(presetId)
+  )
   ipcMain.handle('config:testTavily', async (_event, apiKey: string) => testTavilyConnection(apiKey))
   ipcMain.handle('config:testFirecrawl', async (_event, apiKey: string) => testFirecrawlConnection(apiKey))
 

@@ -68,3 +68,21 @@ export function formatSkillsForPrompt(skills: LoadedSkill[]): string {
     )
     .join('\n\n---\n\n')
 }
+
+/** Optional `<!-- phase: extract -->` sections inside SKILL.md bodies. */
+export function parseSkillPhases(body: string): Record<string, string> {
+  const phases: Record<string, string> = { all: body.trim() }
+  const pattern = /<!--\s*phase:\s*([a-z-]+)\s*-->/gi
+  const matches = [...body.matchAll(pattern)]
+  if (matches.length === 0) return phases
+
+  for (let i = 0; i < matches.length; i += 1) {
+    const match = matches[i]
+    const phase = match[1].trim()
+    const start = (match.index ?? 0) + match[0].length
+    const end = i + 1 < matches.length ? (matches[i + 1].index ?? body.length) : body.length
+    phases[phase] = body.slice(start, end).trim()
+  }
+
+  return phases
+}

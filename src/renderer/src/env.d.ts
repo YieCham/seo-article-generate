@@ -47,7 +47,7 @@ export interface LlmPreset {
   name: string
   apiKey: string
   baseUrl: string
-  model: string
+  models: string[]
   temperature: number
 }
 
@@ -56,7 +56,7 @@ export interface PromptConfig {
   userPrompt: string
 }
 
-export type PipelineMode = 'create' | 'optimize'
+export type PipelineMode = 'create' | 'optimize' | 'batch-optimize'
 
 export interface ModePromptsConfig {
   create: PromptConfig
@@ -66,6 +66,7 @@ export interface ModePromptsConfig {
 export interface ModeEnabledSkillsConfig {
   create: string[]
   optimize: string[]
+  batchOptimize: string[]
 }
 
 export interface ResearchConfig {
@@ -125,6 +126,7 @@ export interface ChatStoreData {
     pinned?: boolean
     pinnedAt?: number
     sortOrder?: number
+    listStatus?: 'active' | 'completed'
     messages: Array<{
       id: string
       role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
@@ -132,7 +134,9 @@ export interface ChatStoreData {
       status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
     }>
     updatedAt: number
-    writeMode?: 'create' | 'optimize'
+    writeMode?: 'create' | 'optimize' | 'batch-optimize'
+    llmPresetId?: string
+    llmModel?: string
     pipelineCheckpoint?: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
   }>
 }
@@ -140,6 +144,18 @@ export interface ChatStoreData {
 export interface ActionResult {
   ok: boolean
   message?: string
+}
+
+export interface LlmModelBrandGroup {
+  brand: string
+  models: string[]
+}
+
+export interface ListLlmModelsResult {
+  ok: boolean
+  message?: string
+  groups?: LlmModelBrandGroup[]
+  total?: number
 }
 
 export interface TokenUsageRecord {
@@ -188,11 +204,22 @@ declare global {
         topic: string
         extraInstructions?: string
         outputLanguage?: string
+        llmPresetId?: string
+        llmModel?: string
       }) => Promise<GenerateArticleResult>
       optimizeArticle: (request: {
         sourceUrl: string
         extraInstructions?: string
         outputLanguage?: string
+        llmPresetId?: string
+        llmModel?: string
+      }) => Promise<GenerateArticleResult>
+      batchOptimizePage: (request: {
+        sourceUrl: string
+        extraInstructions?: string
+        outputLanguage?: string
+        llmPresetId?: string
+        llmModel?: string
       }) => Promise<GenerateArticleResult>
       resumeArticle: (
         checkpoint: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
@@ -205,11 +232,14 @@ declare global {
         pipeline?: 'create' | 'optimize'
         topic?: string
         selection?: ReviseArticleSelection
+        llmPresetId?: string
+        llmModel?: string
       }) => Promise<GenerateArticleResult>
       onProgress: (callback: (event: GenerateProgressEvent) => void) => () => void
       getConfig: () => Promise<AppConfig>
       saveConfig: (partial: Partial<AppConfig>) => Promise<AppConfig>
-      testLlmConnection: () => Promise<ActionResult>
+      testLlmConnection: (options?: { presetId?: string; model?: string }) => Promise<ActionResult>
+      listLlmModels: (presetId: string) => Promise<ListLlmModelsResult>
       testTavilyConnection: (apiKey: string) => Promise<ActionResult>
       testFirecrawlConnection: (apiKey: string) => Promise<ActionResult>
       listSkills: (mode?: PipelineMode) => Promise<SkillItem[]>

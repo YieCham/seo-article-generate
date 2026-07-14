@@ -1,13 +1,21 @@
 import {
   TOP_LIST_MAX_ARTICLE_WORDS,
   TOP_LIST_MIN_ARTICLE_WORDS,
-  isTopListArticle
+  isTopListArticle,
+  MIN_FAQ_QUESTIONS,
+  MAX_FAQ_QUESTIONS,
+  MAX_FAQ_SECTION_WORDS
 } from './articleLength'
 import { GEO_BANNED_TERMS_GUIDANCE } from './geoSeoStructure'
 
+import { isTopListSkillEnabled } from './skillPipeline'
+
 const TOP_LIST_SKILL_PATTERN = /seo-geo-streaming-top/i
 
-export function shouldApplyTopListStructure(skillsText: string): boolean {
+export function shouldApplyTopListStructure(skillsText: string, enabledSkillIds?: string[]): boolean {
+  if (enabledSkillIds && enabledSkillIds.length > 0) {
+    return isTopListSkillEnabled(enabledSkillIds) || isTopListArticle(skillsText, enabledSkillIds)
+  }
   return TOP_LIST_SKILL_PATTERN.test(skillsText) || isTopListArticle(skillsText)
 }
 
@@ -53,7 +61,7 @@ export const TOP_LIST_OUTLINE_GUIDANCE = `
    每条含：1 段简介 + **Pros**（2–3 条）+ **Cons**（1 条）+ **Best for**（1 句）+ 关键参数（加粗）
 6. （可选）## Part 3. Side-by-Side Comparison — Markdown 对比表（≥5 维度 × N 款产品）
 7. 若用户产品**不符合**榜单准入 → 在 FAQ 之前增加 \`## Part N. Also Worth Considering: [Product]\`
-8. ## FAQ — ≥5 问（合法性、安全、音质、免费 vs 付费、平台兼容）
+8. FAQ 节 — H2 与主题相关（可含 FAQ/FAQs + 品类词，勿只写孤立 FAQ）；${MIN_FAQ_QUESTIONS}–${MAX_FAQ_QUESTIONS} 问（合法性、安全、音质、免费 vs 付费、平台兼容）；整节 ≤${MAX_FAQ_SECTION_WORDS} 词
 9. ## Conclusion — ≤150 词、≤3 段 + 自然 CTA
 
 榜单 Part 内 ### 编号须连续 1…N；用户符合条件的产品固定为 ### 1。
@@ -62,6 +70,7 @@ export const TOP_LIST_OUTLINE_GUIDANCE = `
 /** 大纲阶段专用：只列章节与 stub，不写成品文案。 */
 export const TOP_LIST_OUTLINE_SKELETON = `
 【Top List 大纲骨架 — 仅结构】
+首行：\`# …\` SEO H1（含 Top N + 品类核心词，**不得**与 Topic 逐字相同；可加年份/Best/Compared 等）
 1. ## Quick Answer — 2–3 bullets（榜首产品名 + 一句定位，无段落）
 2. ## Introduction — 2–3 bullets（痛点 + 本文价值）
 3. ## Part 1. How We Picked… — 3–5 bullets（选型维度关键词）
@@ -70,7 +79,7 @@ export const TOP_LIST_OUTLINE_SKELETON = `
    其下最多 2 条 bullet（覆盖角度：如音质/格式/平台），**禁止**写 Pros/Cons 正文
 5. （可选）## Part 3. Comparison — 1 bullet 列出对比维度名
 6. （可选）## Also Worth Considering — 1–2 bullets
-7. ## FAQ — ≥5 条**仅问题句**
+7. FAQ 节 — H2 与主题相关（FAQ/FAQs + 品类词等，勿只写孤立 FAQ）；${MIN_FAQ_QUESTIONS}–${MAX_FAQ_QUESTIONS} 条**仅问题句**
 8. ## Conclusion — 2–3 bullets
 `.trim()
 
@@ -86,7 +95,7 @@ This is a **ranked roundup**, NOT a single-product how-to. Do NOT use the generi
 5. ## Part 2. — **The Top N list** — each product as ### 1. … ### N. with Pros/Cons/Best for
 6. Optional comparison table Part
 7. If user's product does NOT qualify for the list → separate ## Part … Also Worth Considering (after the list, before FAQ)
-8. ## FAQ (≥5 Q&A)
+8. FAQ section — topic-related ## heading (FAQ/FAQs + category cue preferred); ${MIN_FAQ_QUESTIONS}–${MAX_FAQ_QUESTIONS} Q&A; entire section ≤${MAX_FAQ_SECTION_WORDS} words
 9. ## Conclusion (≤150 words, ≤3 paragraphs)
 
 Product placement:
@@ -98,14 +107,17 @@ Style: US English when English is selected; geek-friendly; accurate audio/stream
 Do NOT mention AI identity or "As an expert…" in the final article.
 `.trim()
 
-export function getTopListPromptBlock(skillsText: string, productName?: string): string {
-  if (!shouldApplyTopListStructure(skillsText)) return ''
+export function getTopListPromptBlock(
+  skillsText: string,
+  productName?: string,
+  enabledSkillIds?: string[]
+): string {
+  if (!shouldApplyTopListStructure(skillsText, enabledSkillIds)) return ''
 
   const count = parseTopListCount(skillsText)
   return [
     TOP_LIST_ARTICLE_STRUCTURE,
     `Parsed list size from context: **Top ${count}** (adjust ### entries to match Topic).`,
-    TOP_LIST_OUTLINE_GUIDANCE,
     getTopListProductPlacementGuidance(productName),
     'Domain style (streaming audio): use accurate terms (bitrate, lossless, ID3, batch conversion, output formats).',
     GEO_BANNED_TERMS_GUIDANCE

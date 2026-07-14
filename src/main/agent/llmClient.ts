@@ -39,6 +39,8 @@ export interface LlmCallOptions {
   maxTokens?: number
   step?: string
   label?: string
+  /** OpenAI-compatible JSON mode — use for tiny structured outputs (e.g. SEO meta). */
+  jsonObject?: boolean
   onRateLimitRetry?: (info: RateLimitRetryInfo) => void
 }
 
@@ -65,7 +67,8 @@ export async function chatCompletion(
     model: config.model,
     messages,
     temperature: options?.temperature ?? config.temperature,
-    max_tokens: options?.maxTokens
+    max_tokens: options?.maxTokens,
+    ...(options?.jsonObject ? { response_format: { type: 'json_object' } } : {})
   })
   const headers = {
     Authorization: `Bearer ${config.apiKey}`,

@@ -9,12 +9,17 @@ export interface LlmConfig {
   temperature: number
 }
 
+export interface LlmSelection {
+  presetId: string
+  model: string
+}
+
 export interface LlmPreset {
   id: string
   name: string
   apiKey: string
   baseUrl: string
-  model: string
+  models: string[]
   temperature: number
 }
 
@@ -25,8 +30,16 @@ export const DEFAULT_LLM_PRESET: LlmPreset = {
   name: 'OpenAI GPT-4o',
   apiKey: '',
   baseUrl: 'https://api.openai.com/v1',
-  model: 'gpt-4o',
+  models: ['gpt-4o'],
   temperature: 0.7
+}
+
+function normalizePresetModels(item: { models?: string[]; model?: string }): string[] {
+  if (Array.isArray(item.models)) {
+    return [...new Set(item.models.map((model) => model.trim()).filter(Boolean))]
+  }
+  const legacyModel = item.model?.trim()
+  return legacyModel ? [legacyModel] : []
 }
 
 export function normalizeLlmPresets(
@@ -40,7 +53,7 @@ export function normalizeLlmPresets(
         name: item.name.trim() || '未命名预设',
         apiKey: item.apiKey ?? '',
         baseUrl: item.baseUrl?.trim() || DEFAULT_LLM_PRESET.baseUrl,
-        model: item.model?.trim() || DEFAULT_LLM_PRESET.model,
+        models: normalizePresetModels(item),
         temperature: typeof item.temperature === 'number' ? item.temperature : DEFAULT_LLM_PRESET.temperature
       }))
 
@@ -63,7 +76,7 @@ export function normalizeLlmPresets(
           name: '默认',
           apiKey: partial.llm.apiKey ?? '',
           baseUrl: partial.llm.baseUrl || DEFAULT_LLM_PRESET.baseUrl,
-          model: partial.llm.model || DEFAULT_LLM_PRESET.model,
+          models: partial.llm.model?.trim() ? [partial.llm.model.trim()] : [...DEFAULT_LLM_PRESET.models],
           temperature: partial.llm.temperature ?? DEFAULT_LLM_PRESET.temperature
         }
       ],
@@ -82,13 +95,54 @@ export function resolveActiveLlmPreset(config: AppConfig): LlmPreset {
   )
 }
 
-export function resolveActiveLlmConfig(config: AppConfig): LlmConfig {
+export function resolveLlmConfigFromSelection(
+  config: AppConfig,
+  selection?: LlmSelection | null
+): LlmConfig | null {
+  if (selection?.presetId && selection.model) {
+    const preset = config.llmPresets.find((item) => item.id === selection.presetId)
+    if (preset) {
+      return {
+        apiKey: preset.apiKey,
+        baseUrl: preset.baseUrl,
+        model: selection.model,
+        temperature: preset.temperature
+      }
+    }
+  }
+
+  if (selection?.model) {
+    for (const preset of config.llmPresets) {
+      if (preset.models.includes(selection.model)) {
+        return {
+          apiKey: preset.apiKey,
+          baseUrl: preset.baseUrl,
+          model: selection.model,
+          temperature: preset.temperature
+        }
+      }
+    }
+  }
+
   const preset = resolveActiveLlmPreset(config)
+  const model = preset.models[0]
+  if (!model) return null
+
   return {
     apiKey: preset.apiKey,
     baseUrl: preset.baseUrl,
-    model: preset.model,
+    model,
     temperature: preset.temperature
+  }
+}
+
+/** @deprecated use resolveLlmConfigFromSelection */
+export function resolveActiveLlmConfig(config: AppConfig): LlmConfig {
+  return resolveLlmConfigFromSelection(config) ?? {
+    apiKey: DEFAULT_LLM_PRESET.apiKey,
+    baseUrl: DEFAULT_LLM_PRESET.baseUrl,
+    model: DEFAULT_LLM_PRESET.models[0],
+    temperature: DEFAULT_LLM_PRESET.temperature
   }
 }
 
@@ -97,7 +151,7 @@ export interface PromptConfig {
   userPrompt: string
 }
 
-export type PipelineMode = 'create' | 'optimize'
+export type PipelineMode = 'create' | 'optimize' | 'batch-optimize'
 
 export interface ModePromptsConfig {
   create: PromptConfig
@@ -107,6 +161,7 @@ export interface ModePromptsConfig {
 export interface ModeEnabledSkillsConfig {
   create: string[]
   optimize: string[]
+  batchOptimize: string[]
 }
 
 export interface ResearchConfig {
@@ -233,7 +288,8 @@ export const DEFAULT_MODE_PROMPTS: ModePromptsConfig = {
 
 export const DEFAULT_MODE_ENABLED_SKILLS: ModeEnabledSkillsConfig = {
   create: [],
-  optimize: []
+  optimize: [],
+  batchOptimize: []
 }
 
 /** @deprecated legacy flat prompts */
@@ -270,19 +326,33 @@ export function normalizeModeEnabledSkills(
   const sanitizeCreate = (ids: string[]) => ids.filter((id) => id !== 'article-optimizer')
   const sanitizeOptimize = (ids: string[]) =>
     ids.includes('article-optimizer') ? ['article-optimizer'] : []
+  const migrateStreaming = (ids: string[]) => {
+    if (!ids.includes('seo-geo-streaming-audio')) return ids
+    const next = ids.filter((id) => id !== 'seo-geo-streaming-audio')
+    if (!next.includes('streaming-audio-domain')) next.push('streaming-audio-domain')
+    if (!next.includes('streaming-audio-compliance')) next.push('streaming-audio-compliance')
+    return next
+  }
+
+  const sanitizeBatchOptimize = (ids: string[]) =>
+    ids.includes('page-batch-optimizer') ? ['page-batch-optimizer'] : []
 
   if (partial && !Array.isArray(partial)) {
     return {
-      create: sanitizeCreate(partial.create ?? DEFAULT_MODE_ENABLED_SKILLS.create),
-      optimize: sanitizeOptimize(partial.optimize ?? DEFAULT_MODE_ENABLED_SKILLS.optimize)
+      create: migrateStreaming(sanitizeCreate(partial.create ?? DEFAULT_MODE_ENABLED_SKILLS.create)),
+      optimize: sanitizeOptimize(partial.optimize ?? DEFAULT_MODE_ENABLED_SKILLS.optimize),
+      batchOptimize: sanitizeBatchOptimize(
+        partial.batchOptimize ?? DEFAULT_MODE_ENABLED_SKILLS.batchOptimize
+      )
     }
   }
 
   const legacy = Array.isArray(partial) ? partial : []
 
   return {
-    create: sanitizeCreate(legacy),
-    optimize: legacyInitialized || legacy.length > 0 ? ['article-optimizer'] : []
+    create: migrateStreaming(sanitizeCreate(legacy)),
+    optimize: legacyInitialized || legacy.length > 0 ? ['article-optimizer'] : [],
+    batchOptimize: []
   }
 }
 

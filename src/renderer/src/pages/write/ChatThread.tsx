@@ -53,26 +53,37 @@ export default function ChatThread({
   }
 
   if (messages.length === 0) {
-    const isOptimize = writeMode === 'optimize'
+    const emptyCopy =
+      writeMode === 'optimize'
+        ? {
+            title: '今天想优化哪个页面？',
+            desc: '输入页面 URL 即可开始，Agent 会自动为你进行优化。'
+          }
+        : writeMode === 'batch-optimize'
+          ? {
+              title: '今天要批量优化哪些页面？',
+              desc: '每行输入一个页面 URL；多个 URL 将分别为每个页面创建独立对话。'
+            }
+          : {
+              title: '今天想写什么？',
+              desc: '输入主题即可开始，Agent 会结合 Skills 与提示词模板为你创作。'
+            }
+
     return (
       <div className="chat-empty">
-        <h2>{isOptimize ? '今天想优化哪个页面？' : '今天想写什么？'}</h2>
-        <p>
-          {isOptimize
-            ? '输入页面URL即可开始，Agent 会自动为你进行优化。'
-            : '输入主题即可开始，Agent 会结合 Skills 与提示词模板为你创作。'}
-        </p>
+        <h2>{emptyCopy.title}</h2>
+        <p>{emptyCopy.desc}</p>
       </div>
     )
   }
+
+  const visibleMessages = messages.filter((message) => message.role !== 'status')
 
   return (
     <>
       <div className="chat-thread">
         <div className="chat-thread-inner">
-          {messages
-            .filter((message) => message.role !== 'status')
-            .map((message) => (
+          {visibleMessages.map((message) => (
             <ChatMessageItem
               key={message.id}
               message={message}

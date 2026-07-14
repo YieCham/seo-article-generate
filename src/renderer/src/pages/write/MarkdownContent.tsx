@@ -1,6 +1,7 @@
 import type { ReactNode, Ref } from 'react'
 import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { normalizeArticleMarkdown } from '../../../../shared/normalizeArticleMarkdown'
 
 interface MarkdownContentProps {
   content: string
@@ -162,6 +163,8 @@ export default function MarkdownContent({
     )
   }
 
+  const renderedContent = normalizeArticleMarkdown(content)
+
   const bodyClass = [
     'markdown-body',
     streaming ? 'is-streaming' : '',
@@ -179,7 +182,7 @@ export default function MarkdownContent({
           remarkPlugins={[remarkGfm]}
           components={mergeMarkdownComponents(sourceMapping ? sourceMappingComponents : undefined)}
         >
-          {content}
+          {renderedContent}
         </ReactMarkdown>
         {streaming ? <span className="stream-cursor" aria-hidden="true" /> : null}
       </div>

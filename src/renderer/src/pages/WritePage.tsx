@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { GenerateProgressEvent, QuickPicksConfig } from '../env.d'
+import type { GenerateProgressEvent, LlmPreset, QuickPicksConfig } from '../env.d'
 import {
   ARTICLE_TYPE_STORAGE_KEY,
   isArticleType,
   type ArticleType
 } from '../constants/articleTypes'
-import { type WriteMode } from '../constants/writeMode'
+import { getWriteModeLabel, normalizeWriteMode, type BatchDialogMode, type BatchWriteMode, type WriteMode } from '../constants/writeMode'
 import {
   DEFAULT_OUTPUT_LANGUAGE,
   OUTPUT_LANGUAGE_STORAGE_KEY,
@@ -16,14 +16,22 @@ import {
 import { syncSkillsForArticleType } from '../utils/writeModeSkills'
 import {
   buildExtraInstructions,
+  formatBatchOptimizeUserMessageContent,
   formatOptimizeUserMessageContent,
+  parseBatchOptimizeUserMessage,
   formatReviseUserMessageContent,
   formatUserMessageContent,
   parseCreateUserMessage,
   parseOptimizeUserMessage
 } from '../utils/extraInstructions'
 import { parseBatchTopics } from '../utils/parseBatchTopics'
-
+import {
+  LLM_MODEL_STORAGE_KEY,
+  listUnionLlmModels,
+  pickDefaultLlmModelOptionId,
+  resolveLlmModelSelection,
+  type LlmModelOption
+} from '../utils/llmModels'
 import ChatSidebar from './write/ChatSidebar'
 
 import ChatThread from './write/ChatThread'
@@ -84,15 +92,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [selectedProductId, setSelectedProductId] = useState('')
   const [outputLanguage, setOutputLanguage] = useState<OutputLanguageCode>(DEFAULT_OUTPUT_LANGUAGE)
   const [articleType, setArticleType] = useState<ArticleType>('how-to')
+  const [llmPresets, setLlmPresets] = useState<LlmPreset[]>([])
+  const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
+  const [selectedLlmModelId, setSelectedLlmModelId] = useState('')
   const [modePickerOpen, setModePickerOpen] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
   const [pipelineStatusMessage, setPipelineStatusMessage] = useState('')
   const [pipelineElapsedSec, setPipelineElapsedSec] = useState(0)
   const [reviseSelection, setReviseSelection] = useState<ReviseArticleSelection | null>(null)
   const [runningSessionId, setRunningSessionId] = useState('')
-  const [batchDialogMode, setBatchDialogMode] = useState<WriteMode | null>(null)
+  const [batchDialogMode, setBatchDialogMode] = useState<BatchDialogMode | null>(null)
   const [batchProgress, setBatchProgress] = useState<{
-    mode: WriteMode
+    mode: BatchWriteMode | 'batch-optimize'
     current: number
     total: number
     item: string
@@ -146,7 +157,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           normalizeAllSessionSortOrders(
             store.sessions.map((session) => ({
               ...session,
-              writeMode: session.writeMode === 'optimize' ? 'optimize' : 'create'
+              writeMode: normalizeWriteMode(session.writeMode)
             }))
           )
         )
@@ -196,6 +207,16 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         ? picks.defaultOutputLanguage
         : DEFAULT_OUTPUT_LANGUAGE
       setOutputLanguage(isOutputLanguageCode(storedLang) ? storedLang : defaultLang)
+
+      const presets = config.llmPresets ?? []
+      setLlmPresets(presets)
+      const models = listUnionLlmModels(presets)
+      setLlmModels(models)
+      const storedModel = localStorage.getItem(LLM_MODEL_STORAGE_KEY)
+      setSelectedLlmModelId((prev) => {
+        if (prev && models.some((item) => item.id === prev)) return prev
+        return pickDefaultLlmModelOptionId(presets, storedModel)
+      })
     })
   }, [hydrated, configRevision])
 
@@ -437,17 +458,19 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
       const planningMessage = createMessage('planning', content)
 
-      const last = withoutPlanning[withoutPlanning.length - 1]
+      const assistantIndex = withoutPlanning.findIndex((item) => item.role === 'assistant')
 
-
-
-      if (last?.role === 'assistant') {
+      if (assistantIndex >= 0) {
 
         return {
 
           ...session,
 
-          messages: [...withoutPlanning.slice(0, -1), planningMessage, last],
+          messages: [
+            ...withoutPlanning.slice(0, assistantIndex),
+            planningMessage,
+            ...withoutPlanning.slice(assistantIndex)
+          ],
 
           updatedAt: Date.now()
 
@@ -856,8 +879,25 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     return { ok: true, aborted: false, message: result.message }
   }
 
+  function buildBatchOptimizeSession(item: string, extraInstructions: string): ChatSession {
+    const session = createSession('batch-optimize')
+    const userContent = formatBatchOptimizeUserMessageContent(item, extraInstructions)
+    const userMessage = createMessage('user', userContent)
+    const assistantMessage = createMessage('assistant', '')
+    const llmFields = resolveLlmRequestFields()
+
+    return {
+      ...session,
+      title: sessionTitleFromUrl(item),
+      messages: [userMessage, assistantMessage],
+      llmPresetId: llmFields.llmPresetId,
+      llmModel: llmFields.llmModel,
+      updatedAt: Date.now()
+    }
+  }
+
   function buildBatchSession(
-    mode: WriteMode,
+    mode: BatchWriteMode,
     item: string,
     extraInstructions: string
   ): ChatSession {
@@ -870,11 +910,14 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     const assistantMessage = createMessage('assistant', '')
     const title =
       mode === 'create' ? sessionTitleFromPrompt(item) : sessionTitleFromUrl(item)
+    const llmFields = resolveLlmRequestFields()
 
     return {
       ...session,
       title,
       messages: [userMessage, assistantMessage],
+      llmPresetId: llmFields.llmPresetId,
+      llmModel: llmFields.llmModel,
       updatedAt: Date.now()
     }
   }
@@ -972,6 +1015,20 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     )
   }
 
+  function handleMarkSessionCompleted(id: string): void {
+    setSessions((prev) =>
+      prev.map((session) => {
+        if (session.id !== id) return session
+        const nextStatus =
+          session.listStatus === 'completed' ? 'active' : 'completed'
+        return {
+          ...session,
+          listStatus: nextStatus
+        }
+      })
+    )
+  }
+
   function handleReorderSessions(
     group: SessionListGroup,
     draggedId: string,
@@ -1021,6 +1078,31 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     setIsRunning(true)
     generatingSessionIdRef.current = id
     setRunningSessionId(id)
+
+    if (session.writeMode === 'batch-optimize') {
+      const parsed = parseBatchOptimizeUserMessage(firstUser.content)
+      if (!parsed) {
+        markAssistantError('无法解析页面批量优化请求')
+        setIsRunning(false)
+        generatingSessionIdRef.current = ''
+        setRunningSessionId('')
+        return
+      }
+
+      const result = await window.app.batchOptimizePage({
+        sourceUrl: parsed.sourceUrl,
+        extraInstructions: parsed.extraInstructions || undefined,
+        outputLanguage
+      })
+
+      if (!result.ok && result.message !== '已中止生成') {
+        markAssistantError(result.message ?? '页面批量优化失败')
+        setIsRunning(false)
+        generatingSessionIdRef.current = ''
+        setRunningSessionId('')
+      }
+      return
+    }
 
     if (session.writeMode === 'optimize') {
       const parsed = parseOptimizeUserMessage(firstUser.content)
@@ -1109,6 +1191,31 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     localStorage.setItem(OUTPUT_LANGUAGE_STORAGE_KEY, code)
   }
 
+  function handleLlmModelChange(optionId: string): void {
+    setSelectedLlmModelId(optionId)
+    localStorage.setItem(LLM_MODEL_STORAGE_KEY, optionId)
+  }
+
+  function resolveLlmRequestFields(session?: ChatSession | null): {
+    llmPresetId?: string
+    llmModel?: string
+  } {
+    if (session?.llmPresetId && session.llmModel) {
+      return { llmPresetId: session.llmPresetId, llmModel: session.llmModel }
+    }
+
+    const selection = resolveLlmModelSelection(llmPresets, selectedLlmModelId)
+    if (!selection) return {}
+    return { llmPresetId: selection.presetId, llmModel: selection.model }
+  }
+
+  function ensureLlmModelSelected(): boolean {
+    if (selectedLlmModelId) return true
+    setToast('请先在设置中添加模型，并在新对话中选择要使用的模型')
+    window.setTimeout(() => setToast(''), 2200)
+    return false
+  }
+
   async function handleReviseSubmit(instruction: string): Promise<void> {
     if (isRunning || !activeSession) return
 
@@ -1149,8 +1256,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     setDraftTopic('')
     setDraftExtra('')
+    // Capture before clearing UI selection; submit uses this for partial revise.
+    const selectionForRequest = reviseSelection
     setReviseSelection(null)
     window.getSelection()?.removeAllRanges()
+    // Allow revise replace/chunk events — generation marks the session "finished".
+    finishedGenerationSessionsRef.current.delete(sessionId)
     setIsRunning(true)
     generatingSessionIdRef.current = sessionId
     setRunningSessionId(sessionId)
@@ -1159,9 +1270,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       article: articleContent,
       instruction,
       outputLanguage,
-      pipeline: activeWriteMode,
+      pipeline:
+        activeWriteMode === 'create' || activeWriteMode === 'optimize'
+          ? activeWriteMode
+          : 'optimize',
       topic: activeSession.messages.find((message) => message.role === 'user')?.content,
-      selection: reviseSelection ?? undefined
+      selection: selectionForRequest ?? undefined,
+      ...resolveLlmRequestFields(activeSession)
     })
 
     if (!result.ok && result.message !== '已中止生成') {
@@ -1270,6 +1385,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     extraInstructions: string,
     options?: { skipMessageSetup?: boolean }
   ): Promise<{ ok: boolean; aborted: boolean; message?: string }> {
+    const llmFields = resolveLlmRequestFields()
+
     if (!options?.skipMessageSetup) {
       const userContent = formatUserMessageContent(topic, extraInstructions, articleType)
       const userMessage = createMessage('user', userContent)
@@ -1279,6 +1396,15 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         ...session,
         title: session.messages.length === 0 ? sessionTitleFromPrompt(topic) : session.title,
         messages: [...session.messages, userMessage, assistantMessage],
+        llmPresetId: llmFields.llmPresetId,
+        llmModel: llmFields.llmModel,
+        updatedAt: Date.now()
+      }))
+    } else {
+      updateSession(sessionId, (session) => ({
+        ...session,
+        llmPresetId: llmFields.llmPresetId,
+        llmModel: llmFields.llmModel,
         updatedAt: Date.now()
       }))
     }
@@ -1291,7 +1417,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     const result = await window.app.generateArticle({
       topic,
       extraInstructions: extraInstructions || undefined,
-      outputLanguage
+      outputLanguage,
+      ...llmFields
     })
 
     return finishGenerationRun(sessionId, result, '生成失败')
@@ -1299,6 +1426,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   async function handleSubmit(topic: string, manualExtra: string): Promise<void> {
     if (isRunning || !activeSession) return
+    if (!ensureLlmModelSelected()) return
 
     await syncSkillsForArticleType(articleType)
 
@@ -1321,6 +1449,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     extraInstructions: string,
     options?: { skipMessageSetup?: boolean }
   ): Promise<{ ok: boolean; aborted: boolean; message?: string }> {
+    const llmFields = resolveLlmRequestFields()
+
     if (!options?.skipMessageSetup) {
       const userContent = formatOptimizeUserMessageContent(sourceUrl, extraInstructions)
       const userMessage = createMessage('user', userContent)
@@ -1330,6 +1460,15 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         ...session,
         title: session.messages.length === 0 ? sessionTitleFromUrl(sourceUrl) : session.title,
         messages: [...session.messages, userMessage, assistantMessage],
+        llmPresetId: llmFields.llmPresetId,
+        llmModel: llmFields.llmModel,
+        updatedAt: Date.now()
+      }))
+    } else {
+      updateSession(sessionId, (session) => ({
+        ...session,
+        llmPresetId: llmFields.llmPresetId,
+        llmModel: llmFields.llmModel,
         updatedAt: Date.now()
       }))
     }
@@ -1342,18 +1481,165 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     const result = await window.app.optimizeArticle({
       sourceUrl,
       extraInstructions: extraInstructions || undefined,
-      outputLanguage
+      outputLanguage,
+      ...llmFields
     })
 
     return finishGenerationRun(sessionId, result, '优化失败')
   }
 
+  async function executeBatchOptimizePage(
+    sessionId: string,
+    sourceUrl: string,
+    extraInstructions: string,
+    options?: { skipMessageSetup?: boolean }
+  ): Promise<{ ok: boolean; aborted: boolean; message?: string }> {
+    const llmFields = resolveLlmRequestFields()
+
+    if (!options?.skipMessageSetup) {
+      const userContent = formatBatchOptimizeUserMessageContent(sourceUrl, extraInstructions)
+      const userMessage = createMessage('user', userContent)
+      const assistantMessage = createMessage('assistant', '')
+
+      updateSession(sessionId, (session) => ({
+        ...session,
+        title: session.messages.length === 0 ? sessionTitleFromUrl(sourceUrl) : session.title,
+        messages: [...session.messages, userMessage, assistantMessage],
+        llmPresetId: llmFields.llmPresetId,
+        llmModel: llmFields.llmModel,
+        updatedAt: Date.now()
+      }))
+    } else {
+      updateSession(sessionId, (session) => ({
+        ...session,
+        llmPresetId: llmFields.llmPresetId,
+        llmModel: llmFields.llmModel,
+        updatedAt: Date.now()
+      }))
+    }
+
+    finishedGenerationSessionsRef.current.delete(sessionId)
+    setIsRunning(true)
+    generatingSessionIdRef.current = sessionId
+    setRunningSessionId(sessionId)
+
+    const result = await window.app.batchOptimizePage({
+      sourceUrl,
+      extraInstructions: extraInstructions || undefined,
+      outputLanguage,
+      ...llmFields
+    })
+
+    return finishGenerationRun(sessionId, result, '页面批量优化失败')
+  }
+
+  async function handleBatchOptimizeSingleSubmit(sourceUrl: string, manualExtra: string): Promise<void> {
+    if (isRunning || !activeSession) return
+    if (!ensureLlmModelSelected()) return
+
+    const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
+    const extraInstructions = buildExtraInstructions({ product, manual: manualExtra })
+
+    setDraftTopic('')
+    setDraftExtra('')
+
+    await executeBatchOptimizePage(activeSession.id, sourceUrl, extraInstructions)
+  }
+
+  async function runBatchPageOptimize(urlsText: string, manualExtra: string): Promise<void> {
+    if (isRunning) return
+    if (!ensureLlmModelSelected()) return
+
+    const urls = parseBatchTopics(urlsText)
+    if (urls.length === 0) {
+      setToast('请输入至少一个 URL')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
+    const extraInstructions = buildExtraInstructions({ product, manual: manualExtra })
+
+    setDraftTopic('')
+    setDraftExtra('')
+
+    setBatchDialogMode(null)
+    batchAbortRef.current = false
+    batchActiveRef.current = true
+    setIsRunning(true)
+
+    let succeeded = 0
+    let failed = 0
+    let aborted = false
+
+    try {
+      for (let index = 0; index < urls.length; index += 1) {
+        if (batchAbortRef.current) {
+          aborted = true
+          break
+        }
+
+        const sourceUrl = urls[index]
+        setBatchProgress({
+          mode: 'batch-optimize',
+          current: index + 1,
+          total: urls.length,
+          item: sourceUrl
+        })
+
+        const session = buildBatchOptimizeSession(sourceUrl, extraInstructions)
+        setSessions((prev) => insertSessionAtListTop(prev, session))
+        activeSessionIdRef.current = session.id
+        setActiveSessionId(session.id)
+        generatingSessionIdRef.current = session.id
+        setRunningSessionId(session.id)
+
+        const result = await executeBatchOptimizePage(session.id, sourceUrl, extraInstructions, {
+          skipMessageSetup: true
+        })
+
+        if (result.aborted) {
+          aborted = true
+          break
+        }
+        if (result.ok) {
+          succeeded += 1
+          setSessions((prev) =>
+            prev.map((item) =>
+              item.id === session.id ? normalizeIdleStreamingAssistants(item) : item
+            )
+          )
+        } else failed += 1
+      }
+    } finally {
+      if (batchAbortRef.current) aborted = true
+      batchActiveRef.current = false
+      setBatchProgress(null)
+      batchAbortRef.current = false
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+      finishedGenerationSessionsRef.current.clear()
+      setSessions((prev) => prev.map((session) => normalizeIdleStreamingAssistants(session)))
+    }
+
+    if (aborted) {
+      setToast('页面批量优化已中止')
+    } else if (failed > 0) {
+      setToast(`页面批量优化完成：成功 ${succeeded} 篇，失败 ${failed} 篇`)
+    } else {
+      setToast(`页面批量优化完成：共 ${succeeded} 篇`)
+    }
+    window.setTimeout(() => setToast(''), 2800)
+  }
+
   async function runBatchWrite(
-    mode: WriteMode,
+    mode: BatchWriteMode,
     itemsText: string,
     manualExtra: string
   ): Promise<void> {
     if (isRunning) return
+    if (!ensureLlmModelSelected()) return
 
     const items = parseBatchTopics(itemsText)
     const emptyHint = mode === 'optimize' ? '请输入至少一个 URL' : '请输入至少一个主题'
@@ -1454,6 +1740,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   async function handleOptimizeSubmit(sourceUrl: string, manualExtra: string): Promise<void> {
     if (isRunning || !activeSession) return
+    if (!ensureLlmModelSelected()) return
 
     const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
     const extraInstructions = buildExtraInstructions({ product, manual: manualExtra })
@@ -1472,6 +1759,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     if (activeWriteMode === 'optimize') {
       void handleOptimizeSubmit(input, manualExtra)
+    } else if (activeWriteMode === 'batch-optimize') {
+      const urls = parseBatchTopics(input)
+      if (urls.length > 1) {
+        void runBatchPageOptimize(input, manualExtra)
+      } else {
+        void handleBatchOptimizeSingleSubmit(input, manualExtra)
+      }
     } else {
       void handleSubmit(input, manualExtra)
     }
@@ -1509,6 +1803,10 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     const checkpoint = activeSession.pipelineCheckpoint!
     const assistant = getInterruptedAssistantMessage(activeSession)!
     const sessionId = activeSession.id
+
+    if (checkpoint.kind === 'create' && checkpoint.plan?.trim()) {
+      upsertPlanningMessage(checkpoint.plan, sessionId)
+    }
 
     updateSession(sessionId, (session) => ({
       ...session,
@@ -1618,6 +1916,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         onDelete={handleDeleteSession}
         onRename={handleRenameSession}
         onTogglePin={handleTogglePinSession}
+        onMarkCompleted={handleMarkSessionCompleted}
         onReorder={handleReorderSessions}
         onRegenerate={(sessionId) => void handleRegenerateSession(sessionId)}
         isRunning={isRunning}
@@ -1668,6 +1967,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             onProductChange={setSelectedProductId}
             onOutputLanguageChange={handleOutputLanguageChange}
             onArticleTypeChange={(type) => void handleArticleTypeChange(type)}
+            llmModels={llmModels}
+            selectedLlmModelId={selectedLlmModelId}
+            onLlmModelChange={handleLlmModelChange}
             onSubmit={(input, extra) => handleComposerSubmit(input, extra)}
             onStop={handleStopGeneration}
             draftInput={draftTopic}
@@ -1678,20 +1980,27 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             onClearReviseSelection={handleClearReviseSelection}
             onBatchWrite={
               composerShowOptions
-                ? () => setBatchDialogMode(activeWriteMode)
+                ? () =>
+                    setBatchDialogMode(
+                      activeWriteMode === 'batch-optimize'
+                        ? 'batch-optimize'
+                        : activeWriteMode === 'optimize'
+                          ? 'optimize'
+                          : 'create'
+                    )
                 : undefined
             }
           />
 
           <footer className="write-statusbar">
-            <span className="write-status-label">
-              {activeWriteMode === 'optimize' ? '文章优化' : '文章创作'}
-            </span>
+            <span className="write-status-label">{getWriteModeLabel(activeWriteMode)}</span>
             {isRunning ? (
               <span className="write-status-running">
                 <span className="status-pill-dot" aria-hidden="true" />
                 {batchProgress
-                  ? `${batchProgress.mode === 'optimize' ? '批量优化' : '批量创作'} ${batchProgress.current}/${batchProgress.total}：${batchProgress.item}`
+                  ? batchProgress.mode === 'batch-optimize'
+                    ? `页面批量优化 ${batchProgress.current}/${batchProgress.total}：${batchProgress.item}`
+                    : `${batchProgress.mode === 'optimize' ? '批量优化' : '批量创作'} ${batchProgress.current}/${batchProgress.total}：${batchProgress.item}`
                   : composerShowOptions
                     ? '运行中'
                     : '正在修订文章…'}
@@ -1733,7 +2042,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           draftExtra={draftExtra}
           onClose={() => setBatchDialogMode(null)}
           onSubmit={(itemsText, extra) => {
-            if (batchDialogMode === 'optimize') {
+            if (batchDialogMode === 'batch-optimize') {
+              void runBatchPageOptimize(itemsText, extra)
+            } else if (batchDialogMode === 'optimize') {
               void handleBatchOptimize(itemsText, extra)
             } else {
               void handleBatchCreate(itemsText, extra)

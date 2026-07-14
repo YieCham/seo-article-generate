@@ -3,6 +3,7 @@ import type { QuickPicksConfig } from '../../env.d'
 import { ARTICLE_TYPE_OPTIONS, type ArticleType } from '../../constants/articleTypes'
 import type { WriteMode } from '../../constants/writeMode'
 import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../../constants/outputLanguage'
+import { formatLlmModelOptionLabel, type LlmModelOption } from '../../utils/llmModels'
 import { IconPlus, IconSend, IconStop, IconClose } from '../../components/Icons'
 
 interface ComposerProps {
@@ -18,9 +19,12 @@ interface ComposerProps {
   selectedProductId: string
   outputLanguage: OutputLanguageCode
   articleType: ArticleType
+  llmModels: LlmModelOption[]
+  selectedLlmModelId: string
   onProductChange: (id: string) => void
   onOutputLanguageChange: (code: OutputLanguageCode) => void
   onArticleTypeChange: (type: ArticleType) => void
+  onLlmModelChange: (optionId: string) => void
   onSubmit: (input: string, extraInstructions: string) => void
   onStop: () => void
   draftInput: string
@@ -45,9 +49,12 @@ export default function Composer({
   selectedProductId,
   outputLanguage,
   articleType,
+  llmModels,
+  selectedLlmModelId,
   onProductChange,
   onOutputLanguageChange,
   onArticleTypeChange,
+  onLlmModelChange,
   onSubmit,
   onStop,
   draftInput,
@@ -60,14 +67,18 @@ export default function Composer({
 }: ComposerProps) {
   const [showExtra, setShowExtra] = useState(false)
   const isOptimize = writeMode === 'optimize'
+  const isBatchOptimize = writeMode === 'batch-optimize'
+  const isUrlMode = isOptimize || isBatchOptimize
   const isFollowUp = !showOptions
   const placeholder = isFollowUp
     ? reviseSelectionPreview
       ? '描述如何改写选中部分…'
       : '描述要如何修改文章（可补充、删减或局部改写）…'
-    : isOptimize
-      ? '请发送要优化的页面URL...'
-      : '请输入你想要创作的主题...'
+    : isBatchOptimize
+      ? '每行输入一个页面 URL，将按顺序批量优化…'
+      : isOptimize
+        ? '请发送要优化的页面URL...'
+        : '请输入你想要创作的主题...'
   const panelDisabled = disabled || isGenerating
 
   useEffect(() => {
@@ -101,7 +112,7 @@ export default function Composer({
       >
         {showOptions ? (
           <>
-            <div className={`composer-options${isOptimize ? ' is-optimize' : ''}`}>
+            <div className={`composer-options${isUrlMode ? ' is-optimize' : ''}`}>
               {onBatchWrite ? (
                 <div className="composer-option composer-option-fixed">
                   <button
@@ -110,7 +121,7 @@ export default function Composer({
                     onClick={onBatchWrite}
                     disabled={panelDisabled}
                   >
-                    {isOptimize ? '批量优化' : '批量创作'}
+                    {isBatchOptimize || isOptimize ? '批量优化' : '批量创作'}
                   </button>
                 </div>
               ) : null}
@@ -149,7 +160,7 @@ export default function Composer({
                 </select>
               </label>
 
-              {!isOptimize ? (
+              {!isUrlMode ? (
                 <label className="composer-option">
                   <select
                     className="composer-control"
@@ -166,6 +177,26 @@ export default function Composer({
                   </select>
                 </label>
               ) : null}
+
+              <label className="composer-option">
+                <select
+                  className="composer-control"
+                  value={selectedLlmModelId}
+                  onChange={(e) => onLlmModelChange(e.target.value)}
+                  disabled={panelDisabled || llmModels.length === 0}
+                  aria-label="模型"
+                >
+                  {llmModels.length === 0 ? (
+                    <option value="">未配置模型</option>
+                  ) : (
+                    llmModels.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {formatLlmModelOptionLabel(item)}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
             </div>
 
             {showExtra ? (

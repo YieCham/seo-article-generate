@@ -3,11 +3,25 @@ import { app } from 'electron'
 import { join } from 'path'
 import type { PipelineCheckpoint } from '../../shared/pipelineCheckpoint'
 
+export type StoredWriteMode = 'create' | 'optimize' | 'batch-optimize'
+
+function normalizeStoredWriteMode(value: unknown): StoredWriteMode {
+  if (value === 'optimize') return 'optimize'
+  if (value === 'batch-optimize') return 'batch-optimize'
+  return 'create'
+}
+
 export interface StoredChatMessage {
   id: string
   role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
   content: string
   status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
+}
+
+export type StoredListStatus = 'active' | 'completed'
+
+function normalizeStoredListStatus(value: unknown): StoredListStatus | undefined {
+  return value === 'completed' ? 'completed' : value === 'active' ? 'active' : undefined
 }
 
 export interface StoredChatSession {
@@ -17,8 +31,11 @@ export interface StoredChatSession {
   pinned?: boolean
   pinnedAt?: number
   sortOrder?: number
+  listStatus?: StoredListStatus
   messages: StoredChatMessage[]
-  writeMode?: 'create' | 'optimize'
+  writeMode?: StoredWriteMode
+  llmPresetId?: string
+  llmModel?: string
   updatedAt: number
   pipelineCheckpoint?: PipelineCheckpoint
 }
@@ -76,7 +93,8 @@ export async function loadChatStore(): Promise<ChatStoreData> {
         pinned: session.pinned === true,
         pinnedAt: typeof session.pinnedAt === 'number' ? session.pinnedAt : undefined,
         sortOrder: typeof session.sortOrder === 'number' ? session.sortOrder : undefined,
-        writeMode: (session.writeMode === 'optimize' ? 'optimize' : 'create') as 'create' | 'optimize',
+        listStatus: normalizeStoredListStatus(session.listStatus),
+        writeMode: normalizeStoredWriteMode(session.writeMode),
         updatedAt: session.updatedAt || Date.now(),
         pipelineCheckpoint: session.pipelineCheckpoint,
         messages: Array.isArray(session.messages) ? session.messages : []

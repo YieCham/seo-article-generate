@@ -5,12 +5,24 @@ export interface GenerateArticleRequest {
   topic: string
   extraInstructions?: string
   outputLanguage?: string
+  llmPresetId?: string
+  llmModel?: string
 }
 
 export interface OptimizeArticleRequest {
   sourceUrl: string
   extraInstructions?: string
   outputLanguage?: string
+  llmPresetId?: string
+  llmModel?: string
+}
+
+export interface BatchOptimizePageRequest {
+  sourceUrl: string
+  extraInstructions?: string
+  outputLanguage?: string
+  llmPresetId?: string
+  llmModel?: string
 }
 
 export interface ResearchSourcePreview {
@@ -59,6 +71,8 @@ export interface ReviseArticleRequest {
   pipeline?: 'create' | 'optimize'
   topic?: string
   selection?: ReviseArticleSelection
+  llmPresetId?: string
+  llmModel?: string
 }
 
 export interface GenerateArticleResult {
@@ -78,7 +92,7 @@ export interface LlmPreset {
   name: string
   apiKey: string
   baseUrl: string
-  model: string
+  models: string[]
   temperature: number
 }
 
@@ -87,7 +101,7 @@ export interface PromptConfig {
   userPrompt: string
 }
 
-export type PipelineMode = 'create' | 'optimize'
+export type PipelineMode = 'create' | 'optimize' | 'batch-optimize'
 
 export interface ModePromptsConfig {
   create: PromptConfig
@@ -144,6 +158,18 @@ export interface ActionResult {
   message?: string
 }
 
+export interface LlmModelBrandGroup {
+  brand: string
+  models: string[]
+}
+
+export interface ListLlmModelsResult {
+  ok: boolean
+  message?: string
+  groups?: LlmModelBrandGroup[]
+  total?: number
+}
+
 export interface TokenUsageRecord {
   id: string
   timestamp: number
@@ -184,14 +210,19 @@ export interface ChatStoreData {
     customTitle?: string
     pinned?: boolean
     pinnedAt?: number
+    sortOrder?: number
+    listStatus?: 'active' | 'completed'
     messages: Array<{
       id: string
       role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
       content: string
-      status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error'
+      status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
     }>
     updatedAt: number
-    writeMode?: 'create' | 'optimize'
+    writeMode?: 'create' | 'optimize' | 'batch-optimize'
+    llmPresetId?: string
+    llmModel?: string
+    pipelineCheckpoint?: import('../shared/pipelineCheckpoint').PipelineCheckpoint
   }>
 }
 
@@ -200,6 +231,8 @@ const api = {
     ipcRenderer.invoke('article:generate', request),
   optimizeArticle: (request: OptimizeArticleRequest): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:optimize', request),
+  batchOptimizePage: (request: BatchOptimizePageRequest): Promise<GenerateArticleResult> =>
+    ipcRenderer.invoke('article:batchOptimize', request),
   resumeArticle: (checkpoint: PipelineCheckpoint): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:resume', checkpoint),
   cancelArticle: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('article:cancel'),
@@ -215,7 +248,10 @@ const api = {
   getConfig: (): Promise<AppConfig> => ipcRenderer.invoke('config:get'),
   saveConfig: (partial: Partial<AppConfig>): Promise<AppConfig> =>
     ipcRenderer.invoke('config:save', partial),
-  testLlmConnection: (): Promise<ActionResult> => ipcRenderer.invoke('config:testLlm'),
+  testLlmConnection: (options?: { presetId?: string; model?: string }): Promise<ActionResult> =>
+    ipcRenderer.invoke('config:testLlm', options),
+  listLlmModels: (presetId: string): Promise<ListLlmModelsResult> =>
+    ipcRenderer.invoke('config:listLlmModels', presetId),
   testTavilyConnection: (apiKey: string): Promise<ActionResult> =>
     ipcRenderer.invoke('config:testTavily', apiKey),
   testFirecrawlConnection: (apiKey: string): Promise<ActionResult> =>

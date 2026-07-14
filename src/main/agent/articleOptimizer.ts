@@ -22,7 +22,8 @@ import {
   analyzeAndExpandSearchQueries,
   buildResearchTopicFromSource
 } from './searchIntent'
-import { getEnabledSkillsTextForOptimize } from './skillManager'
+import { getEnabledSkillBundles } from './skillManager'
+import { buildFullSkillsText, getSkillsTextForStep } from './skillPipeline'
 import {
   chatCompletion,
   createRateLimitRetryStatus,
@@ -36,6 +37,7 @@ import {
 import { normalizeOutputLanguage, type OutputLanguageCode } from './outputLanguage'
 import {
   buildAnchoredOutline,
+  ensureOptimizeGeoModules,
   buildSourcePreviewStats,
   countWords,
   extractSourceH1,
@@ -50,6 +52,7 @@ import {
   isAuditRecommendedNewSection,
   isNewOptimizeSection,
   normalizeOptimizeSectionOrder,
+  reorderArticleMarkdown,
   parseSourceSections,
   validateSourceMarkdown,
   type OptimizeWordRange,
@@ -66,15 +69,23 @@ import { enforceOptimizeArticleWordCount } from './articleWordEnforcement'
 import { formatSeoMetaBlock, generateSeoMeta } from './seoMeta'
 import { getUserContextPromptBlocks, parseUserWritingContext } from './userContext'
 import {
+  classifyDraftSectionProductKind,
+  getSectionDraftLayoutHint,
+  getUserContextPromptBlocksForSection
+} from './productMention'
+import {
   type DraftSectionResume,
   type OptimizePipelineCheckpoint,
   shouldRunPipelineStep
 } from './pipelineCheckpoint'
+import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
 
 export interface OptimizeArticleOptions {
   sourceUrl: string
   extraInstructions?: string
   outputLanguage?: OutputLanguageCode | string
+  llmPresetId?: string
+  llmModel?: string
   resume?: OptimizePipelineCheckpoint
 }
 
@@ -268,13 +279,13 @@ async function enrichAnchoredOutline(
       {
         role: 'system',
         content:
-          '你是内容优化编辑。在大纲各 ## 章节下补充编辑要点 bullet：**KEEP+ENHANCE / ADD / REMOVE / REPLACE / 局部改写**；若诊断报告含 `[新增 H2]` / `[NEW H2]` 而大纲中缺失，**可插入该 ## 标题**到诊断指定位置（before/after 某原文章节）。'
+          '你是内容优化编辑。在大纲各 ## 章节下补充编辑要点 bullet：**KEEP+ENHANCE / ADD / REMOVE / REPLACE / 局部改写**；若诊断报告含 `[新增 H2]` / `[NEW H2]` 而大纲中缺失，**可插入该 ## 标题**到诊断指定位置（before/after 某原文章节）。**必须保留**大纲中已有的 ## Quick Answer / ## FAQ 等 GEO 新增模块（即使原文没有对应章节）。'
       },
       {
         role: 'user',
         content: [
           '在以下大纲各 ## 章节下补充 1–3 条具体编辑说明（来自诊断报告）。',
-          '可依据诊断 **新增** 标记为 `[新增 H2]` / `[NEW H2]` 的 ## 标题并插入正确位置；不得删除已有原文章节 ## 标题，不得无诊断依据地增删章节。',
+          '可依据诊断 **新增** 标记为 `[新增 H2]` / `[NEW H2]` 的 ## 标题并插入正确位置；不得删除已有原文章节 ## 标题；**不得删除 ## Quick Answer / ## FAQ 等 GEO 模块**；不得无诊断依据地增删其他章节。',
           `语言：${articleLang.label}`,
           '',
           '--- 诊断报告 ---',
@@ -331,6 +342,7 @@ async function optimizeArticleSinglePass(
           '- **执行诊断 ADD / NEW H2**：补充缺口、新增诊断标记的 H2 章节',
           '- **执行诊断 REMOVE/REPLACE**：删减过时、不可用、误导或不符合 E-E-A-T 的内容；终稿变短是正常结果',
           '- 直接输出正文，不要写修改说明',
+          '- 不要用 ```markdown 代码围栏包裹正文',
           '',
           '--- 诊断 ---',
           audit.slice(0, 5000),
@@ -365,8 +377,12 @@ function resolveOptimizeDraftSections(
   outline: string,
   sourceSections?: OutlineSection[]
 ): ReturnType<typeof sanitizeOptimizeSections> {
-  const ordered = normalizeOptimizeSectionOrder(parseOutlineSections(outline))
-  return sanitizeOptimizeSections(ordered, { sourceSections })
+  const sanitized = sanitizeOptimizeSections(parseOutlineSections(outline), { sourceSections })
+  const sections = ensureOptimizeGeoModules(
+    normalizeOptimizeSectionOrder(sanitized.sections),
+    sourceSections ?? []
+  )
+  return { sections, log: sanitized.log }
 }
 
 function formatSectionSanitizeStatus(log: ReturnType<typeof sanitizeOptimizeSections>['log']): string | null {
@@ -429,6 +445,24 @@ async function draftOptimizedSections(
       message: `正在优化第 ${i + 1}/${sections.length} 节：${section.title}`
     })
 
+    const sectionProductKind = classifyDraftSectionProductKind(
+      section.title,
+      section.body,
+      userContext.productName,
+      { geo: Boolean(userContext.productName) }
+    )
+    const sectionLayoutHint = getSectionDraftLayoutHint({
+      sectionTitle: section.title,
+      sectionBody: section.body,
+      productName: userContext.productName,
+      geo: Boolean(userContext.productName)
+    })
+    const sectionUserContextBlocks = getUserContextPromptBlocksForSection(
+      userContext.productName,
+      userContext.mentionLock,
+      sectionProductKind
+    )
+
     const sectionText = await chatCompletion(
       llm,
       [
@@ -437,7 +471,7 @@ async function draftOptimizedSections(
           content: [
             '你是 SEO/GEO 内容编辑。对本节做**内容评估 + 按需增删**：优质原句保留并增量补充，过时/不可用/低 E-E-A-T 内容删减或替换。',
             articleLang.lock,
-            getUserContextPromptBlocks(userContext),
+            sectionUserContextBlocks,
             skillsText ? `Skills：\n${skillsText}` : '',
             editorBlocks,
             '只输出本节 Markdown 正文（不要 ## 标题行），不要解释修改过程。'
@@ -458,6 +492,7 @@ async function draftOptimizedSections(
               isAuditNewH2
             }),
             getIntroConclusionSectionHint(section.title),
+            sectionLayoutHint,
             '',
             originalSection ? `--- 原文本节 ---\n${originalSection.body.trim()}\n---` : '',
             '',
@@ -494,7 +529,7 @@ async function draftOptimizedSections(
     resume?.onSectionComplete?.(i, sections.length, fullDraft.trim())
   }
 
-  return fullDraft.trim()
+  return reorderArticleMarkdown(fullDraft.trim())
 }
 
 async function polishOptimizedArticle(
@@ -535,6 +570,7 @@ async function polishOptimizedArticle(
           getOptimizePolishHint(),
           `- 全文词数参考：${wordRange.label}`,
           '- 直接输出 Markdown 正文',
+          '- 不要用 ```markdown 代码围栏包裹正文',
           '',
           draft
         ].join('\n')
@@ -551,15 +587,21 @@ async function polishOptimizedArticle(
     }
   )
 
-  onChunk(polished)
-  return polished.trim()
+  onChunk(reorderArticleMarkdown(normalizeArticleMarkdown(polished)))
+  return reorderArticleMarkdown(normalizeArticleMarkdown(polished))
 }
 
 export async function optimizeArticle(
   options: OptimizeArticleOptions,
   sender: WebContents
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const appConfig = await getEffectiveConfig()
+  const llmSelection = {
+    presetId: options.resume?.options.llmPresetId ?? options.llmPresetId ?? '',
+    model: options.resume?.options.llmModel ?? options.llmModel ?? ''
+  }
+  const appConfig = await getEffectiveConfig(
+    llmSelection.presetId && llmSelection.model ? llmSelection : null
+  )
   const llm = appConfig.llm
   const research = appConfig.research
   const globalMaxTokens = appConfig.llmMaxTokens
@@ -567,8 +609,7 @@ export async function optimizeArticle(
     intentExpand: resolveStepMaxTokens('intentExpand', globalMaxTokens),
     eeatExtract: resolveStepMaxTokens('eeatExtract', globalMaxTokens),
     optimizeAudit: resolveStepMaxTokens('optimizeAudit', globalMaxTokens),
-    outline: resolveStepMaxTokens('outline', globalMaxTokens),
-    seoMeta: resolveStepMaxTokens('seoMeta', globalMaxTokens)
+    outline: resolveStepMaxTokens('outline', globalMaxTokens)
   }
   const firecrawlKey = research.firecrawlApiKey
 
@@ -614,7 +655,9 @@ export async function optimizeArticle(
     options: {
       sourceUrl,
       extraInstructions: resume?.options.extraInstructions ?? options.extraInstructions,
-      outputLanguage: resume?.options.outputLanguage ?? options.outputLanguage
+      outputLanguage: resume?.options.outputLanguage ?? options.outputLanguage,
+      llmPresetId: resume?.options.llmPresetId ?? options.llmPresetId,
+      llmModel: resume?.options.llmModel ?? options.llmModel
     },
     ...partial
   })
@@ -633,7 +676,9 @@ export async function optimizeArticle(
       step: 'skills',
       message: resume?.statusLabel ? `继续优化：${resume.statusLabel}` : '① 加载优化 Skills…'
     })
-    const skillsText = await getEnabledSkillsTextForOptimize()
+    const skillBundles = await getEnabledSkillBundles('optimize')
+    const skillsText = buildFullSkillsText(skillBundles)
+    const stepSkills = getSkillsTextForStep('optimize', { bundles: skillBundles })
 
     let scraped: Awaited<ReturnType<typeof scrapeToMarkdown>>
     let sourceSections: OutlineSection[]
@@ -741,7 +786,7 @@ export async function optimizeArticle(
             sourceUrl,
             scraped.markdown,
             competitorCorpus,
-            skillsText,
+            stepSkills,
             articleLang,
             userContext,
             stepTokens.eeatExtract
@@ -780,7 +825,7 @@ export async function optimizeArticle(
         scraped.title,
         scraped.markdown,
         competitorInsights!,
-        skillsText,
+        stepSkills,
         articleLang,
         userContext,
         wordRange,
@@ -869,21 +914,25 @@ export async function optimizeArticle(
       })
 
       if (useSinglePass) {
-        const optimized = await optimizeArticleSinglePass(
+        const optimized = normalizeArticleMarkdown(
+          await optimizeArticleSinglePass(
           llm,
           scraped.markdown,
           scraped.title,
           audit,
           competitorInsights,
-          skillsText,
+          stepSkills,
           articleLang,
           userContext,
           wordRange,
           globalMaxTokens
+          )
         )
-        draft = optimized.startsWith('#')
-          ? optimized
-          : `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n${optimized}`
+        draft = reorderArticleMarkdown(
+          optimized.startsWith('#')
+            ? optimized
+            : `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n${optimized}`
+        )
         emit({ type: 'chunk', text: draft, step: 'draft' })
         emitOptimizeCheckpoint(
           buildOptimizeCheckpoint('polish', {
@@ -908,7 +957,7 @@ export async function optimizeArticle(
           sourceSections,
           audit,
           competitorInsights,
-          skillsText,
+          stepSkills,
           articleLang,
           userContext,
           wordRange,
@@ -996,7 +1045,8 @@ export async function optimizeArticle(
       if (!polished) {
         return { ok: false, message: '无法继续：缺少校对稿，请重新开始。' }
       }
-      lengthAdjusted = await enforceOptimizeArticleWordCount(
+      lengthAdjusted = reorderArticleMarkdown(
+        await enforceOptimizeArticleWordCount(
         llm,
         polished,
         scraped.title,
@@ -1006,6 +1056,7 @@ export async function optimizeArticle(
         maxTokensForOptimizeLengthAdjust(countArticleWords(polished), globalMaxTokens),
         emit,
         (text) => emit({ type: 'chunk', text, step: 'length' })
+        )
       )
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('meta', {
@@ -1029,8 +1080,7 @@ export async function optimizeArticle(
         scraped.title,
         lengthAdjusted,
         articleLang,
-        userContext,
-        stepTokens.seoMeta
+        userContext.productName
       )
       emit({ type: 'prepend', text: formatSeoMetaBlock(seoMeta), step: 'meta' })
     }

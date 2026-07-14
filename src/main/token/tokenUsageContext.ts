@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'async_hooks'
 import { randomUUID } from 'crypto'
 
-export type TokenUsagePipeline = 'create' | 'optimize' | 'sectionEdit' | 'test' | 'other'
+export type TokenUsagePipeline = 'create' | 'optimize' | 'batch-optimize' | 'sectionEdit' | 'test' | 'other'
 
 export interface TokenUsageRunContext {
   runId: string

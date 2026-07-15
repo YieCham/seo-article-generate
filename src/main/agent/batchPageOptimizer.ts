@@ -1,5 +1,5 @@
 import type { WebContents } from 'electron'
-import { getEffectiveConfig } from '../config/configStore'
+import { getEffectiveConfig, resolveRoutedLlm } from '../config/configStore'
 import { maxTokensForOptimizeFullDraft } from '../config/llmTokenLimits'
 import {
   createTokenRunContext,
@@ -128,7 +128,7 @@ export async function batchOptimizePage(
   const appConfig = await getEffectiveConfig(
     llmSelection.presetId && llmSelection.model ? llmSelection : null
   )
-  const llm = appConfig.llm
+  const llm = resolveRoutedLlm(appConfig, 'bodyWork', appConfig.llm)
   const firecrawlKey = appConfig.research.firecrawlApiKey
   const globalMaxTokens = appConfig.llmMaxTokens
 

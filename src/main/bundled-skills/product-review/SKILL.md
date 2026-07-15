@@ -1,12 +1,12 @@
 ---
 name: product-review
 description: >-
-  Review 类测评软文领域要点。被测评产品为主角、可信评测语气与 E-E-A-T。文章骨架、五模块 Part、对比表与字数由 Pipeline 注入。
+  Review 类测评软文领域要点。被测评产品为主角、可信评测语气与 E-E-A-T。文章骨架、Overview 必选 + 灵活增补 Part、我方产品 Alternative Part、对比表与字数由 Pipeline 注入。
 ---
 
 # Review 类测评领域 Skill
 
-> 结构（被测评产品 5 个 Part + 对比表 + FAQ）、60–70% 篇幅给被测评产品、全文 1000–1500 词 — **均由 Pipeline 代码块执行**。
+> 结构（Overview 必选 + 可选测评 Part → 我方产品 Alternative Part → 对比表 → FAQ）、60–70% 篇幅给被测评产品、全文 1000–1500 词 — **均由 Pipeline 代码块执行**。
 
 ## 适用场景
 
@@ -21,30 +21,37 @@ description: >-
 
 ## 被测评产品应写透的内容（领域）
 
-规划与撰写时须覆盖以下**角度**（具体 Part 划分由 Pipeline 大纲生成）：
+- **Overview 必选**：是什么、解决什么问题、目标用户、定位与差异（须充实，禁止两句带过）
+- **其余 Part 可选**：按产品性质与调研增补、合并或省略；勿硬凑无关空壳
+
+可选角度菜单：
 
 | 角度 | 领域要点 |
 |------|----------|
-| Overview | 是什么、解决什么问题、目标用户、定位与差异 |
 | Pros & Cons | 具体、可验证；优缺点均须充实 |
 | Standout Features | 3–5 个功能点：做什么 + 场景 + 体验 |
 | How to Use | 被测评产品的分步流程（非我方产品教程） |
 | Value & Experience | 定价/价值、适合人群、真实场景 |
+| 其他 | 兼容性、定价方案、局限/风险、理想用户等（调研支撑时） |
 
 ## 我方产品（领域）
 
-- 全名主要出现在**对比表 Part 及 Conclusion**
+- 有产品名时：在被测评正文 Part **之后**、对比表 **之前** 增加专属 Part，标题形如 **The Best {被测评产品} Alternative: {我方产品}**
+- 该 Part 以我方产品为主角（定位、核心优势、适合谁）；**不要**在此节输出完整对比表
+- 全名主要出现在：**Alternative 专属 Part**、**对比表 Part** 及 **Conclusion**
 - 被测评产品各 Part **不要**抢戏或提前大段写 Alternative
-- 对比须在被测评产品写透**之后**
+- 对比表紧挨在 Alternative Part **之后**
 
 ## 规划要点（`<thinking>`）
 
 1. 读者选购/对比意图
-2. 为被测评产品五个模块各规划 1 句目的
-3. 对比表维度与 FAQ 种子
+2. Overview 必选 + 按调研决定其余可选 Part 与各节目的（1 句/节）
+3. 我方产品 Alternative Part 要点 + 对比表维度 + FAQ 种子
 
 ## 禁止事项
 
-- 勿 Overview + Pros 后直接跳 Alternative
-- 勿只写被测评产品而忽略对比与推荐
+- 勿省略 Overview，或 Overview 过薄就直接跳 Alternative
+- 勿只写被测评产品而忽略 Alternative Part、对比与推荐
+- 勿将 Alternative Part 与对比表合并或对调顺序
+- 勿为凑结构强行写出与产品无关的空壳 Part
 - 勿将 `<thinking>` 写入终稿

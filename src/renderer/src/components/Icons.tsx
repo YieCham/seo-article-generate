@@ -30,6 +30,14 @@ export function IconStartCreate({ size = 16, className }: IconProps) {
   )
 }
 
+export function IconNewPreset({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 1025 1024" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M631.436 983.674l-533.843 0c-29.658 0-53.831-25.392-53.831-56.269l0-613.468 265.497-278.16 391.918 0c33.183-3.724 57.483 21.733 53.831 52.68l0.342 317.43-0.417 0 0 48.143-73.941 0 0-344.449-355.754 0 0 222.229-207.333 0 0 577.918 513.531 0 0 73.946zM991.997 679.239l-169.691 0 0-169.688-134.545 0 0 169.622-169.884 0 0 134.545 169.683 0 0 169.884 134.611 0 0-169.688 169.828 0 0-134.677z" />
+    </svg>
+  )
+}
+
 export function IconSettings({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 1024 1024" fill="currentColor" className={className} aria-hidden="true">

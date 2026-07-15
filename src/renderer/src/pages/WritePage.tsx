@@ -27,8 +27,10 @@ import {
 import { parseBatchTopics } from '../utils/parseBatchTopics'
 import {
   LLM_MODEL_STORAGE_KEY,
+  formatLlmRoleRoutingHint,
   listUnionLlmModels,
   pickDefaultLlmModelOptionId,
+  resolveBodyWorkModelOptionId,
   resolveLlmModelSelection,
   type LlmModelOption
 } from '../utils/llmModels'
@@ -93,6 +95,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [llmPresets, setLlmPresets] = useState<LlmPreset[]>([])
   const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
   const [selectedLlmModelId, setSelectedLlmModelId] = useState('')
+  const [llmRoleRoutingEnabled, setLlmRoleRoutingEnabled] = useState(false)
+  const [llmRoleRoutingHint, setLlmRoleRoutingHint] = useState('')
   const [batchDialogMode, setBatchDialogMode] = useState<BatchDialogMode | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [pipelineStatusMessage, setPipelineStatusMessage] = useState('')
@@ -209,8 +213,14 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       setLlmPresets(presets)
       const models = listUnionLlmModels(presets)
       setLlmModels(models)
+      const routing = config.llmRoleRouting
+      const routingEnabled = Boolean(routing?.enabled)
+      setLlmRoleRoutingEnabled(routingEnabled)
+      setLlmRoleRoutingHint(routingEnabled ? formatLlmRoleRoutingHint(presets, routing) : '')
+      const bodyWorkModelId = resolveBodyWorkModelOptionId(presets, routing)
       const storedModel = localStorage.getItem(LLM_MODEL_STORAGE_KEY)
       setSelectedLlmModelId((prev) => {
+        if (routingEnabled && bodyWorkModelId) return bodyWorkModelId
         if (prev && models.some((item) => item.id === prev)) return prev
         return pickDefaultLlmModelOptionId(presets, storedModel)
       })
@@ -1194,6 +1204,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   }
 
   function ensureLlmModelSelected(): boolean {
+    if (llmRoleRoutingEnabled) return true
     if (selectedLlmModelId) return true
     setToast('请先在设置中添加模型，并在新对话中选择要使用的模型')
     window.setTimeout(() => setToast(''), 2200)
@@ -1260,7 +1271,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           : 'optimize',
       topic: activeSession.messages.find((message) => message.role === 'user')?.content,
       selection: selectionForRequest ?? undefined,
-      ...resolveLlmRequestFields(activeSession)
+      ...resolveLlmRequestFields()
     })
 
     if (!result.ok && result.message !== '已中止生成') {
@@ -1954,6 +1965,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             llmModels={llmModels}
             selectedLlmModelId={selectedLlmModelId}
             onLlmModelChange={handleLlmModelChange}
+            llmRoleRoutingEnabled={llmRoleRoutingEnabled}
+            llmRoleRoutingHint={llmRoleRoutingHint}
             onSubmit={(input, extra) => handleComposerSubmit(input, extra)}
             onStop={handleStopGeneration}
             draftInput={draftTopic}

@@ -1,5 +1,5 @@
 import type { WebContents } from 'electron'
-import { getEffectiveConfig } from '../config/configStore'
+import { getEffectiveConfig, resolveRoutedLlm } from '../config/configStore'
 import { resolveStepMaxTokens, maxTokensForOptimizeFullDraft, maxTokensForOptimizeLengthAdjust, maxTokensForOptimizePolish, maxTokensForOptimizeSection } from '../config/llmTokenLimits'
 import {
   createTokenRunContext,
@@ -603,6 +603,8 @@ export async function optimizeArticle(
     llmSelection.presetId && llmSelection.model ? llmSelection : null
   )
   const llm = appConfig.llm
+  const llmPre = resolveRoutedLlm(appConfig, 'preBodyAndMeta', llm)
+  const llmBody = resolveRoutedLlm(appConfig, 'bodyWork', llm)
   const research = appConfig.research
   const globalMaxTokens = appConfig.llmMaxTokens
   const stepTokens = {
@@ -613,8 +615,14 @@ export async function optimizeArticle(
   }
   const firecrawlKey = research.firecrawlApiKey
 
-  if (!llm.apiKey) {
+  if (!llm.apiKey && !llmPre.apiKey && !llmBody.apiKey) {
     return { ok: false, message: '未配置 API Key，请在设置中填写 LLM 配置。' }
+  }
+  if (!llmPre.apiKey) {
+    return { ok: false, message: '正文前/Meta 分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
+  }
+  if (!llmBody.apiKey) {
+    return { ok: false, message: '正文与润色分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
   }
   if (!firecrawlKey) {
     return { ok: false, message: '未配置 Firecrawl API Key，请在设置 → 调研配置中填写。' }
@@ -729,7 +737,7 @@ export async function optimizeArticle(
 
       if (canRunResearch(research)) {
         emit({ type: 'status', step: 'expand', message: '③ 搜索意图分析 & 拆解竞品搜索词…' })
-        const intentResult = await analyzeAndExpandSearchQueries(llm, {
+        const intentResult = await analyzeAndExpandSearchQueries(llmPre, {
           topic: researchTopic,
           research,
           articleLang,
@@ -781,7 +789,7 @@ export async function optimizeArticle(
           emit({ type: 'status', step: 'extract', message: '⑤ 竞品缺口分析…' })
           const competitorCorpus = buildScrapedCorpus(competitorSources)
           competitorInsights = await extractCompetitorGapInsights(
-            llm,
+            llmPre,
             researchTopic,
             sourceUrl,
             scraped.markdown,
@@ -820,7 +828,7 @@ export async function optimizeArticle(
 
       emit({ type: 'status', step: 'extract', message: '⑥ 诊断原页面 SEO/GEO 问题…' })
       audit = await auditSourcePage(
-        llm,
+        llmPre,
         scraped.url,
         scraped.title,
         scraped.markdown,
@@ -858,7 +866,7 @@ export async function optimizeArticle(
     if (shouldRunPipelineStep(nextStep, 'outline', 'optimize')) {
       emit({ type: 'status', step: 'outline', message: '⑦ 基于原文章节生成优化大纲…' })
       outline = await generateOptimizedOutline(
-        llm,
+        llmBody,
         scraped.markdown,
         audit,
         skillsText,
@@ -916,7 +924,7 @@ export async function optimizeArticle(
       if (useSinglePass) {
         const optimized = normalizeArticleMarkdown(
           await optimizeArticleSinglePass(
-          llm,
+          llmBody,
           scraped.markdown,
           scraped.title,
           audit,
@@ -950,7 +958,7 @@ export async function optimizeArticle(
         )
       } else {
         draft = await draftOptimizedSections(
-          llm,
+          llmBody,
           scraped.title,
           outline,
           scraped.markdown,
@@ -1016,7 +1024,7 @@ export async function optimizeArticle(
         return { ok: false, message: '无法继续：缺少优化稿，请重新开始。' }
       }
       polished = await polishOptimizedArticle(
-        llm,
+        llmBody,
         draft,
         articleLang,
         userContext,
@@ -1047,7 +1055,7 @@ export async function optimizeArticle(
       }
       lengthAdjusted = reorderArticleMarkdown(
         await enforceOptimizeArticleWordCount(
-        llm,
+        llmBody,
         polished,
         scraped.title,
         articleLang,
@@ -1076,7 +1084,7 @@ export async function optimizeArticle(
     if (shouldRunPipelineStep(nextStep, 'meta', 'optimize')) {
       emit({ type: 'status', step: 'meta', message: '⑪ 生成 SEO Meta Title & Description…' })
       const seoMeta = await generateSeoMeta(
-        llm,
+        llmPre,
         scraped.title,
         lengthAdjusted,
         articleLang,

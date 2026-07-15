@@ -14,18 +14,36 @@ export function shouldApplyReviewStructure(skillsText: string, enabledSkillIds?:
   return REVIEW_SKILL_PATTERN.test(skillsText)
 }
 
-export function isReviewAlternativeSection(title: string, body = ''): boolean {
+/** Side-by-side comparison table Part (after our-product Alternative Part). */
+export function isReviewComparisonSection(title: string, body = ''): boolean {
   const text = `${title} ${body}`.toLowerCase()
-  return /comparison|对比|vs\.?|versus|compare|alternative|better choice|our recommendation|our pick|why choose|switch to|best alternative/i.test(
+  return /comparison|对比|side[- ]?by[- ]?side|vs\.?|versus|compare\b|对照表|对比表/i.test(text)
+}
+
+/**
+ * Dedicated our-product pitch Part, e.g. "The Best {Topic} Alternative: {Product}".
+ * Checked after comparison so "X vs Y Comparison" does not match here.
+ */
+export function isReviewOurProductPartSection(title: string, body = ''): boolean {
+  if (isReviewComparisonSection(title, body)) return false
+  const text = `${title} ${body}`.toLowerCase()
+  return /alternative|better choice|our recommendation|our pick|why choose|switch to|best .* alternative|推荐替代|更好的选择/i.test(
     text
   )
+}
+
+/** @deprecated Prefer isReviewComparisonSection / isReviewOurProductPartSection */
+export function isReviewAlternativeSection(title: string, body = ''): boolean {
+  return isReviewComparisonSection(title, body) || isReviewOurProductPartSection(title, body)
 }
 
 export function isReviewedProductBodySection(title: string, body = ''): boolean {
   const normalized = title.trim().toLowerCase()
   if (/^introduction$|^conclusion$/i.test(normalized) || isFaqSection(normalized)) return false
   if (/quick answer|key takeaways/i.test(normalized)) return false
-  if (isReviewAlternativeSection(title, body)) return false
+  if (isReviewComparisonSection(title, body) || isReviewOurProductPartSection(title, body)) {
+    return false
+  }
   return true
 }
 
@@ -33,7 +51,8 @@ export function isReviewedProductBodySection(title: string, body = ''): boolean 
 export function getReviewSectionWordBudget(title: string, body = ''): number {
   const text = `${title} ${body}`.toLowerCase()
 
-  if (isReviewAlternativeSection(title, body)) return 140
+  if (isReviewOurProductPartSection(title, body)) return 180
+  if (isReviewComparisonSection(title, body)) return 140
   if (/overview|what is|about|introduction to|介绍|整体|product review/i.test(text)) return 175
   if (/pros|cons|advantage|disadvantage|优缺点|strength|weakness/i.test(text)) return 165
   if (/feature|highlight|standout|capabilit|功能|亮点/i.test(text)) return 195
@@ -50,13 +69,23 @@ export function getReviewSectionDraftHint(
   topic: string,
   ourProductName?: string
 ): string {
-  if (isReviewAlternativeSection(title, body)) {
+  if (isReviewOurProductPartSection(title, body)) {
     return ourProductName
-      ? `本节为对比/推荐：用 Markdown 表格对比「${topic}」与「${ourProductName}」；表格后 1–2 段总结推荐。不要重复前文已写过的产品描述。`
-      : `本节为对比/推荐：Markdown 对比表格 + 简短总结。`
+      ? [
+          `本节为我方产品专属推荐 Part：标题语义应类似 **The Best ${topic} Alternative: ${ourProductName}**。`,
+          `以「${ourProductName}」为主角：定位、核心优势、适合谁、为何比「${topic}」更值得考虑（可诚实承认被测评产品仍适合某些场景）。`,
+          '写实质段落 + 少量 bullet；**不要**输出完整对比表（表格留给下一节）；可用 1 句自然过渡到后文对比。'
+        ].join('\n')
+      : '本节为我方产品推荐 Part：介绍更优替代方案的定位与优势；不要写完整对比表。'
   }
 
-  const focus = `本节只深入写作为文章主题的「${topic}」（被测评产品）。不要提前大段写 Alternative、Better Option${ourProductName ? ` 或「${ourProductName}」` : ''}——对比与推荐留给后面的对比章节。`
+  if (isReviewComparisonSection(title, body)) {
+    return ourProductName
+      ? `本节为对比表格：用 Markdown 表格对比「${topic}」与「${ourProductName}」（≥5 维度）；表格后 1–2 段总结。不要重复上一节专属 Part 已写过的长篇介绍。`
+      : `本节为对比表格：Markdown 对比表格 + 简短总结。`
+  }
+
+  const focus = `本节只深入写作为文章主题的「${topic}」（被测评产品）。不要提前大段写 Alternative、Better Option${ourProductName ? ` 或「${ourProductName}」` : ''}——我方产品专属 Part 与对比表放在被测评产品正文 Part **之后**。`
   const text = `${title} ${body}`.toLowerCase()
 
   if (/overview|what is|about|介绍|整体|review of/i.test(text)) {
@@ -82,47 +111,77 @@ export function getReviewSectionDraftHint(
   return ''
 }
 
-export const REVIEW_ARTICLE_STRUCTURE = `
-【Product Review Structure — MANDATORY when Review Skill is active】
+function buildReviewArticleStructure(productName?: string): string {
+  const ourProductLine = productName
+    ? `**The Best [Reviewed Product] Alternative: ${productName}** (Part) — dedicated pitch for our product (positioning, key strengths, who it fits); **immediately before** the comparison table; do NOT put the full table here`
+    : `**The Best [Reviewed Product] Alternative: [Our Product]** (Part) — when Product name is provided; dedicated pitch **immediately before** the comparison table`
 
-The **reviewed product (article topic)** is the PRIMARY subject. Do NOT rush to "Alternative" or our product after a thin Overview + Pros/Cons.
+  const comparisonLine = productName
+    ? `**Comparison Table** (Part) — Markdown table: reviewed product vs **${productName}** (≥5 dimensions); brief wrap-up after the table`
+    : `**Comparison Table** (Part) — reviewed product vs user's product (from Product name in brief); then brief recommendation`
 
-**Content balance (within ${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} word range):**
-- ~**60–70% of body words** on the reviewed product BEFORE any comparison/alternative section
-- Comparison / our product recommendation: **one dedicated section near the end** (compact)
-
-**Mandatory separate sections** — do NOT merge into one thin block:
-1. **Product Overview** (Part) — positioning, target users, core use cases (substantial, not 2 sentences)
-2. **Pros & Cons** (Part) — 4+ pros, 3+ cons, specific and verifiable
-3. **Standout Features** (Part) — 3–5 features with scenario + experience detail each
-4. **How to Use** (Part) — step-by-step for the **reviewed product** (4+ steps)
-5. **Value & User Experience** (Part) — pricing/value, who it fits, realistic scenarios
-6. **Comparison Table** (Part) — reviewed product vs user's product (from Product name in brief); then brief recommendation
-
-Only AFTER sections 1–5 should you introduce our product as the better choice (mainly in section 6).
-
-Use clear H2 / ## Part N. labels (compatible with GEO Skill).
-Comparison table must appear after thorough reviewed-product coverage, before FAQ/Conclusion.
-
-Tone: credible reviewer who has deeply used the reviewed product, then fairly recommends the user's product.
-Full article length: **${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} English words** (programmatically verified) — prioritize depth on the reviewed product, not filler on alternatives.
-Paragraphs: write **naturally flowing prose** — no per-paragraph word cap; use bullets or ### subheadings when they add clarity.
-`.trim()
-
-export function getReviewPromptBlock(skillsText: string, enabledSkillIds?: string[]): string {
-  if (!shouldApplyReviewStructure(skillsText, enabledSkillIds)) return ''
-  return REVIEW_ARTICLE_STRUCTURE
+  return [
+    '【Product Review Structure — MANDATORY when this Skill is active】',
+    '',
+    'The **reviewed product (article topic)** is the PRIMARY subject. Do NOT rush to "Alternative" or our product after a thin Overview + Pros/Cons.',
+    '',
+    `**Content balance (within ${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} word range):**`,
+    '- ~**60–70% of body words** on the reviewed product BEFORE our-product Alternative Part and comparison table',
+    '- Our-product Alternative Part + Comparison Table: compact sections near the end (FAQ/Conclusion still after)',
+    '',
+    '**Reviewed-product body Parts:**',
+    '- **Required:** one **Overview** Part (positioning, what it is, target users, core use cases — substantial, not 2 sentences).',
+    '- **Optional:** add **2–5** more Parts based on product nature + research (merge/split/drop as needed; do not force filler).',
+    '- Optional angle menu (none required except Overview):',
+    '  · Pros & Cons · Standout features · How to use (reviewed product) · Value & experience · Pricing · Compatibility / platforms · Limitations / risks · Ideal users',
+    '',
+    '**Fixed tail order (after reviewed-product Parts):**',
+    `1. ${ourProductLine}`,
+    `2. ${comparisonLine}`,
+    '3. FAQ → Conclusion',
+    '',
+    'Only AFTER reviewed-product coverage introduce our product (Alternative Part, then comparison table).',
+    '',
+    'Use clear H2 / ## Part N. labels (compatible with GEO Skill).',
+    'Order hard rule: reviewed-product Parts → **Alternative Part** → **Comparison Table** → FAQ → Conclusion.',
+    '',
+    'Tone: credible reviewer who has deeply used the reviewed product, then fairly recommends the user\'s product.',
+    `Full article length: **${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} English words** (programmatically verified) — prioritize depth on the reviewed product, not filler on alternatives.`,
+    'Paragraphs: write **naturally flowing prose** — no per-paragraph word cap; use bullets or ### subheadings when they add clarity.'
+  ].join('\n')
 }
 
-export const REVIEW_OUTLINE_SKELETON = `
-Review 大纲骨架：首行 \`# …\` SEO H1（含被测评产品/主题核心词，**不得**与 Topic 逐字相同）→ Quick Answer → Introduction → 被测评产品 5 个 ## Part（各 3–4 bullets 角度）→ 对比表 Part（1 bullet 列维度）→ 与主题相关的 FAQ 节（仅问题）→ Conclusion（2–3 bullets）。禁止写段落与表格内容。
-`.trim()
+export function getReviewPromptBlock(
+  skillsText: string,
+  enabledSkillIds?: string[],
+  productName?: string
+): string {
+  if (!shouldApplyReviewStructure(skillsText, enabledSkillIds)) return ''
+  return buildReviewArticleStructure(productName)
+}
+
+export function getReviewOutlineSkeleton(productName?: string): string {
+  const altPart = productName
+    ? `→ ## Part: The Best [Reviewed] Alternative: ${productName}（3–4 bullets：定位/优势/适合谁）`
+    : '→ （有产品名时）## Part: The Best [Reviewed] Alternative: [Product]（3–4 bullets）'
+
+  return [
+    'Review 大纲骨架：首行 `# …` SEO H1（含被测评产品/主题核心词，**不得**与 Topic 逐字相同）',
+    '→ Quick Answer → Introduction → **Overview Part（必选）** + 按产品性质与调研增补的可选 ## Part（各 3–4 bullets；勿硬凑）',
+    `${altPart} → 对比表 Part（1 bullet 列维度）→ 与主题相关的 FAQ 节（仅问题）→ Conclusion（2–3 bullets）。`,
+    '禁止写段落与表格内容；**Alternative Part 必须紧挨在对比表上方**。'
+  ].join(' ')
+}
+
+/** @deprecated Use getReviewOutlineSkeleton(productName) */
+export const REVIEW_OUTLINE_SKELETON = getReviewOutlineSkeleton()
 
 export const REVIEW_OUTLINE_GUIDANCE = `
-Review 大纲必须将被测评产品拆成 **至少 5 个独立 Part**（Overview、Pros & Cons、Features、How to Use、Value/Experience），每个 Part 单独成节并注明要点。
-对比表格 / Alternative 必须是 **最后一个正文 Part**（FAQ 之前），不得在前几节就大篇幅写我方产品或 Alternative。
+Review 大纲：被测评产品须有 **Overview Part（必选）**；其余 Part 按产品性质与调研灵活增补（如 Pros & Cons / Features / How to Use / Value 等，均可选、可合并或省略）。
+有用户产品时：在 FAQ 之前依次安排 **The Best {被测评产品} Alternative: {用户产品}** 专属 Part，再安排 **对比表 Part**；专属 Part 在对比表**上方**，不得对调或合并。
+不得在前几节就大篇幅写我方产品或 Alternative。
 `.trim()
 
 export const REVIEW_PLAN_GUIDANCE = `
-Review 规划须为被测评产品分配主要篇幅（正文约 60–70%），按 5 个模块分别规划 Part，再规划对比表与 FAQ；禁止 Overview + Pros 后直接跳 Alternative。
+Review 规划须为被测评产品分配主要篇幅（正文约 60–70%）；**Overview 必选**，其余 Part 按产品性质与调研灵活确定；有用户产品时再规划「Best Alternative」专属 Part + 对比表 + FAQ；禁止 Overview 过薄就直接跳 Alternative。
 `.trim()

@@ -137,6 +137,11 @@ export interface AppConfig {
   llmPresets: LlmPreset[]
   activeLlmPresetId: string
   llmMaxTokens: number
+  llmRoleRouting?: {
+    enabled: boolean
+    preBodyAndMeta: { presetId: string; model: string }
+    bodyWork: { presetId: string; model: string }
+  }
   prompts: ModePromptsConfig
   research: ResearchConfig
   quickPicks: QuickPicksConfig

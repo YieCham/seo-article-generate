@@ -167,7 +167,7 @@ export function estimateOutlineSectionCount(
   if (shouldApplyTopListStructure(skillsText, enabledSkillIds)) {
     return Math.min(12, parseTopListCount(topic) + 5)
   }
-  if (shouldApplyReviewStructure(skillsText, enabledSkillIds)) return 9
+  if (shouldApplyReviewStructure(skillsText, enabledSkillIds)) return 10
   return 6
 }
 

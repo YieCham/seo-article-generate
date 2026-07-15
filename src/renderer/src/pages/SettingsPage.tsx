@@ -4,7 +4,7 @@ import { LANGUAGE_OPTIONS, REGION_OPTIONS } from '../constants/localeOptions'
 import QuickPickEditor from './settings/QuickPickEditor'
 import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../constants/outputLanguage'
 import LlmPresetPanel from './settings/LlmPresetPanel'
-import LlmMaxTokensPanel from './settings/LlmMaxTokensPanel'
+import LlmRoleRoutingPanel from './settings/LlmRoleRoutingPanel'
 import TokenLogPanel from './settings/TokenLogPanel'
 import WindowClosePanel from './settings/WindowClosePanel'
 
@@ -236,11 +236,15 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     }
   }
 
-  async function handleSaveTokenLimits(): Promise<void> {
+  async function handlePersistLlmRoleRouting(routing: AppConfig['llmRoleRouting']): Promise<void> {
     if (!config) return
-    await handleSaveConfig({
-      llmMaxTokens: config.llmMaxTokens
-    })
+    try {
+      const next = await window.app.saveConfig({ llmRoleRouting: routing })
+      setConfig(next)
+      onConfigSaved?.()
+    } catch {
+      setStatus('多模型分工保存失败')
+    }
   }
 
   async function handleSaveWindowClose(): Promise<void> {
@@ -430,15 +434,14 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           />
 
           <div className="settings-subsection">
-            <h3 className="subsection-title">Token 用量</h3>
+            <h3 className="subsection-title">多模型分工</h3>
             <p className="section-desc">
-              设置 Pipeline 每次 LLM 请求的 max_tokens 全局上限（创作规划、撰写、润色、优化等步骤统一生效）。
+              启用后可为工作流指定两套模型：一套处理正文前分析与 Meta，一套处理大纲、正文撰写与润色。
             </p>
-            <LlmMaxTokensPanel
+            <LlmRoleRoutingPanel
               config={config}
-              saving={saving}
               onConfigChange={setConfig}
-              onSave={() => void handleSaveTokenLimits()}
+              onPersistRouting={(routing) => void handlePersistLlmRoleRouting(routing)}
             />
           </div>
         </section>

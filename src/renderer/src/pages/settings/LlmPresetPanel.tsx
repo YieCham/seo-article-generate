@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { AppConfig, LlmPreset } from '../../env.d'
 import LlmModelDiscoverDialog from './LlmModelDiscoverDialog'
 import { LlmModelIcon } from '../../components/LlmBrandIcon'
+import { IconNewPreset } from '../../components/Icons'
 import { resolveLlmBrandFromModel } from '../../utils/llmIcons'
 
 const DISCOVER_MODELS_ICON = '/查找大模型.svg'
@@ -95,8 +96,14 @@ export default function LlmPresetPanel({
             </option>
           ))}
         </select>
-        <button type="button" className="secondary" onClick={onAddPreset}>
-          新建预设
+        <button
+          type="button"
+          className="llm-preset-add-btn"
+          onClick={onAddPreset}
+          aria-label="新建预设"
+          title="新建预设"
+        >
+          <IconNewPreset size={18} />
         </button>
       </div>
 

@@ -404,43 +404,6 @@ export default function ChatSidebar({
   return (
     <aside className="chat-sidebar">
       <nav className="sidebar-nav" aria-label="侧栏导航">
-        <div className="sidebar-new-chat-wrap" ref={newChatWrapRef}>
-          <button
-            type="button"
-            className={`sidebar-nav-item sidebar-new-chat${modeMenuOpen ? ' is-open' : ''}`}
-            aria-expanded={modeMenuOpen}
-            aria-haspopup="menu"
-            onClick={() => setModeMenuOpen((open) => !open)}
-          >
-            <IconStartCreate size={14} />
-            <span>点击开始新对话</span>
-          </button>
-
-          {modeMenuOpen ? (
-            <div
-              ref={modeMenuRef}
-              className="sidebar-mode-menu"
-              role="menu"
-              aria-label="选择对话类型"
-            >
-              {WRITE_MODE_OPTIONS.map((item) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  className="sidebar-mode-menu-item"
-                  role="menuitem"
-                  onClick={() => {
-                    setModeMenuOpen(false)
-                    onSelectMode(item.value)
-                  }}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-
         <div className="sidebar-lifecycle-switch" role="tablist" aria-label="对话分组">
           <button
             type="button"
@@ -504,7 +467,50 @@ export default function ChatSidebar({
       </div>
 
       <div className="sidebar-bottom">
-        <button type="button" className="sidebar-nav-item" onClick={onOpenSettings}>
+        <div className="sidebar-new-chat-wrap" ref={newChatWrapRef}>
+          <button
+            type="button"
+            className={`sidebar-nav-item sidebar-new-chat${modeMenuOpen ? ' is-open' : ''}`}
+            aria-expanded={modeMenuOpen}
+            aria-haspopup="menu"
+            onClick={() => setModeMenuOpen((open) => !open)}
+          >
+            <IconStartCreate size={14} />
+            <span>点击开始新对话</span>
+          </button>
+
+          {modeMenuOpen ? (
+            <div
+              ref={modeMenuRef}
+              className="sidebar-mode-menu"
+              role="menu"
+              aria-label="选择对话类型"
+            >
+              {WRITE_MODE_OPTIONS.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className="sidebar-mode-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setModeMenuOpen(false)
+                    onSelectMode(item.value)
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <span className="sidebar-bottom-divider" aria-hidden="true" />
+
+        <button
+          type="button"
+          className="sidebar-nav-item sidebar-settings"
+          onClick={onOpenSettings}
+        >
           <IconSettings size={14} />
           <span>设置</span>
         </button>

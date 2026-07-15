@@ -200,10 +200,49 @@ export function normalizeWindowClose(partial?: Partial<WindowCloseBehavior>): Wi
   }
 }
 
+/** Optional multi-model routing: pre-body+meta vs body writing. */
+export interface LlmModelRef {
+  presetId: string
+  model: string
+}
+
+export interface LlmRoleRoutingConfig {
+  /** When false, conversation / active selection model is used for all steps. */
+  enabled: boolean
+  /** expand, extract, writingBrief, plan, seo meta */
+  preBodyAndMeta: LlmModelRef
+  /** outline, section draft, polish, length adjust (and optimize body steps) */
+  bodyWork: LlmModelRef
+}
+
+export const DEFAULT_LLM_ROLE_ROUTING: LlmRoleRoutingConfig = {
+  enabled: false,
+  preBodyAndMeta: { presetId: '', model: '' },
+  bodyWork: { presetId: '', model: '' }
+}
+
+export function normalizeLlmModelRef(partial?: Partial<LlmModelRef> | null): LlmModelRef {
+  return {
+    presetId: typeof partial?.presetId === 'string' ? partial.presetId.trim() : '',
+    model: typeof partial?.model === 'string' ? partial.model.trim() : ''
+  }
+}
+
+export function normalizeLlmRoleRouting(
+  partial?: Partial<LlmRoleRoutingConfig> | null
+): LlmRoleRoutingConfig {
+  return {
+    enabled: Boolean(partial?.enabled),
+    preBodyAndMeta: normalizeLlmModelRef(partial?.preBodyAndMeta),
+    bodyWork: normalizeLlmModelRef(partial?.bodyWork)
+  }
+}
+
 export interface AppConfig {
   llmPresets: LlmPreset[]
   activeLlmPresetId: string
   llmMaxTokens: number
+  llmRoleRouting: LlmRoleRoutingConfig
   prompts: ModePromptsConfig
   research: ResearchConfig
   quickPicks: QuickPicksConfig
@@ -360,6 +399,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   llmPresets: [{ ...DEFAULT_LLM_PRESET }],
   activeLlmPresetId: DEFAULT_LLM_PRESET_ID,
   llmMaxTokens: DEFAULT_LLM_MAX_TOKENS,
+  llmRoleRouting: { ...DEFAULT_LLM_ROLE_ROUTING },
   prompts: DEFAULT_MODE_PROMPTS,
   research: {
     enabled: true,

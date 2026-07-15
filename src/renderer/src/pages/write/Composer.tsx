@@ -1,9 +1,14 @@
-import { useEffect, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { QuickPicksConfig } from '../../env.d'
 import { ARTICLE_TYPE_OPTIONS, type ArticleType } from '../../constants/articleTypes'
 import type { WriteMode } from '../../constants/writeMode'
 import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../../constants/outputLanguage'
-import { formatLlmModelOptionLabel, type LlmModelOption } from '../../utils/llmModels'
+import {
+  formatLlmModelOptionLabel,
+  type LlmModelOption
+} from '../../utils/llmModels'
+import { resolveLlmBrandFromModel } from '../../utils/llmIcons'
+import { LlmModelIcon } from '../../components/LlmBrandIcon'
 import { IconPlus, IconSend, IconStop, IconClose } from '../../components/Icons'
 
 interface ComposerProps {
@@ -21,6 +26,8 @@ interface ComposerProps {
   articleType: ArticleType
   llmModels: LlmModelOption[]
   selectedLlmModelId: string
+  llmRoleRoutingEnabled?: boolean
+  llmRoleRoutingHint?: string
   onProductChange: (id: string) => void
   onOutputLanguageChange: (code: OutputLanguageCode) => void
   onArticleTypeChange: (type: ArticleType) => void
@@ -51,6 +58,8 @@ export default function Composer({
   articleType,
   llmModels,
   selectedLlmModelId,
+  llmRoleRoutingEnabled = false,
+  llmRoleRoutingHint = '',
   onProductChange,
   onOutputLanguageChange,
   onArticleTypeChange,
@@ -66,10 +75,14 @@ export default function Composer({
   onBatchWrite
 }: ComposerProps) {
   const [showExtra, setShowExtra] = useState(false)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
+  const modelTriggerRef = useRef<HTMLButtonElement>(null)
   const isOptimize = writeMode === 'optimize'
   const isBatchOptimize = writeMode === 'batch-optimize'
   const isUrlMode = isOptimize || isBatchOptimize
   const isFollowUp = !showOptions
+  const activeModel = llmModels.find((item) => item.id === selectedLlmModelId) ?? llmModels[0] ?? null
   const placeholder = isFollowUp
     ? reviseSelectionPreview
       ? '描述如何改写选中部分…'
@@ -84,6 +97,32 @@ export default function Composer({
   useEffect(() => {
     if (!showOptions) setShowExtra(false)
   }, [showOptions])
+
+  useEffect(() => {
+    if (!isFollowUp) setModelMenuOpen(false)
+  }, [isFollowUp])
+
+  useEffect(() => {
+    if (!modelMenuOpen) return
+
+    function handlePointerDown(event: MouseEvent): void {
+      const target = event.target as Node
+      if (modelMenuRef.current?.contains(target)) return
+      if (modelTriggerRef.current?.contains(target)) return
+      setModelMenuOpen(false)
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent): void {
+      if (event.key === 'Escape') setModelMenuOpen(false)
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [modelMenuOpen])
 
   function handleSubmit(): void {
     if (!draftInput.trim() || panelDisabled) return
@@ -179,23 +218,37 @@ export default function Composer({
               ) : null}
 
               <label className="composer-option">
-                <select
-                  className="composer-control"
-                  value={selectedLlmModelId}
-                  onChange={(e) => onLlmModelChange(e.target.value)}
-                  disabled={panelDisabled || llmModels.length === 0}
-                  aria-label="模型"
-                >
-                  {llmModels.length === 0 ? (
-                    <option value="">未配置模型</option>
-                  ) : (
-                    llmModels.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {formatLlmModelOptionLabel(item)}
-                      </option>
-                    ))
-                  )}
-                </select>
+                {llmRoleRoutingEnabled ? (
+                  <span
+                    className="composer-control composer-role-routing-badge"
+                    title={llmRoleRoutingHint || '已启用多模型分工'}
+                    aria-label={
+                      llmRoleRoutingHint
+                        ? `已启用多模型分工。${llmRoleRoutingHint.replace(/\n/g, '；')}`
+                        : '已启用多模型分工'
+                    }
+                  >
+                    已启用多模型分工
+                  </span>
+                ) : (
+                  <select
+                    className="composer-control"
+                    value={selectedLlmModelId}
+                    onChange={(e) => onLlmModelChange(e.target.value)}
+                    disabled={panelDisabled || llmModels.length === 0}
+                    aria-label="模型"
+                  >
+                    {llmModels.length === 0 ? (
+                      <option value="">未配置模型</option>
+                    ) : (
+                      llmModels.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {formatLlmModelOptionLabel(item)}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                )}
               </label>
             </div>
 
@@ -263,6 +316,51 @@ export default function Composer({
         ) : null}
 
         <div className="composer-bar">
+          {isFollowUp && activeModel ? (
+            <div className="composer-model-picker">
+              <button
+                ref={modelTriggerRef}
+                type="button"
+                className={`composer-model-trigger${modelMenuOpen ? ' is-open' : ''}`}
+                onClick={() => setModelMenuOpen((open) => !open)}
+                disabled={panelDisabled || llmModels.length === 0}
+                aria-expanded={modelMenuOpen}
+                aria-haspopup="menu"
+                aria-label={`当前模型：${formatLlmModelOptionLabel(activeModel)}，点击切换`}
+                title={formatLlmModelOptionLabel(activeModel)}
+              >
+                <LlmModelIcon
+                  model={activeModel.model}
+                  brand={resolveLlmBrandFromModel(activeModel.model)}
+                  size={18}
+                />
+              </button>
+              {modelMenuOpen ? (
+                <div ref={modelMenuRef} className="composer-model-menu" role="menu" aria-label="选择模型">
+                  {llmModels.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="menuitem"
+                      className={`composer-model-menu-item${item.id === selectedLlmModelId ? ' is-active' : ''}`}
+                      onClick={() => {
+                        onLlmModelChange(item.id)
+                        setModelMenuOpen(false)
+                      }}
+                    >
+                      <LlmModelIcon
+                        model={item.model}
+                        brand={resolveLlmBrandFromModel(item.model)}
+                        size={16}
+                      />
+                      <span>{formatLlmModelOptionLabel(item)}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           {showOptions ? (
             <button
               type="button"

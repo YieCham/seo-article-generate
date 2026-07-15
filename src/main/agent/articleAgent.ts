@@ -1,7 +1,7 @@
 import type { WebContents } from 'electron'
 import { throwIfAborted } from './abortContext'
 import { isAbortError } from './articleRunRegistry'
-import { getEffectiveConfig } from '../config/configStore'
+import { getEffectiveConfig, resolveRoutedLlm } from '../config/configStore'
 import {
   createTokenRunContext,
   runWithTokenContext,
@@ -63,11 +63,11 @@ import {
   isQuickAnswerSection
 } from './productMention'
 import {
+  getReviewOutlineSkeleton,
   getReviewPromptBlock,
   getReviewSectionDraftHint,
   getReviewSectionWordBudget,
-  isReviewAlternativeSection,
-  REVIEW_OUTLINE_SKELETON,
+  isReviewComparisonSection,
   REVIEW_PLAN_GUIDANCE
 } from './reviewStructure'
 import {
@@ -215,7 +215,7 @@ function getStructurePromptBlocks(
 } {
   const topListBlock = getTopListPromptBlock(skillsText, productName, enabledSkillIds)
   const geoBlock = topListBlock ? '' : getGeoSeoPromptBlock(skillsText, enabledSkillIds)
-  const reviewBlock = getReviewPromptBlock(skillsText, enabledSkillIds)
+  const reviewBlock = getReviewPromptBlock(skillsText, enabledSkillIds, productName)
   const wordBounds = getArticleLengthBounds(skillsText, enabledSkillIds)
   const lengthBlock = getArticleLengthPromptBlock(skillsText, enabledSkillIds)
   const productMentionBlock = getProductMentionSupplement(productName, {
@@ -362,7 +362,7 @@ async function generateArticlePlan(
           userContext.briefForPrompt,
           userContext.productName
             ? reviewBlock
-              ? `规划须为被测评产品分配五个 Part + 对比表 + FAQ 的顺序与目的（各 1 句）。`
+              ? `规划须含被测评产品 **Overview（必选）** + 按产品性质与调研的可选 Part +「The Best … Alternative: ${userContext.productName}」专属 Part + 对比表 + FAQ 的顺序与目的（各 1 句）。`
               : topListBlock
                 ? `规划 Top ${parseTopListCount(topic)} 榜单结构；判断「${userContext.productName}」准入与排位。`
                 : `规划通用 Part 与「${userContext.productName}」产品 Part 的位置（各 1 句目的）。`
@@ -421,7 +421,7 @@ async function generateDifferentiatedOutline(
   const structureSkeleton = topListBlock
     ? TOP_LIST_OUTLINE_SKELETON
     : reviewBlock
-      ? REVIEW_OUTLINE_SKELETON
+      ? getReviewOutlineSkeleton(userContext.productName)
       : geoBlock
         ? 'GEO 骨架：首行 `#` SEO H1 → Quick Answer → Introduction → 2–3 个通用 Part（按规划 layout 标签展开）→ 1 个产品 Part（layout: product-tutorial）→ 与主题相关的 FAQ 节（仅问题）→ Conclusion（2–3 bullets）。'
         : '骨架：首行 `#` SEO H1 → Introduction → 2–4 个 Part（严格执行规划中的 layout 标签）→ 与主题相关的 FAQ 节（仅问题）→ Conclusion。'
@@ -452,9 +452,11 @@ async function generateDifferentiatedOutline(
           userContext.briefForPrompt,
           userContext.productName && topListBlock
             ? `用户产品「${userContext.productName}」：符合 Topic 则 ### 1；否则单独 Also Worth Considering Part。`
-            :             userContext.productName && !reviewBlock && !topListBlock
-              ? `须规划**一个**独立产品 Part（标题含产品名 + How to/with 语义），仅在该 Part 内写 ### Why … + ### Step-by-Step stub；**其他 Part 不得**出现产品教程 stub 或产品名 bullets。`
-              : '',
+            : userContext.productName && reviewBlock
+              ? `须在被测评产品正文 Part **之后**、对比表 **之前** 增加专属 Part：标题形如 \`## The Best ${topic} Alternative: ${userContext.productName}\`（3–4 bullets）；对比表紧随其后。`
+              : userContext.productName && !topListBlock
+                ? `须规划**一个**独立产品 Part（标题含产品名 + How to/with 语义），仅在该 Part 内写 ### Why … + ### Step-by-Step stub；**其他 Part 不得**出现产品教程 stub 或产品名 bullets。`
+                : '',
           '',
           structureSkeleton,
           '',
@@ -530,7 +532,7 @@ async function draftBySections(
     const introConclusionHint = getIntroConclusionSectionHint(section.title)
     const faqSectionHint = getFaqSectionHint()
     const isComparisonSection =
-      reviewBlock && isReviewAlternativeSection(section.title, section.body)
+      reviewBlock && isReviewComparisonSection(section.title, section.body)
     const reviewSectionHint = reviewBlock
       ? getReviewSectionDraftHint(section.title, section.body, topic, userContext.productName)
       : ''
@@ -720,7 +722,7 @@ async function polishDraft(
             : geoBlock
             ? `- 保留 Quick Answer、Introduction（≤150 词、≤3 段）、通用 Part（行业价值为主，联动时可轻量提及产品）+ **单一产品 Part**（推广与教程合一，禁止拆成两个 Part）、FAQ（${MIN_FAQ_QUESTIONS}–${MAX_FAQ_QUESTIONS} 问、整节 ≤${MAX_FAQ_SECTION_WORDS} 词）、[Image: …]；Conclusion ≤150 词、≤3 段；移除 <thinking>`
             : reviewBlock
-              ? '- 保留对被测评产品的充分描述（Overview、Pros & Cons、Features、How to Use、Value/Experience 各 Part 不可删减合并）；保留对比表格与 FAQ；移除任何 <thinking> 标签'
+              ? '- 保留对被测评产品的充分描述（已有被测评相关 Part 不可无故删并）；保留「Best … Alternative」专属 Part、对比表格与 FAQ；移除任何 <thinking> 标签'
               : '',
           `- 终稿英文词数须在 ${wordBounds.min}–${wordBounds.max} 之间；不足时补充与主题相关、对读者有帮助的实质内容，禁止水字数`,
           getIntroConclusionPolishHint(),
@@ -758,6 +760,8 @@ export async function generateArticle(
     llmSelection.presetId && llmSelection.model ? llmSelection : null
   )
   const llm = appConfig.llm
+  const llmPre = resolveRoutedLlm(appConfig, 'preBodyAndMeta', llm)
+  const llmBody = resolveRoutedLlm(appConfig, 'bodyWork', llm)
   const research = appConfig.research
   const globalMaxTokens = appConfig.llmMaxTokens
   const stepTokens = {
@@ -766,8 +770,14 @@ export async function generateArticle(
     writingBrief: resolveStepMaxTokens('writingBrief', globalMaxTokens)
   }
 
-  if (!llm.apiKey) {
+  if (!llm.apiKey && !llmPre.apiKey && !llmBody.apiKey) {
     return { ok: false, message: '未配置 API Key，请在「AI 配置」页填写 LLM 设置。' }
+  }
+  if (!llmPre.apiKey) {
+    return { ok: false, message: '正文前/Meta 分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
+  }
+  if (!llmBody.apiKey) {
+    return { ok: false, message: '正文与润色分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
   }
 
   const topic = (options.resume?.options.topic ?? options.topic)?.trim()
@@ -852,7 +862,7 @@ export async function generateArticle(
     if (shouldRunPipelineStep(nextStep, 'extract', 'create')) {
       if (canRunResearch(research)) {
       emit({ type: 'status', step: 'expand', message: '② 搜索意图分析 & 拆解搜索词…' })
-      const intentResult = await analyzeAndExpandSearchQueries(llm, {
+      const intentResult = await analyzeAndExpandSearchQueries(llmPre, {
         topic,
         research,
         articleLang,
@@ -897,7 +907,7 @@ export async function generateArticle(
       emit({ type: 'status', step: 'extract', message: '④ E-E-A-T 信息萃取…' })
       const corpus = buildScrapedCorpus(sources)
       extracted = await extractEeatInsights(
-        llm,
+        llmPre,
         topic,
         corpus,
         skillCtx,
@@ -931,7 +941,7 @@ export async function generateArticle(
 
       emit({ type: 'status', step: 'extract', message: '④b 生成写作简报…' })
       writingBrief = await generateWritingBrief(
-        llm,
+        llmPre,
         topic,
         extracted!,
         articleLang.label,
@@ -950,7 +960,7 @@ export async function generateArticle(
       if (!writingBrief) {
         emit({ type: 'status', step: 'extract', message: '④b 生成写作简报…' })
         writingBrief = await generateWritingBrief(
-          llm,
+          llmPre,
           topic,
           extracted!,
           articleLang.label,
@@ -966,7 +976,7 @@ export async function generateArticle(
         message: '⑤ 分析与规划（搜索意图 / FAQ / 大纲构思）…'
       })
       plan = await generateArticlePlan(
-        llm,
+        llmPre,
         topic,
         writingBrief,
         skillCtx,
@@ -1002,7 +1012,7 @@ export async function generateArticle(
         message: `⑥ 生成差异化大纲（${articleLang.label}）…`
       })
       outline = await generateDifferentiatedOutline(
-        llm,
+        llmBody,
         topic,
         writingBrief,
         plan,
@@ -1062,7 +1072,7 @@ export async function generateArticle(
             : `⑦ 分段撰写正文（${articleLang.label}）…`
       })
       draft = await draftBySections(
-        llm,
+        llmBody,
         topic,
         outline,
         writingBrief,
@@ -1118,7 +1128,7 @@ export async function generateArticle(
         return { ok: false, message: '无法继续：缺少正文草稿，请重新开始。' }
       }
       polished = await polishDraft(
-        llm,
+        llmBody,
         draft,
         topic,
         skillCtx,
@@ -1150,7 +1160,7 @@ export async function generateArticle(
       }
       lengthAdjusted = reorderArticleMarkdown(
         await enforceArticleWordCount(
-        llm,
+        llmBody,
         polished,
         topic,
         articleLang,
@@ -1177,7 +1187,7 @@ export async function generateArticle(
     if (shouldRunPipelineStep(nextStep, 'meta', 'create')) {
       emit({ type: 'status', step: 'meta', message: '⑩ 生成 SEO Meta Title & Description…' })
       const seoMeta = await generateSeoMeta(
-        llm,
+        llmPre,
         topic,
         lengthAdjusted,
         articleLang,

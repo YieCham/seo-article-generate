@@ -5,6 +5,7 @@ import {
   DEFAULT_CONFIG,
   normalizeLlmMaxTokens,
   normalizeLlmPresets,
+  normalizeLlmRoleRouting,
   normalizeModeEnabledSkills,
   normalizeModePrompts,
   normalizeQuickPicks,
@@ -13,6 +14,7 @@ import {
   resolveLlmConfigFromSelection,
   type AppConfig,
   type LlmConfig,
+  type LlmRoleRoutingConfig,
   type LlmSelection,
   type ModeEnabledSkillsConfig,
   type ModePromptsConfig
@@ -38,6 +40,7 @@ function mergeWithDefaults(partial: ConfigPartial): AppConfig {
     llmPresets: presets,
     activeLlmPresetId: activePresetId,
     llmMaxTokens: normalizeLlmMaxTokens(partial.llmMaxTokens ?? partial.llmTokenLimits),
+    llmRoleRouting: normalizeLlmRoleRouting(partial.llmRoleRouting),
     prompts: normalizeModePrompts(partial.prompts),
     research: normalizeResearchConfig(partial.research),
     quickPicks: normalizeQuickPicks(partial.quickPicks ?? DEFAULT_CONFIG.quickPicks),
@@ -109,6 +112,28 @@ export async function getEffectiveConfig(selection?: LlmSelection | null): Promi
   return mergeWithEnv(config, selection)
 }
 
+export type LlmRoutingRole = 'preBodyAndMeta' | 'bodyWork'
+
+/** Resolve LLM for a pipeline role; falls back to session/effective llm when routing off or incomplete. */
+export function resolveRoutedLlm(
+  config: AppConfig,
+  role: LlmRoutingRole,
+  fallback: LlmConfig
+): LlmConfig {
+  const routing = config.llmRoleRouting
+  if (!routing?.enabled) return fallback
+
+  const ref = routing[role]
+  if (!ref?.presetId || !ref?.model) return fallback
+
+  const resolved = resolveLlmConfigFromSelection(config, {
+    presetId: ref.presetId,
+    model: ref.model
+  })
+  if (!resolved) return fallback
+  return applyEnvToLlmConfig(resolved)
+}
+
 function mergeModePrompts(
   current: ModePromptsConfig,
   partial?: Partial<ModePromptsConfig>
@@ -156,6 +181,22 @@ export async function saveConfig(partial: Partial<AppConfig>): Promise<AppConfig
 
   if (typeof partial.llmMaxTokens === 'number') {
     mergedPartial.llmMaxTokens = normalizeLlmMaxTokens(partial.llmMaxTokens)
+  }
+
+  if (partial.llmRoleRouting) {
+    const currentRouting = normalizeLlmRoleRouting(current.llmRoleRouting)
+    mergedPartial.llmRoleRouting = normalizeLlmRoleRouting({
+      ...currentRouting,
+      ...partial.llmRoleRouting,
+      preBodyAndMeta: {
+        ...currentRouting.preBodyAndMeta,
+        ...partial.llmRoleRouting.preBodyAndMeta
+      },
+      bodyWork: {
+        ...currentRouting.bodyWork,
+        ...partial.llmRoleRouting.bodyWork
+      }
+    })
   }
 
   const next = mergeWithDefaults(mergedPartial)

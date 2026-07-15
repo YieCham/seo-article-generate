@@ -135,7 +135,7 @@ export function getProductMentionSupplement(productName: string | undefined, mod
   if (mode.review) {
     return [
       `【Review 产品提及】`,
-      `我方产品「${productName}」全名集中在**对比表 Part** 与 **Conclusion**；被测评产品的前几个 Part 不要提前大段写我方产品，必要时整篇至多轻量提及 1 次。`
+      `我方产品「${productName}」全名集中在：**The Best … Alternative: ${productName}** 专属 Part、**对比表 Part** 与 **Conclusion**；被测评产品的前几个 Part 不要提前大段写我方产品，必要时整篇至多轻量提及 1 次。`
     ].join('\n')
   }
 
@@ -243,7 +243,7 @@ export function getGenericPartMentionLock(productName: string): string {
 
 export function getPolishProductHint(productName: string, mode: ProductMentionMode): string {
   if (mode.review) {
-    return `- 保留对比表与 Conclusion 中对「${productName}」的必要提及；润色时**不要**在被测评产品章节追加我方产品名`
+    return `- 保留「Best … Alternative」专属 Part、对比表与 Conclusion 中对「${productName}」的必要提及；润色时**不要**在被测评产品章节追加我方产品名`
   }
   if (mode.topList) {
     return `- 保留 Top 榜单中「${productName}」的条目与排位；润色时**不要**在其他章节追加该产品名`

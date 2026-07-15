@@ -96,10 +96,22 @@ export interface WindowCloseBehavior {
   defaultAction: WindowCloseAction
 }
 
+export interface LlmModelRef {
+  presetId: string
+  model: string
+}
+
+export interface LlmRoleRoutingConfig {
+  enabled: boolean
+  preBodyAndMeta: LlmModelRef
+  bodyWork: LlmModelRef
+}
+
 export interface AppConfig {
   llmPresets: LlmPreset[]
   activeLlmPresetId: string
   llmMaxTokens: number
+  llmRoleRouting: LlmRoleRoutingConfig
   prompts: ModePromptsConfig
   research: ResearchConfig
   quickPicks: QuickPicksConfig

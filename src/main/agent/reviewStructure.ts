@@ -133,7 +133,12 @@ function buildReviewArticleStructure(productName?: string): string {
     '- **Required:** one **Overview** Part (positioning, what it is, target users, core use cases — substantial, not 2 sentences).',
     '- **Optional:** add **2–5** more Parts based on product nature + research (merge/split/drop as needed; do not force filler).',
     '- Optional angle menu (none required except Overview):',
-    '  · Pros & Cons · Standout features · How to use (reviewed product) · Value & experience · Pricing · Compatibility / platforms · Limitations / risks · Ideal users',
+    '  · Pros & Cons · Standout features · How to use (reviewed product) · Value & pricing · Compatibility / platforms · Limitations / risks · Ideal users',
+    '',
+    '**H2 heading style (hard rule):**',
+    '- Name sections by **topic content** (Overview, Pros & Cons, Features, Pricing…), not by E-E-A-T slogans.',
+    '- **Forbidden in H2/H3:** Real-World, Real World, Hands-On, In My Experience, Authentic Experience, Lived Experience, From Experience, Practical Experience, First-Hand, Honest Take, Unbiased Look — or similar “proof of authenticity” wrappers.',
+    '- Show experience in **body prose** with concrete scenarios and specifics; never in the section title.',
     '',
     '**Fixed tail order (after reviewed-product Parts):**',
     `1. ${ourProductLine}`,
@@ -169,7 +174,8 @@ export function getReviewOutlineSkeleton(productName?: string): string {
     'Review 大纲骨架：首行 `# …` SEO H1（含被测评产品/主题核心词，**不得**与 Topic 逐字相同）',
     '→ Quick Answer → Introduction → **Overview Part（必选）** + 按产品性质与调研增补的可选 ## Part（各 3–4 bullets；勿硬凑）',
     `${altPart} → 对比表 Part（1 bullet 列维度）→ 与主题相关的 FAQ 节（仅问题）→ Conclusion（2–3 bullets）。`,
-    '禁止写段落与表格内容；**Alternative Part 必须紧挨在对比表上方**。'
+    '禁止写段落与表格内容；**Alternative Part 必须紧挨在对比表上方**。',
+    'H2 用内容主题命名，禁止 Real-World / Hands-On / In My Experience 等刻意证明「真实体验」的标题包装。'
   ].join(' ')
 }
 
@@ -178,10 +184,12 @@ export const REVIEW_OUTLINE_SKELETON = getReviewOutlineSkeleton()
 
 export const REVIEW_OUTLINE_GUIDANCE = `
 Review 大纲：被测评产品须有 **Overview Part（必选）**；其余 Part 按产品性质与调研灵活增补（如 Pros & Cons / Features / How to Use / Value 等，均可选、可合并或省略）。
+H2 标题须自然、按内容命名；**禁止** Real-World / Hands-On / In My Experience / Authentic Experience 等刻意展示「真实体验」的包装标题——体验写在正文细节里。
 有用户产品时：在 FAQ 之前依次安排 **The Best {被测评产品} Alternative: {用户产品}** 专属 Part，再安排 **对比表 Part**；专属 Part 在对比表**上方**，不得对调或合并。
 不得在前几节就大篇幅写我方产品或 Alternative。
 `.trim()
 
 export const REVIEW_PLAN_GUIDANCE = `
 Review 规划须为被测评产品分配主要篇幅（正文约 60–70%）；**Overview 必选**，其余 Part 按产品性质与调研灵活确定；有用户产品时再规划「Best Alternative」专属 Part + 对比表 + FAQ；禁止 Overview 过薄就直接跳 Alternative。
+规划 Part 名称时勿使用 Real-World / Hands-On / Experience 类口号化标题。
 `.trim()

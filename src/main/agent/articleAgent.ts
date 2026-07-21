@@ -589,7 +589,9 @@ async function draftBySections(
         {
           role: 'system',
           content: [
-            '你是该领域专家作者，写作需体现 Experience 与 Expertise。',
+            reviewBlock
+              ? '你是该领域专业测评作者：经验与判断写在正文细节里，勿用 Real-World / Hands-On / In My Experience 等口号化标题自我证明。'
+              : '你是该领域专家作者，写作需体现 Experience 与 Expertise。',
             articleLang.lock,
             getWritingPromptBlocks(sectionUserContextBlocks, topic),
             stepSkills || combined,

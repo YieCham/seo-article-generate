@@ -390,7 +390,7 @@ export default function Composer({
               aria-label="中止生成"
               title="中止生成"
             >
-              <IconStop size={12} />
+              <IconStop size={22} />
             </button>
           ) : (
             <button

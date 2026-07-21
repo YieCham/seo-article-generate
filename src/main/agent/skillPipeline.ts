@@ -214,7 +214,7 @@ export function getSkillsTextForStep(step: PipelineSkillStep, ctx: SkillPipeline
       case 'extract':
         return truncateSkillText(review, 500, { preferSection: /原则|角度|E-E-A-T/i })
       case 'plan':
-        return truncateSkillText(review, 800, { preferSection: /规划|角度|禁止/i })
+        return truncateSkillText(review, 800, { preferSection: /规划|角度|禁止|标题|H2/i })
       case 'draft': {
         const base = pickSkillFragmentForSection(sectionTitle ?? '', review)
         return buildSkillSummaryForDraft(

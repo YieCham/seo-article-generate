@@ -3453,20 +3453,21 @@ input[type='range'] {
   height: var(--composer-ctrl-size);
   padding: 0;
   border: none;
-  border-radius: 50%;
+  border-radius: 0;
   display: grid;
   place-items: center;
-  background: #e04545;
-  color: #ffffff;
+  background: transparent;
+  color: #d81e06;
   box-shadow: none;
   cursor: pointer;
 }
 
 .composer-stop:hover {
-  background: #c93a3a;
-  color: #ffffff;
+  background: transparent;
+  color: #c01a05;
   filter: none;
   box-shadow: none;
+  opacity: 0.85;
 }
 
 .composer-panel.is-generating .composer-stop {

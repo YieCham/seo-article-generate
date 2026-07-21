@@ -18,6 +18,7 @@ description: >-
 - 语气：专业测评作者；禁止 AI 元叙述
 - 客观可信：不编造 Star 评分、评论引语、下载量或新闻链接
 - 合规敏感词沿用 GEO/流媒体合规替代表述（勿使用 DRM、crack 等）
+- **E-E-A-T 写在正文，不写在标题**：用具体场景、操作细节、取舍判断体现经验；勿用章节名自我证明「真实」
 
 ## 被测评产品应写透的内容（领域）
 
@@ -31,8 +32,14 @@ description: >-
 | Pros & Cons | 具体、可验证；优缺点均须充实 |
 | Standout Features | 3–5 个功能点：做什么 + 场景 + 体验 |
 | How to Use | 被测评产品的分步流程（非我方产品教程） |
-| Value & Experience | 定价/价值、适合人群、真实场景 |
-| 其他 | 兼容性、定价方案、局限/风险、理想用户等（调研支撑时） |
+| Value & Pricing | 定价/价值、适合人群、真实场景（场景写进正文，勿把 Experience 塞进 H2） |
+| 其他 | 兼容性、局限/风险、理想用户等（调研支撑时） |
+
+## H2 / Part 标题（领域）
+
+- 按**内容主题**命名：Overview、Pros & Cons、Key Features、Pricing…
+- **禁止**刻意证明真实性的包装标题，例如：Real-World / Real World、Hands-On、In My Experience、Authentic / Lived / Practical / First-Hand Experience、Honest Take、Unbiased Look 等
+- 反例：`## Real-World Performance`、`## Hands-On Experience with X` → 改为 `## Performance & Speed`、`## Using X Day to Day` 等平实表述
 
 ## 我方产品（领域）
 
@@ -45,7 +52,7 @@ description: >-
 ## 规划要点（`<thinking>`）
 
 1. 读者选购/对比意图
-2. Overview 必选 + 按调研决定其余可选 Part 与各节目的（1 句/节）
+2. Overview 必选 + 按调研决定其余可选 Part 与各节目的（1 句/节；Part 名勿口号化）
 3. 我方产品 Alternative Part 要点 + 对比表维度 + FAQ 种子
 
 ## 禁止事项
@@ -54,4 +61,5 @@ description: >-
 - 勿只写被测评产品而忽略 Alternative Part、对比与推荐
 - 勿将 Alternative Part 与对比表合并或对调顺序
 - 勿为凑结构强行写出与产品无关的空壳 Part
+- 勿用 Real-World / Hands-On / Experience 类 H2 硬贴 E-E-A-T
 - 勿将 `<thinking>` 写入终稿

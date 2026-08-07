@@ -127,6 +127,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     return 'create'
   })
   const [railView, setRailView] = useState<ModeRailView>('write')
+  const [drawMounted, setDrawMounted] = useState(false)
   const [batchProgress, setBatchProgress] = useState<{
     mode: BatchWriteMode | 'batch-optimize'
     current: number
@@ -1081,6 +1082,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   }
 
   function handleOpenDraw(): void {
+    setDrawMounted(true)
     setRailView('draw')
   }
 
@@ -2070,9 +2072,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
   return (
-
     <div className={`write-shell${railView === 'draw' ? ' is-draw' : ''}`}>
-
       <ModeRail
         view={railView}
         writeMode={sidebarWriteMode}
@@ -2081,159 +2081,153 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         onOpenSettings={onOpenSettings}
       />
 
-      {railView === 'draw' ? (
-        <DrawWorkspace configRevision={configRevision} />
-      ) : (
+      {drawMounted ? (
+        <div
+          className={railView === 'draw' ? 'write-draw-host' : 'write-draw-host app-page-hidden'}
+          aria-hidden={railView !== 'draw'}
+        >
+          <DrawWorkspace configRevision={configRevision} />
+        </div>
+      ) : null}
+
+      {railView === 'draw' ? null : (
         <>
-      <ChatSidebar
-        sessions={sessions}
-        activeSessionId={activeSession.id}
-        writeMode={sidebarWriteMode}
-        runningSessionId={runningSessionId}
-        onSelect={handleSelectSession}
-        onNewChat={handleNewChat}
-        onClear={handleClearSession}
-        onDelete={handleDeleteSession}
-        onRename={handleRenameSession}
-        onTogglePin={handleTogglePinSession}
-        onMarkCompleted={handleMarkSessionCompleted}
-        onReorder={handleReorderSessions}
-        onRegenerate={(sessionId, options) => void handleRegenerateSession(sessionId, options)}
-        isRunning={isRunning}
-      />
-
-
-
-      <main className="write-main">
-
-        <header className="write-topbar">
-          {topbarTitle ? <h1>{topbarTitle}</h1> : null}
-        </header>
-
-
-
-        <ChatThread
-          messages={activeSession.messages}
-          onCopy={(content) => void handleCopy(content)}
-          writeMode={activeWriteMode}
-          isRunning={isActiveSessionRunning}
-          pipelineStatusMessage={isActiveSessionRunning ? pipelineStatusMessage : ''}
-          pipelineElapsedSec={isActiveSessionRunning ? pipelineElapsedSec : 0}
-          reviseTargetMessageId={reviseTargetMessageId}
-          reviseSelection={reviseSelection}
-          onReviseSelectionChange={setReviseSelection}
-          onDeleteMessage={handleDeleteMessage}
-          onApplyRevision={handleApplyRevision}
-          onCancelRevision={handleCancelRevision}
-        />
-
-
-
-        <div className="composer-area">
-          <Composer
-            disabled={hasPendingRevision}
-            isGenerating={isActiveSessionRunning}
-            canResume={canResumeSession}
-            resumeLabel={resumeStatusLabel}
-            onResume={() => void handleResumeGeneration()}
-            onDiscardResume={handleDiscardResume}
-            showOptions={composerShowOptions}
-            writeMode={activeWriteMode}
-            quickPicks={quickPicks}
-            selectedProductId={selectedProductId}
-            outputLanguage={outputLanguage}
-            articleType={articleType}
-            onProductChange={setSelectedProductId}
-            onOutputLanguageChange={handleOutputLanguageChange}
-            onArticleTypeChange={(type) => void handleArticleTypeChange(type)}
-            llmModels={llmModels}
-            selectedLlmModelId={selectedLlmModelId}
-            onLlmModelChange={handleLlmModelChange}
-            llmRoleRoutingEnabled={llmRoleRoutingEnabled}
-            llmRoleRoutingHint={llmRoleRoutingHint}
-            onSubmit={(input, extra) => handleComposerSubmit(input, extra)}
-            onStop={handleStopGeneration}
-            draftInput={draftTopic}
-            draftExtra={draftExtra}
-            onDraftInputChange={setDraftTopic}
-            onDraftExtraChange={setDraftExtra}
-            reviseSelectionPreview={reviseSelection?.displayText ?? reviseSelection?.text ?? null}
-            onClearReviseSelection={handleClearReviseSelection}
-            onBatchWrite={
-              composerShowOptions
-                ? () =>
-                    setBatchDialogMode(
-                      activeWriteMode === 'batch-optimize'
-                        ? 'batch-optimize'
-                        : activeWriteMode === 'optimize'
-                          ? 'optimize'
-                          : 'create'
-                    )
-                : undefined
-            }
+          <ChatSidebar
+            sessions={sessions}
+            activeSessionId={activeSession.id}
+            writeMode={sidebarWriteMode}
+            runningSessionId={runningSessionId}
+            onSelect={handleSelectSession}
+            onNewChat={handleNewChat}
+            onClear={handleClearSession}
+            onDelete={handleDeleteSession}
+            onRename={handleRenameSession}
+            onTogglePin={handleTogglePinSession}
+            onMarkCompleted={handleMarkSessionCompleted}
+            onReorder={handleReorderSessions}
+            onRegenerate={(sessionId, options) => void handleRegenerateSession(sessionId, options)}
+            isRunning={isRunning}
           />
 
-          <footer className="write-statusbar">
-            <span className="write-status-label">{getWriteModeLabel(activeWriteMode)}</span>
-            {isRunning ? (
-              <span className="write-status-running">
-                <span className="status-pill-dot" aria-hidden="true" />
-                {batchProgress
-                  ? batchProgress.mode === 'batch-optimize'
-                    ? `页面批量优化 ${batchProgress.current}/${batchProgress.total}：${batchProgress.item}`
-                    : `${batchProgress.mode === 'optimize' ? '批量优化' : '批量创作'} ${batchProgress.current}/${batchProgress.total}：${batchProgress.item}`
-                  : composerShowOptions
-                    ? '运行中'
-                    : '正在修订文章…'}
-              </span>
-            ) : hasPendingRevision ? (
-              <span className="write-status-running">待确认修改</span>
-            ) : canResumeSession ? (
-              <span className="write-status-running">生成已中断 · 可继续</span>
-            ) : (
-              <span className="write-status-idle">
-                {composerShowOptions
-                  ? '就绪'
-                  : reviseSelection
-                    ? '已选中片段 · 输入修改说明后发送'
-                    : '继续对话修改文章 · 可选中片段进行局部重写'}
-              </span>
-            )}
-          </footer>
-        </div>
+          <main className="write-main">
+            <header className="write-topbar">
+              {topbarTitle ? <h1>{topbarTitle}</h1> : null}
+            </header>
 
+            <ChatThread
+              messages={activeSession.messages}
+              onCopy={(content) => void handleCopy(content)}
+              writeMode={activeWriteMode}
+              isRunning={isActiveSessionRunning}
+              pipelineStatusMessage={isActiveSessionRunning ? pipelineStatusMessage : ''}
+              pipelineElapsedSec={isActiveSessionRunning ? pipelineElapsedSec : 0}
+              reviseTargetMessageId={reviseTargetMessageId}
+              reviseSelection={reviseSelection}
+              onReviseSelectionChange={setReviseSelection}
+              onDeleteMessage={handleDeleteMessage}
+              onApplyRevision={handleApplyRevision}
+              onCancelRevision={handleCancelRevision}
+            />
 
+            <div className="composer-area">
+              <Composer
+                disabled={hasPendingRevision}
+                isGenerating={isActiveSessionRunning}
+                canResume={canResumeSession}
+                resumeLabel={resumeStatusLabel}
+                onResume={() => void handleResumeGeneration()}
+                onDiscardResume={handleDiscardResume}
+                showOptions={composerShowOptions}
+                writeMode={activeWriteMode}
+                quickPicks={quickPicks}
+                selectedProductId={selectedProductId}
+                outputLanguage={outputLanguage}
+                articleType={articleType}
+                onProductChange={setSelectedProductId}
+                onOutputLanguageChange={handleOutputLanguageChange}
+                onArticleTypeChange={(type) => void handleArticleTypeChange(type)}
+                llmModels={llmModels}
+                selectedLlmModelId={selectedLlmModelId}
+                onLlmModelChange={handleLlmModelChange}
+                llmRoleRoutingEnabled={llmRoleRoutingEnabled}
+                llmRoleRoutingHint={llmRoleRoutingHint}
+                onSubmit={(input, extra) => handleComposerSubmit(input, extra)}
+                onStop={handleStopGeneration}
+                draftInput={draftTopic}
+                draftExtra={draftExtra}
+                onDraftInputChange={setDraftTopic}
+                onDraftExtraChange={setDraftExtra}
+                reviseSelectionPreview={reviseSelection?.displayText ?? reviseSelection?.text ?? null}
+                onClearReviseSelection={handleClearReviseSelection}
+                onBatchWrite={
+                  composerShowOptions
+                    ? () =>
+                        setBatchDialogMode(
+                          activeWriteMode === 'batch-optimize'
+                            ? 'batch-optimize'
+                            : activeWriteMode === 'optimize'
+                              ? 'optimize'
+                              : 'create'
+                        )
+                    : undefined
+                }
+              />
 
-        {toast ? <div className="toast">{toast}</div> : null}
+              <footer className="write-statusbar">
+                <span className="write-status-label">{getWriteModeLabel(activeWriteMode)}</span>
+                {isRunning ? (
+                  <span className="write-status-running">
+                    <span className="status-pill-dot" aria-hidden="true" />
+                    {batchProgress
+                      ? batchProgress.mode === 'batch-optimize'
+                        ? `页面批量优化 ${batchProgress.current}/${batchProgress.total}：${batchProgress.item}`
+                        : `${batchProgress.mode === 'optimize' ? '批量优化' : '批量创作'} ${batchProgress.current}/${batchProgress.total}：${batchProgress.item}`
+                      : composerShowOptions
+                        ? '运行中'
+                        : '正在修订文章…'}
+                  </span>
+                ) : hasPendingRevision ? (
+                  <span className="write-status-running">待确认修改</span>
+                ) : canResumeSession ? (
+                  <span className="write-status-running">生成已中断 · 可继续</span>
+                ) : (
+                  <span className="write-status-idle">
+                    {composerShowOptions
+                      ? '就绪'
+                      : reviseSelection
+                        ? '已选中片段 · 输入修改说明后发送'
+                        : '继续对话修改文章 · 可选中片段进行局部重写'}
+                  </span>
+                )}
+              </footer>
+            </div>
 
-        <BatchWriteDialog
-          open={batchDialogMode != null}
-          mode={batchDialogMode ?? 'create'}
-          disabled={isRunning}
-          quickPicks={quickPicks}
-          selectedProductId={selectedProductId}
-          outputLanguage={outputLanguage}
-          articleType={articleType}
-          draftExtra={draftExtra}
-          onClose={() => setBatchDialogMode(null)}
-          onSubmit={(itemsText, extra) => {
-            if (batchDialogMode === 'batch-optimize') {
-              void runBatchPageOptimize(itemsText, extra)
-            } else if (batchDialogMode === 'optimize') {
-              void handleBatchOptimize(itemsText, extra)
-            } else {
-              void handleBatchCreate(itemsText, extra)
-            }
-          }}
-        />
+            {toast ? <div className="toast">{toast}</div> : null}
 
-      </main>
+            <BatchWriteDialog
+              open={batchDialogMode != null}
+              mode={batchDialogMode ?? 'create'}
+              disabled={isRunning}
+              quickPicks={quickPicks}
+              selectedProductId={selectedProductId}
+              outputLanguage={outputLanguage}
+              articleType={articleType}
+              draftExtra={draftExtra}
+              onClose={() => setBatchDialogMode(null)}
+              onSubmit={(itemsText, extra) => {
+                if (batchDialogMode === 'batch-optimize') {
+                  void runBatchPageOptimize(itemsText, extra)
+                } else if (batchDialogMode === 'optimize') {
+                  void handleBatchOptimize(itemsText, extra)
+                } else {
+                  void handleBatchCreate(itemsText, extra)
+                }
+              }}
+            />
+          </main>
         </>
       )}
-
     </div>
-
   )
-
 }
 

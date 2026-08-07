@@ -3,8 +3,8 @@ export const MIN_LLM_MAX_TOKENS = 1024
 export const MAX_LLM_MAX_TOKENS = 128000
 
 /**
- * When false, every pipeline step uses global llmMaxTokens only.
- * Set to true to re-enable per-step caps (STEP_TOKEN_CAPS) and word-budget estimates.
+ * When false, no per-step caps and API calls omit max_tokens (model default limit applies).
+ * When true: each step uses min(stepCap, global llmMaxTokens).
  */
 export const USE_STEP_TOKEN_CAPS = false
 
@@ -92,18 +92,20 @@ export function normalizeLlmMaxTokens(partial?: unknown): number {
   return DEFAULT_LLM_MAX_TOKENS
 }
 
-/** Normalized global max_tokens for a single LLM request. */
+/** Normalized global max_tokens for a single LLM request (config storage only). */
 export function resolveLlmMaxTokens(globalMax: number): number {
   return clampMaxTokens(globalMax)
 }
 
+/** `undefined` = do not send max_tokens (no app-side output limit). */
 export function resolveStepMaxTokens(
   step: PipelineTokenStep,
   globalMax: number,
   wordBudget?: number
-): number {
+): number | undefined {
+  if (!USE_STEP_TOKEN_CAPS) return undefined
+
   const global = clampMaxTokens(globalMax)
-  if (!USE_STEP_TOKEN_CAPS) return global
   const stepCap = STEP_TOKEN_CAPS[step]
 
   if (wordBudget != null && Number.isFinite(wordBudget)) {
@@ -130,52 +132,67 @@ export function maxTokensForSectionDraft(
   words: number,
   globalMax: number,
   tier: SectionDraftTier = 'default'
-): number {
+): number | undefined {
+  if (!USE_STEP_TOKEN_CAPS) return undefined
   const global = clampMaxTokens(globalMax)
-  if (!USE_STEP_TOKEN_CAPS) return global
   const stepCap = STEP_TOKEN_CAPS.sectionDraft
   const rule = SECTION_DRAFT_RULES[tier]
   const estimated = Math.ceil(words * rule.multiplier)
   return Math.min(global, stepCap, Math.max(rule.floor, estimated))
 }
 
-export function maxTokensForOptimizeSection(originalWords: number, globalMax: number): number {
+export function maxTokensForOptimizeSection(
+  originalWords: number,
+  globalMax: number
+): number | undefined {
   return resolveStepMaxTokens('optimizeSectionDraft', globalMax, Math.max(originalWords, 200))
 }
 
-export function maxTokensForOptimizeFullDraft(sourceWords: number, globalMax: number): number {
+export function maxTokensForOptimizeFullDraft(
+  sourceWords: number,
+  globalMax: number
+): number | undefined {
   return resolveStepMaxTokens('optimizeDraft', globalMax, Math.max(sourceWords, 800))
 }
 
-export function maxTokensForOptimizePolish(draftWords: number, globalMax: number): number {
+export function maxTokensForOptimizePolish(
+  draftWords: number,
+  globalMax: number
+): number | undefined {
   return resolveStepMaxTokens('optimizePolish', globalMax, Math.max(draftWords, 800))
 }
 
-export function maxTokensForOptimizeLengthAdjust(articleWords: number, globalMax: number): number {
+export function maxTokensForOptimizeLengthAdjust(
+  articleWords: number,
+  globalMax: number
+): number | undefined {
   return resolveStepMaxTokens('optimizeLengthAdjust', globalMax, Math.max(articleWords, 600))
 }
 
-/** Full-article rewrite steps (polish / length / revise) need higher output headroom for Top-N listicles. */
+/** Full-article rewrite steps (polish / length / revise). */
 export function maxTokensForFullArticleOutput(
   articleWords: number,
   globalMax: number,
   step: 'polish' | 'lengthAdjust' | 'articleRevise'
-): number {
+): number | undefined {
+  if (!USE_STEP_TOKEN_CAPS) return undefined
   const global = clampMaxTokens(globalMax)
-  if (!USE_STEP_TOKEN_CAPS) return global
   const words = Math.max(articleWords, 600)
   const estimated = Math.ceil(words * 6.5) + 2048
   const stepCap = STEP_TOKEN_CAPS[step]
   return Math.min(global, stepCap, Math.max(12288, estimated))
 }
 
-export function maxTokensForPlanning(globalMax: number): number {
-  if (!USE_STEP_TOKEN_CAPS) return clampMaxTokens(globalMax)
+export function maxTokensForPlanning(globalMax: number): number | undefined {
+  if (!USE_STEP_TOKEN_CAPS) return undefined
   return Math.min(clampMaxTokens(globalMax), STEP_TOKEN_CAPS.plan, 4096)
 }
 
-export function maxTokensForOutlineSkeleton(globalMax: number, sectionEstimate = 8): number {
-  if (!USE_STEP_TOKEN_CAPS) return clampMaxTokens(globalMax)
+export function maxTokensForOutlineSkeleton(
+  globalMax: number,
+  sectionEstimate = 8
+): number | undefined {
+  if (!USE_STEP_TOKEN_CAPS) return undefined
   const estimated = Math.ceil(sectionEstimate * 90) + 700
   return Math.min(clampMaxTokens(globalMax), STEP_TOKEN_CAPS.outline, Math.max(2048, estimated))
 }

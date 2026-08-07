@@ -16,6 +16,7 @@ export interface GenerateProgressEvent {
     | 'cancelled'
     | 'replace'
     | 'research'
+    | 'researchPack'
     | 'reset'
     | 'planning'
     | 'prepend'
@@ -28,6 +29,7 @@ export interface GenerateProgressEvent {
   planningSummary?: string
   sources?: ResearchSourcePreview[]
   checkpoint?: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
+  researchPack?: import('../../shared/researchPack').ResearchPack
 }
 
 export interface GenerateArticleResult {
@@ -35,11 +37,14 @@ export interface GenerateArticleResult {
   message?: string
 }
 
+export type LlmReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max'
+
 export interface LlmConfig {
   apiKey: string
   baseUrl: string
   model: string
   temperature: number
+  reasoningEffort?: LlmReasoningEffort
 }
 
 export interface LlmPreset {
@@ -49,6 +54,7 @@ export interface LlmPreset {
   baseUrl: string
   models: string[]
   temperature: number
+  modelReasoningEffort?: Record<string, LlmReasoningEffort>
 }
 
 export interface PromptConfig {
@@ -118,6 +124,50 @@ export interface AppConfig {
   enabledSkills: ModeEnabledSkillsConfig
   skillEnablementInitialized?: boolean
   windowClose?: WindowCloseBehavior
+  imageGen: ImageGenConfig
+}
+
+export interface ImageGenConfig {
+  apiUrl: string
+  apiKey: string
+  model: string
+  size: string
+  defaultPrompt: string
+}
+
+export interface GenerateImageRequest {
+  prompt?: string
+  size?: string
+  model?: string
+}
+
+export interface EditImageRequest {
+  prompt: string
+  size?: string
+  model?: string
+  imageDataUrl?: string
+  imageUrl?: string
+}
+
+export interface GenerateImageResult {
+  ok: boolean
+  message?: string
+  imageDataUrl?: string
+  imageUrl?: string
+  prompt?: string
+  size?: string
+  model?: string
+}
+
+export interface ImageHistoryItem {
+  id: string
+  prompt: string
+  size: string
+  model: string
+  createdAt: number
+  fileName: string
+  mimeType: string
+  imageDataUrl: string
 }
 
 export interface SkillItem {
@@ -150,6 +200,7 @@ export interface ChatStoreData {
     llmPresetId?: string
     llmModel?: string
     pipelineCheckpoint?: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
+    researchPack?: import('../../shared/researchPack').ResearchPack
   }>
 }
 
@@ -218,6 +269,7 @@ declare global {
         outputLanguage?: string
         llmPresetId?: string
         llmModel?: string
+        reuseResearch?: import('../../shared/researchPack').CreateResearchPack
       }) => Promise<GenerateArticleResult>
       optimizeArticle: (request: {
         sourceUrl: string
@@ -225,6 +277,7 @@ declare global {
         outputLanguage?: string
         llmPresetId?: string
         llmModel?: string
+        reuseResearch?: import('../../shared/researchPack').OptimizeResearchPack
       }) => Promise<GenerateArticleResult>
       batchOptimizePage: (request: {
         sourceUrl: string
@@ -250,6 +303,11 @@ declare global {
       onProgress: (callback: (event: GenerateProgressEvent) => void) => () => void
       getConfig: () => Promise<AppConfig>
       saveConfig: (partial: Partial<AppConfig>) => Promise<AppConfig>
+      generateImage: (request?: GenerateImageRequest) => Promise<GenerateImageResult>
+      editImage: (request: EditImageRequest) => Promise<GenerateImageResult>
+      listImageHistory: () => Promise<ImageHistoryItem[]>
+      deleteImageHistoryItem: (id: string) => Promise<{ ok: true }>
+      clearImageHistory: () => Promise<{ ok: true }>
       testLlmConnection: (options?: { presetId?: string; model?: string }) => Promise<ActionResult>
       listLlmModels: (presetId: string) => Promise<ListLlmModelsResult>
       testTavilyConnection: (apiKey: string) => Promise<ActionResult>

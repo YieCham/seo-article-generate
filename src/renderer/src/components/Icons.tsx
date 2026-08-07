@@ -30,6 +30,47 @@ export function IconStartCreate({ size = 16, className }: IconProps) {
   )
 }
 
+/** Mode rail: 文章创作 */
+export function IconModeCreate({ size = 18, className }: IconProps) {
+  return <IconStartCreate size={size} className={className} />
+}
+
+/** Mode rail: 文章优化 */
+export function IconModeOptimize({ size = 18, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M12 3L13.8 8.2L19 10L13.8 11.8L12 17L10.2 11.8L5 10L10.2 8.2L12 3Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path d="M18 4L18.8 6.4L21.2 7.2L18.8 8L18 10.4L17.2 8L14.8 7.2L17.2 6.4L18 4Z" fill="currentColor" opacity="0.55" />
+    </svg>
+  )
+}
+
+/** Mode rail: 批量优化 */
+export function IconModeBatch({ size = 18, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M12 4L20 9L12 14L4 9L12 4Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M4 14L12 19L20 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+/** Mode rail: 绘图 */
+export function IconModeDraw({ size = 18, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <rect x="3.5" y="5" width="17" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M3.5 15.5L8 11L11.5 14.5L15 10.5L20.5 15.5" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <circle cx="9" cy="9" r="1.4" fill="currentColor" />
+    </svg>
+  )
+}
+
 export function IconNewPreset({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 1025 1024" fill="currentColor" className={className} aria-hidden="true">
@@ -148,6 +189,21 @@ export function IconTrash({ size = 14, className }: IconProps) {
       <path d="M5 7H19" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
       <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4H13.5A1.5 1.5 0 0 1 15 5.5V7" stroke="currentColor" strokeWidth="1.5" />
       <path d="M8 7L9 19H15L16 7" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+export function IconHistory({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M4.5 12A7.5 7.5 0 1 0 6.4 6.8"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <path d="M4.5 4.5V8H8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 8V12.5L15 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }

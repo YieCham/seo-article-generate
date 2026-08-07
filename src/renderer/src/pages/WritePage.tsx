@@ -6,7 +6,7 @@ import {
   isArticleType,
   type ArticleType
 } from '../constants/articleTypes'
-import { getWriteModeLabel, normalizeWriteMode, type BatchDialogMode, type BatchWriteMode, type WriteMode } from '../constants/writeMode'
+import { getWriteModeLabel, normalizeWriteMode, WRITE_MODE_STORAGE_KEY, type BatchDialogMode, type BatchWriteMode, type WriteMode } from '../constants/writeMode'
 import {
   DEFAULT_OUTPUT_LANGUAGE,
   OUTPUT_LANGUAGE_STORAGE_KEY,
@@ -35,6 +35,9 @@ import {
   type LlmModelOption
 } from '../utils/llmModels'
 import ChatSidebar from './write/ChatSidebar'
+import ModeRail from './write/ModeRail'
+import DrawWorkspace from './write/DrawWorkspace'
+import type { ModeRailView } from './write/ModeRail'
 
 import ChatThread from './write/ChatThread'
 
@@ -44,12 +47,22 @@ import BatchWriteDialog from './write/BatchWriteDialog'
 
 import type { PipelineCheckpoint } from '../../../shared/pipelineCheckpoint'
 import {
+  createResearchPackMatchesTopic,
+  isCreateResearchPack,
+  isOptimizeResearchPack,
+  optimizeResearchPackMatchesUrl,
+  type ResearchPack
+} from '../../../shared/researchPack'
+import type { RegenerateConfirmOptions } from './write/SessionConfirmDialog'
+import {
   createMessage,
   createSession,
   getInterruptedAssistantMessage,
   getLatestDoneAssistantMessage,
   getResumeStatusLabel,
   getSessionDisplayTitle,
+  getSessionLifecycleGroup,
+  getSessionListGroup,
   getSessionTopbarTitle,
   getSessionInitialUserMessage,
   insertSessionAtListTop,
@@ -64,6 +77,7 @@ import {
   sortSessions,
   type ChatSession,
   type ReviseArticleSelection,
+  type SessionLifecycleGroup,
   type SessionListGroup
 } from './write/types'
 
@@ -103,6 +117,16 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [pipelineElapsedSec, setPipelineElapsedSec] = useState(0)
   const [reviseSelection, setReviseSelection] = useState<ReviseArticleSelection | null>(null)
   const [runningSessionId, setRunningSessionId] = useState('')
+  const [sidebarWriteMode, setSidebarWriteMode] = useState<WriteMode>(() => {
+    try {
+      const value = localStorage.getItem(WRITE_MODE_STORAGE_KEY)
+      if (value) return normalizeWriteMode(value)
+    } catch {
+      /* ignore */
+    }
+    return 'create'
+  })
+  const [railView, setRailView] = useState<ModeRailView>('write')
   const [batchProgress, setBatchProgress] = useState<{
     mode: BatchWriteMode | 'batch-optimize'
     current: number
@@ -154,14 +178,14 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
       if (store.sessions.length > 0) {
 
-        setSessions(
-          normalizeAllSessionSortOrders(
-            store.sessions.map((session) => ({
-              ...session,
-              writeMode: normalizeWriteMode(session.writeMode)
-            }))
-          )
+        const normalized = normalizeAllSessionSortOrders(
+          store.sessions.map((session) => ({
+            ...session,
+            writeMode: normalizeWriteMode(session.writeMode)
+          }))
         )
+
+        setSessions(normalized)
 
         for (const session of store.sessions) {
           if (session.pipelineCheckpoint) {
@@ -169,7 +193,50 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           }
         }
 
-        setActiveSessionId(store.activeSessionId || store.sessions[0].id)
+        let preferredMode: WriteMode = 'create'
+        try {
+          const stored = localStorage.getItem(WRITE_MODE_STORAGE_KEY)
+          if (stored) preferredMode = normalizeWriteMode(stored)
+          else {
+            const active =
+              normalized.find((session) => session.id === store.activeSessionId) ?? normalized[0]
+            preferredMode = normalizeWriteMode(active?.writeMode)
+          }
+        } catch {
+          const active =
+            normalized.find((session) => session.id === store.activeSessionId) ?? normalized[0]
+          preferredMode = normalizeWriteMode(active?.writeMode)
+        }
+
+        setSidebarWriteMode(preferredMode)
+        try {
+          localStorage.setItem(WRITE_MODE_STORAGE_KEY, preferredMode)
+        } catch {
+          /* ignore */
+        }
+
+        const lifecycle: SessionLifecycleGroup =
+          localStorage.getItem('sidebar.lifecycleGroup') === 'completed' ? 'completed' : 'active'
+        const matching = sortSessions(
+          normalized.filter(
+            (session) =>
+              getSessionListGroup(session) === preferredMode &&
+              getSessionLifecycleGroup(session) === lifecycle
+          )
+        )
+        const preferredSession =
+          matching.find((session) => session.id === store.activeSessionId) ??
+          matching[0] ??
+          normalized.find((session) => getSessionListGroup(session) === preferredMode) ??
+          null
+
+        if (preferredSession) {
+          setActiveSessionId(preferredSession.id)
+        } else {
+          const session = createSession(preferredMode)
+          setSessions(insertSessionAtListTop(normalized, session))
+          setActiveSessionId(session.id)
+        }
 
       } else {
 
@@ -178,6 +245,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         setSessions([session])
 
         setActiveSessionId(session.id)
+        setSidebarWriteMode('create')
+        try {
+          localStorage.setItem(WRITE_MODE_STORAGE_KEY, 'create')
+        } catch {
+          /* ignore */
+        }
 
       }
 
@@ -310,6 +383,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           event.type === 'prepend' ||
           event.type === 'reset' ||
           event.type === 'research' ||
+          event.type === 'researchPack' ||
           event.type === 'planning' ||
           event.type === 'checkpoint' ||
           event.type === 'clearCheckpoint')
@@ -323,6 +397,15 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
       if (event.type === 'research' && event.researchSummary) {
         upsertResearchMessage(event.researchSummary, targetSessionId)
+      }
+
+      if (event.type === 'researchPack' && event.researchPack) {
+        const pack = event.researchPack as ResearchPack
+        updateSession(targetSessionId, (session) => ({
+          ...session,
+          researchPack: pack,
+          updatedAt: Date.now()
+        }))
       }
 
       if (event.type === 'planning' && event.planningSummary) {
@@ -939,6 +1022,72 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     setDraftExtra('')
   }
 
+  function persistSidebarWriteMode(mode: WriteMode): void {
+    setSidebarWriteMode(mode)
+    try {
+      localStorage.setItem(WRITE_MODE_STORAGE_KEY, mode)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function readLifecycleGroup(): SessionLifecycleGroup {
+    try {
+      return localStorage.getItem('sidebar.lifecycleGroup') === 'completed' ? 'completed' : 'active'
+    } catch {
+      return 'active'
+    }
+  }
+
+  function findSessionForWriteMode(
+    mode: WriteMode,
+    allSessions: ChatSession[],
+    lifecycle: SessionLifecycleGroup
+  ): ChatSession | null {
+    const matching = allSessions.filter(
+      (session) =>
+        getSessionListGroup(session) === mode && getSessionLifecycleGroup(session) === lifecycle
+    )
+    if (matching.length === 0) return null
+    return sortSessions(matching)[0] ?? null
+  }
+
+  function handleSidebarWriteModeChange(mode: WriteMode): void {
+    setRailView('write')
+
+    if (mode === sidebarWriteMode) {
+      const active = sessions.find((session) => session.id === activeSessionId)
+      if (active && getSessionListGroup(active) === mode) return
+    }
+
+    persistSidebarWriteMode(mode)
+
+    const active = sessions.find((session) => session.id === activeSessionId)
+    if (active && getSessionListGroup(active) === mode) {
+      return
+    }
+
+    const lifecycle = readLifecycleGroup()
+    const existing = findSessionForWriteMode(mode, sessions, lifecycle)
+    if (existing) {
+      setActiveSessionId(existing.id)
+      setDraftTopic('')
+      setDraftExtra('')
+      setReviseSelection(null)
+      return
+    }
+
+    handleModePick(mode)
+  }
+
+  function handleOpenDraw(): void {
+    setRailView('draw')
+  }
+
+  function handleNewChat(): void {
+    handleModePick(sidebarWriteMode)
+  }
+
   function handleSelectSession(id: string): void {
     const isTargetRunning = isRunning && runningSessionId === id
     if (!isTargetRunning) {
@@ -967,7 +1116,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
               title: '新对话',
               customTitle: undefined,
               messages: [],
-              pipelineCheckpoint: undefined
+              pipelineCheckpoint: undefined,
+              researchPack: undefined
             }
           : session
       )
@@ -1032,7 +1182,10 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     setSessions((prev) => reorderSessions(prev, group, draggedId, targetId, position))
   }
 
-  async function handleRegenerateSession(id: string): Promise<void> {
+  async function handleRegenerateSession(
+    id: string,
+    options?: RegenerateConfirmOptions
+  ): Promise<void> {
     if (isRunning) {
       setToast('当前有任务正在运行，请稍后再试')
       window.setTimeout(() => setToast(''), 1800)
@@ -1058,11 +1211,14 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     setReviseSelection(null)
 
     const assistantMessage = createMessage('assistant', '')
+    const forceRefreshResearch = options?.forceRefreshResearch === true
+    const retainedPack = forceRefreshResearch ? undefined : session.researchPack
 
     updateSession(id, (current) => ({
       ...current,
       messages: [firstUser, assistantMessage],
       pipelineCheckpoint: undefined,
+      researchPack: retainedPack,
       updatedAt: Date.now()
     }))
 
@@ -1108,10 +1264,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         return
       }
 
+      const reuseResearch =
+        !forceRefreshResearch &&
+        isOptimizeResearchPack(retainedPack) &&
+        optimizeResearchPackMatchesUrl(retainedPack, parsed.sourceUrl)
+          ? retainedPack
+          : undefined
+
       const result = await window.app.optimizeArticle({
         sourceUrl: parsed.sourceUrl,
         extraInstructions: parsed.extraInstructions || undefined,
-        outputLanguage
+        outputLanguage,
+        reuseResearch
       })
 
       if (!result.ok && result.message !== '已中止生成') {
@@ -1134,10 +1298,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     await syncSkillsForArticleType(parsed.articleType)
 
+    const reuseResearch =
+      !forceRefreshResearch &&
+      isCreateResearchPack(retainedPack) &&
+      createResearchPackMatchesTopic(retainedPack, parsed.topic)
+        ? retainedPack
+        : undefined
+
     const result = await window.app.generateArticle({
       topic: parsed.topic,
       extraInstructions: parsed.extraInstructions || undefined,
-      outputLanguage
+      outputLanguage,
+      reuseResearch
     })
 
     if (!result.ok && result.message !== '已中止生成') {
@@ -1899,23 +2071,35 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   return (
 
-    <div className="write-shell">
+    <div className={`write-shell${railView === 'draw' ? ' is-draw' : ''}`}>
 
+      <ModeRail
+        view={railView}
+        writeMode={sidebarWriteMode}
+        onSelectMode={handleSidebarWriteModeChange}
+        onOpenDraw={handleOpenDraw}
+        onOpenSettings={onOpenSettings}
+      />
+
+      {railView === 'draw' ? (
+        <DrawWorkspace configRevision={configRevision} />
+      ) : (
+        <>
       <ChatSidebar
         sessions={sessions}
         activeSessionId={activeSession.id}
+        writeMode={sidebarWriteMode}
         runningSessionId={runningSessionId}
         onSelect={handleSelectSession}
-        onSelectMode={handleModePick}
+        onNewChat={handleNewChat}
         onClear={handleClearSession}
         onDelete={handleDeleteSession}
         onRename={handleRenameSession}
         onTogglePin={handleTogglePinSession}
         onMarkCompleted={handleMarkSessionCompleted}
         onReorder={handleReorderSessions}
-        onRegenerate={(sessionId) => void handleRegenerateSession(sessionId)}
+        onRegenerate={(sessionId, options) => void handleRegenerateSession(sessionId, options)}
         isRunning={isRunning}
-        onOpenSettings={onOpenSettings}
       />
 
 
@@ -2044,6 +2228,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         />
 
       </main>
+        </>
+      )}
 
     </div>
 

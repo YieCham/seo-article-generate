@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { PipelineCheckpoint } from '../shared/pipelineCheckpoint'
+import type { CreateResearchPack, OptimizeResearchPack, ResearchPack } from '../shared/researchPack'
 
 export interface GenerateArticleRequest {
   topic: string
@@ -7,6 +8,7 @@ export interface GenerateArticleRequest {
   outputLanguage?: string
   llmPresetId?: string
   llmModel?: string
+  reuseResearch?: CreateResearchPack
 }
 
 export interface OptimizeArticleRequest {
@@ -15,6 +17,7 @@ export interface OptimizeArticleRequest {
   outputLanguage?: string
   llmPresetId?: string
   llmModel?: string
+  reuseResearch?: OptimizeResearchPack
 }
 
 export interface BatchOptimizePageRequest {
@@ -43,6 +46,7 @@ export interface GenerateProgressEvent {
     | 'cancelled'
     | 'replace'
     | 'research'
+    | 'researchPack'
     | 'reset'
     | 'planning'
     | 'prepend'
@@ -55,6 +59,7 @@ export interface GenerateProgressEvent {
   planningSummary?: string
   sources?: ResearchSourcePreview[]
   checkpoint?: PipelineCheckpoint
+  researchPack?: ResearchPack
 }
 
 export interface ReviseArticleSelection {
@@ -85,6 +90,7 @@ export interface LlmConfig {
   baseUrl: string
   model: string
   temperature: number
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max'
 }
 
 export interface LlmPreset {
@@ -94,6 +100,7 @@ export interface LlmPreset {
   baseUrl: string
   models: string[]
   temperature: number
+  modelReasoningEffort?: Record<string, 'none' | 'low' | 'medium' | 'high' | 'max'>
 }
 
 export interface PromptConfig {
@@ -147,6 +154,50 @@ export interface AppConfig {
   quickPicks: QuickPicksConfig
   enabledSkills: ModeEnabledSkillsConfig
   skillEnablementInitialized?: boolean
+  imageGen?: ImageGenConfig
+}
+
+export interface ImageGenConfig {
+  apiUrl: string
+  apiKey: string
+  model: string
+  size: string
+  defaultPrompt: string
+}
+
+export interface GenerateImageRequest {
+  prompt?: string
+  size?: string
+  model?: string
+}
+
+export interface EditImageRequest {
+  prompt: string
+  size?: string
+  model?: string
+  imageDataUrl?: string
+  imageUrl?: string
+}
+
+export interface GenerateImageResult {
+  ok: boolean
+  message?: string
+  imageDataUrl?: string
+  imageUrl?: string
+  prompt?: string
+  size?: string
+  model?: string
+}
+
+export interface ImageHistoryItem {
+  id: string
+  prompt: string
+  size: string
+  model: string
+  createdAt: number
+  fileName: string
+  mimeType: string
+  imageDataUrl: string
 }
 
 export interface SkillItem {
@@ -228,6 +279,7 @@ export interface ChatStoreData {
     llmPresetId?: string
     llmModel?: string
     pipelineCheckpoint?: import('../shared/pipelineCheckpoint').PipelineCheckpoint
+    researchPack?: import('../shared/researchPack').ResearchPack
   }>
 }
 
@@ -253,6 +305,14 @@ const api = {
   getConfig: (): Promise<AppConfig> => ipcRenderer.invoke('config:get'),
   saveConfig: (partial: Partial<AppConfig>): Promise<AppConfig> =>
     ipcRenderer.invoke('config:save', partial),
+  generateImage: (request?: GenerateImageRequest): Promise<GenerateImageResult> =>
+    ipcRenderer.invoke('image:generate', request),
+  editImage: (request: EditImageRequest): Promise<GenerateImageResult> =>
+    ipcRenderer.invoke('image:edit', request),
+  listImageHistory: (): Promise<ImageHistoryItem[]> => ipcRenderer.invoke('image:history:list'),
+  deleteImageHistoryItem: (id: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('image:history:delete', id),
+  clearImageHistory: (): Promise<{ ok: true }> => ipcRenderer.invoke('image:history:clear'),
   testLlmConnection: (options?: { presetId?: string; model?: string }): Promise<ActionResult> =>
     ipcRenderer.invoke('config:testLlm', options),
   listLlmModels: (presetId: string): Promise<ListLlmModelsResult> =>

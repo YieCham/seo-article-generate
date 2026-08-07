@@ -1,6 +1,6 @@
 import type { WebContents } from 'electron'
 import { getEffectiveConfig, resolveRoutedLlm } from '../config/configStore'
-import { maxTokensForOptimizeFullDraft } from '../config/llmTokenLimits'
+import { resolveLlmMaxTokens } from '../config/llmTokenLimits'
 import {
   createTokenRunContext,
   runWithTokenContext,
@@ -75,7 +75,7 @@ async function optimizeScrapedPage(
   skillsText: string,
   articleLang: { code: TopicLanguageCode; lock: string; label: string },
   userContext: ReturnType<typeof parseUserWritingContext>,
-  maxTokens: number
+  maxTokens?: number
 ): Promise<string> {
   return chatCompletion(
     llm,
@@ -197,7 +197,7 @@ export async function batchOptimizePage(
           skillsText,
           articleLang,
           userContext,
-          maxTokensForOptimizeFullDraft(countWords(scraped.markdown), globalMaxTokens)
+          resolveLlmMaxTokens(globalMaxTokens)
         )
       )
 

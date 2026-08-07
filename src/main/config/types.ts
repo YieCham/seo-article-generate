@@ -2,11 +2,57 @@ import { DEFAULT_LLM_MAX_TOKENS, normalizeLlmMaxTokens } from './llmTokenLimits'
 
 export { DEFAULT_LLM_MAX_TOKENS, normalizeLlmMaxTokens }
 
+/** Per-model reasoning intensity for OpenAI-compatible `reasoning_effort`. */
+export type LlmReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max'
+
+export const LLM_REASONING_EFFORT_OPTIONS: Array<{
+  value: LlmReasoningEffort | 'default'
+  label: string
+  hint: string
+}> = [
+  { value: 'default', label: '默认', hint: '不传参，使用接口默认' },
+  { value: 'none', label: '关闭', hint: '尽量不推理（部分模型支持）' },
+  { value: 'low', label: '低', hint: '轻度推理' },
+  { value: 'medium', label: '中', hint: '均衡（多数推理模型默认）' },
+  { value: 'high', label: '高', hint: '更强推理，更慢更费' },
+  { value: 'max', label: '最大', hint: '最强推理（DeepSeek 等支持）' }
+]
+
+const REASONING_EFFORT_SET = new Set<string>(['none', 'low', 'medium', 'high', 'max'])
+
+export function isLlmReasoningEffort(value: unknown): value is LlmReasoningEffort {
+  return typeof value === 'string' && REASONING_EFFORT_SET.has(value)
+}
+
+export function normalizeModelReasoningEffort(
+  raw: unknown,
+  models: string[]
+): Record<string, LlmReasoningEffort> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const modelSet = new Set(models)
+  const out: Record<string, LlmReasoningEffort> = {}
+  for (const [model, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!modelSet.has(model) || !isLlmReasoningEffort(value)) continue
+    out[model] = value
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+export function getModelReasoningEffort(
+  preset: Pick<LlmPreset, 'modelReasoningEffort'> | undefined,
+  model: string
+): LlmReasoningEffort | undefined {
+  const value = preset?.modelReasoningEffort?.[model]
+  return isLlmReasoningEffort(value) ? value : undefined
+}
+
 export interface LlmConfig {
   apiKey: string
   baseUrl: string
   model: string
   temperature: number
+  /** When set, sent as OpenAI-compatible `reasoning_effort`. */
+  reasoningEffort?: LlmReasoningEffort
 }
 
 export interface LlmSelection {
@@ -21,6 +67,8 @@ export interface LlmPreset {
   baseUrl: string
   models: string[]
   temperature: number
+  /** Per-model reasoning intensity (global for that model in this preset). */
+  modelReasoningEffort?: Record<string, LlmReasoningEffort>
 }
 
 export const DEFAULT_LLM_PRESET_ID = 'preset-openai-gpt4o'
@@ -42,20 +90,36 @@ function normalizePresetModels(item: { models?: string[]; model?: string }): str
   return legacyModel ? [legacyModel] : []
 }
 
+function buildLlmConfigFromPreset(preset: LlmPreset, model: string): LlmConfig {
+  const reasoningEffort = getModelReasoningEffort(preset, model)
+  return {
+    apiKey: preset.apiKey,
+    baseUrl: preset.baseUrl,
+    model,
+    temperature: preset.temperature,
+    ...(reasoningEffort ? { reasoningEffort } : {})
+  }
+}
+
 export function normalizeLlmPresets(
   partial: Partial<AppConfig> & { llm?: LlmConfig }
 ): { presets: LlmPreset[]; activePresetId: string } {
   if (partial.llmPresets && partial.llmPresets.length > 0) {
     const presets = partial.llmPresets
       .filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string')
-      .map((item) => ({
-        id: item.id,
-        name: item.name.trim() || '未命名预设',
-        apiKey: item.apiKey ?? '',
-        baseUrl: item.baseUrl?.trim() || DEFAULT_LLM_PRESET.baseUrl,
-        models: normalizePresetModels(item),
-        temperature: typeof item.temperature === 'number' ? item.temperature : DEFAULT_LLM_PRESET.temperature
-      }))
+      .map((item) => {
+        const models = normalizePresetModels(item)
+        return {
+          id: item.id,
+          name: item.name.trim() || '未命名预设',
+          apiKey: item.apiKey ?? '',
+          baseUrl: item.baseUrl?.trim() || DEFAULT_LLM_PRESET.baseUrl,
+          models,
+          temperature:
+            typeof item.temperature === 'number' ? item.temperature : DEFAULT_LLM_PRESET.temperature,
+          modelReasoningEffort: normalizeModelReasoningEffort(item.modelReasoningEffort, models)
+        }
+      })
 
     if (presets.length === 0) {
       return { presets: [{ ...DEFAULT_LLM_PRESET }], activePresetId: DEFAULT_LLM_PRESET_ID }
@@ -102,24 +166,14 @@ export function resolveLlmConfigFromSelection(
   if (selection?.presetId && selection.model) {
     const preset = config.llmPresets.find((item) => item.id === selection.presetId)
     if (preset) {
-      return {
-        apiKey: preset.apiKey,
-        baseUrl: preset.baseUrl,
-        model: selection.model,
-        temperature: preset.temperature
-      }
+      return buildLlmConfigFromPreset(preset, selection.model)
     }
   }
 
   if (selection?.model) {
     for (const preset of config.llmPresets) {
       if (preset.models.includes(selection.model)) {
-        return {
-          apiKey: preset.apiKey,
-          baseUrl: preset.baseUrl,
-          model: selection.model,
-          temperature: preset.temperature
-        }
+        return buildLlmConfigFromPreset(preset, selection.model)
       }
     }
   }
@@ -128,12 +182,7 @@ export function resolveLlmConfigFromSelection(
   const model = preset.models[0]
   if (!model) return null
 
-  return {
-    apiKey: preset.apiKey,
-    baseUrl: preset.baseUrl,
-    model,
-    temperature: preset.temperature
-  }
+  return buildLlmConfigFromPreset(preset, model)
 }
 
 /** @deprecated use resolveLlmConfigFromSelection */
@@ -200,6 +249,33 @@ export function normalizeWindowClose(partial?: Partial<WindowCloseBehavior>): Wi
   }
 }
 
+export interface ImageGenConfig {
+  /** Full generations endpoint, e.g. https://uuapi.shop/v1/images/generations */
+  apiUrl: string
+  apiKey: string
+  model: string
+  size: string
+  defaultPrompt: string
+}
+
+export const DEFAULT_IMAGE_GEN: ImageGenConfig = {
+  apiUrl: 'https://uuapi.shop/v1/images/generations',
+  apiKey: '',
+  model: 'gpt-image-2',
+  size: '1024x1024',
+  defaultPrompt: ''
+}
+
+export function normalizeImageGenConfig(partial?: Partial<ImageGenConfig> | null): ImageGenConfig {
+  return {
+    apiUrl: partial?.apiUrl?.trim() || DEFAULT_IMAGE_GEN.apiUrl,
+    apiKey: partial?.apiKey ?? '',
+    model: partial?.model?.trim() || DEFAULT_IMAGE_GEN.model,
+    size: partial?.size?.trim() || DEFAULT_IMAGE_GEN.size,
+    defaultPrompt: partial?.defaultPrompt ?? ''
+  }
+}
+
 /** Optional multi-model routing: pre-body+meta vs body writing. */
 export interface LlmModelRef {
   presetId: string
@@ -249,6 +325,7 @@ export interface AppConfig {
   enabledSkills: ModeEnabledSkillsConfig
   skillEnablementInitialized: boolean
   windowClose?: WindowCloseBehavior
+  imageGen: ImageGenConfig
 }
 
 export interface SkillItem {
@@ -416,7 +493,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   windowClose: {
     skipPrompt: false,
     defaultAction: 'minimize-to-tray'
-  }
+  },
+  imageGen: { ...DEFAULT_IMAGE_GEN }
 }
 
 /** @deprecated fields from older configs */

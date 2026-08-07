@@ -36,6 +36,7 @@ export interface LlmConfig {
   baseUrl: string
   model: string
   temperature: number
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max'
 }
 
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
@@ -71,6 +72,30 @@ type CompletionResponse = {
   usage?: ApiTokenUsage
 }
 
+/** OpenRouter 402: credits only cover up to N max_tokens. */
+function parseAffordableMaxTokens(detail: string): number | null {
+  const match = detail.match(/can only afford\s+(\d+)/i)
+  if (!match) return null
+  const value = Number(match[1])
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null
+}
+
+function buildChatCompletionBody(
+  config: LlmConfig,
+  messages: ChatMessage[],
+  options: LlmCallOptions | undefined,
+  maxTokens: number | undefined
+): string {
+  return JSON.stringify({
+    model: config.model,
+    messages,
+    temperature: options?.temperature ?? config.temperature,
+    ...(maxTokens != null ? { max_tokens: maxTokens } : {}),
+    ...(options?.jsonObject ? { response_format: { type: 'json_object' } } : {}),
+    ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {})
+  })
+}
+
 export async function chatCompletion(
   config: LlmConfig,
   messages: ChatMessage[],
@@ -78,23 +103,18 @@ export async function chatCompletion(
 ): Promise<string> {
   const signal = getAbortSignal()
   const url = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`
-  const body = JSON.stringify({
-    model: config.model,
-    messages,
-    temperature: options?.temperature ?? config.temperature,
-    max_tokens: options?.maxTokens,
-    ...(options?.jsonObject ? { response_format: { type: 'json_object' } } : {})
-  })
   const headers = {
     Authorization: `Bearer ${config.apiKey}`,
     'Content-Type': 'application/json'
   }
 
+  let maxTokens = options?.maxTokens
   let backoffMs = LLM_RETRY_INITIAL_BACKOFF_MS
   let lastErrorMessage = '未知错误'
 
   for (let attempt = 0; attempt < LLM_MAX_ATTEMPTS; attempt += 1) {
     throwIfAborted()
+    const body = buildChatCompletionBody(config, messages, options, maxTokens)
 
     try {
       const response = await fetch(url, { method: 'POST', headers, body, signal })
@@ -109,7 +129,7 @@ export async function chatCompletion(
           messages,
           completionText: content,
           usage: data.usage,
-          maxTokensRequested: options?.maxTokens,
+          maxTokensRequested: maxTokens,
           finishReason,
           step: options?.step,
           label: options?.label
@@ -120,6 +140,36 @@ export async function chatCompletion(
 
       const detail = await response.text()
       lastErrorMessage = `LLM 请求失败 (${response.status})：${detail.slice(0, 200)}`
+
+      // OpenRouter bills against requested max_tokens — lower and retry when possible.
+      if (response.status === 402) {
+        const affordable = parseAffordableMaxTokens(detail)
+        if (affordable != null && affordable >= 1024 && (maxTokens == null || affordable < maxTokens)) {
+          maxTokens = affordable
+          lastErrorMessage = `OpenRouter 额度不足：已将 max_tokens 下调至 ${affordable} 后重试`
+          const retryInfo: LlmRetryInfo = {
+            attempt,
+            maxAttempts: LLM_MAX_ATTEMPTS,
+            delayMs: 500,
+            status: 402,
+            reason: lastErrorMessage
+          }
+          options?.onRetry?.(retryInfo)
+          options?.onRateLimitRetry?.(retryInfo)
+          await sleepWithAbort(500, signal)
+          continue
+        }
+
+        throw new Error(
+          [
+            'OpenRouter 额度不足（402），无法完成本次请求。',
+            affordable != null
+              ? `当前余额大约只够 max_tokens=${affordable}，但本步仍需要更高输出上限。`
+              : '请到 https://openrouter.ai/settings/credits 充值，或降低全局 llmMaxTokens。',
+            `详情：${detail.slice(0, 180)}`
+          ].join(' ')
+        )
+      }
 
       if (attempt >= LLM_MAX_ATTEMPTS - 1) {
         break
@@ -138,6 +188,11 @@ export async function chatCompletion(
       backoffMs *= 2
     } catch (error) {
       if (isAbortError(error)) {
+        throw error
+      }
+
+      // Already a final 402 credit error — do not wrap/retry.
+      if (error instanceof Error && /OpenRouter 额度不足/.test(error.message)) {
         throw error
       }
 
@@ -170,8 +225,12 @@ export function createLlmRetryStatus(
   baseMessage: string,
   onStatus: (message: string) => void
 ): (info: LlmRetryInfo) => void {
-  return ({ attempt, maxAttempts, delayMs, status }) => {
+  return ({ attempt, maxAttempts, delayMs, status, reason }) => {
     const seconds = Math.max(1, Math.round(delayMs / 1000))
+    if (status === 402 && /max_tokens 下调/.test(reason)) {
+      onStatus(`${baseMessage}（额度不足，已自动降低输出上限后重试 ${attempt + 2}/${maxAttempts}）`)
+      return
+    }
     const kind = status === 429 ? 'API 限流' : '调用失败'
     // attempt 0 = first failure → about to try attempt 2 of maxAttempts
     onStatus(

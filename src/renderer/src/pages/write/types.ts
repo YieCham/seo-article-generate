@@ -1,5 +1,6 @@
 import { normalizeWriteMode, type WriteMode } from '../../constants/writeMode'
 import type { PipelineCheckpoint } from '../../../../shared/pipelineCheckpoint'
+import type { ResearchPack } from '../../../../shared/researchPack'
 
 export interface ReviseArticleSelection {
   start: number
@@ -39,6 +40,8 @@ export interface ChatSession {
   llmModel?: string
   updatedAt: number
   pipelineCheckpoint?: PipelineCheckpoint
+  /** Survives successful runs; reused on regenerate to skip Tavily/Firecrawl. */
+  researchPack?: ResearchPack
 }
 
 export function getSessionLifecycleGroup(session: ChatSession): SessionLifecycleGroup {

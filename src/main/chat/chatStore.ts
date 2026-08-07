@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import { app } from 'electron'
 import { join } from 'path'
 import type { PipelineCheckpoint } from '../../shared/pipelineCheckpoint'
+import type { ResearchPack } from '../../shared/researchPack'
 
 export type StoredWriteMode = 'create' | 'optimize' | 'batch-optimize'
 
@@ -38,6 +39,7 @@ export interface StoredChatSession {
   llmModel?: string
   updatedAt: number
   pipelineCheckpoint?: PipelineCheckpoint
+  researchPack?: ResearchPack
 }
 
 export interface ChatStoreData {
@@ -97,6 +99,7 @@ export async function loadChatStore(): Promise<ChatStoreData> {
         writeMode: normalizeStoredWriteMode(session.writeMode),
         updatedAt: session.updatedAt || Date.now(),
         pipelineCheckpoint: session.pipelineCheckpoint,
+        researchPack: session.researchPack,
         messages: Array.isArray(session.messages) ? session.messages : []
       }))
 

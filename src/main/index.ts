@@ -5,6 +5,7 @@ import { join } from 'path'
 import { registerArticleIpc } from './ipc/article'
 import { registerChatIpc } from './ipc/chat'
 import { registerConfigIpc } from './ipc/config'
+import { registerImageIpc } from './ipc/image'
 import { registerWindowIpc, attachWindowStateListeners, attachExternalLinkHandlers } from './ipc/window'
 import {
   attachCloseHandler,
@@ -71,6 +72,7 @@ app.whenReady().then(() => {
   registerArticleIpc()
   registerChatIpc()
   registerConfigIpc()
+  registerImageIpc()
   createWindow()
 
   app.on('activate', () => {

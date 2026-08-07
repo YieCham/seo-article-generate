@@ -1,6 +1,6 @@
 import type { WebContents } from 'electron'
 import { getEffectiveConfig, resolveRoutedLlm } from '../config/configStore'
-import { resolveStepMaxTokens, maxTokensForOptimizeFullDraft, maxTokensForOptimizeLengthAdjust, maxTokensForOptimizePolish, maxTokensForOptimizeSection } from '../config/llmTokenLimits'
+import { resolveStepMaxTokens, maxTokensForOptimizeLengthAdjust, maxTokensForOptimizePolish, maxTokensForOptimizeSection } from '../config/llmTokenLimits'
 import {
   createTokenRunContext,
   runWithTokenContext,
@@ -41,17 +41,17 @@ import {
   buildSourcePreviewStats,
   countWords,
   extractSourceH1,
-  findMatchingSourceSection,
+  formatOptimizeSectionActionLabel,
   getOptimizePolishHint,
   getOptimizePolishSystemBlocks,
   getOptimizePromptBlocks,
   getOptimizeLengthPromptBlock,
-  getOptimizeSinglePassHint,
+  getOptimizeSectionActionHint,
   getOptimizeWordRange,
-  getSourceSectionEditHint,
-  isAuditRecommendedNewSection,
-  isNewOptimizeSection,
+  extractSourceLeadIn,
+  lockOutlineH2TitlesToTemplate,
   normalizeOptimizeSectionOrder,
+  pairOutlineSectionWithSource,
   reorderArticleMarkdown,
   parseSourceSections,
   validateSourceMarkdown,
@@ -59,6 +59,10 @@ import {
   type OutlineSection
 } from './optimizeStructure'
 import { sanitizeOptimizeSections } from './optimizeSectionSanitize'
+import {
+  enforceOutlineH2Contract,
+  formatOutlineH2ContractStatus
+} from './optimizeH2Contract'
 import {
   CONTENT_READABILITY_GUIDANCE,
   getIntroConclusionSectionHint,
@@ -70,15 +74,21 @@ import { formatSeoMetaBlock, generateSeoMeta } from './seoMeta'
 import { getUserContextPromptBlocks, parseUserWritingContext } from './userContext'
 import {
   classifyDraftSectionProductKind,
-  getSectionDraftLayoutHint,
-  getUserContextPromptBlocksForSection
+  getDraftQuickAnswerHint,
+  getPolishProductHint,
+  getUserContextPromptBlocksForSection,
+  type DraftSectionProductKind
 } from './productMention'
 import {
   type DraftSectionResume,
   type OptimizePipelineCheckpoint,
   shouldRunPipelineStep
 } from './pipelineCheckpoint'
-import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
+import { normalizeArticleMarkdown, stripLeadingSectionHeading } from '../../shared/normalizeArticleMarkdown'
+import {
+  optimizeResearchPackMatchesUrl,
+  type OptimizeResearchPack
+} from '../../shared/researchPack'
 
 export interface OptimizeArticleOptions {
   sourceUrl: string
@@ -87,6 +97,8 @@ export interface OptimizeArticleOptions {
   llmPresetId?: string
   llmModel?: string
   resume?: OptimizePipelineCheckpoint
+  /** When set and URL matches, skip Firecrawl/Tavily and reuse prior research. */
+  reuseResearch?: OptimizeResearchPack
 }
 
 interface ArticleLanguageContext {
@@ -150,7 +162,7 @@ async function extractCompetitorGapInsights(
   skillsText: string,
   articleLang: ArticleLanguageContext,
   userContext: ReturnType<typeof parseUserWritingContext>,
-  maxTokens: number
+  maxTokens?: number
 ): Promise<string> {
   if (!competitorCorpus.trim()) {
     return articleLang.code === 'en'
@@ -185,7 +197,7 @@ async function extractCompetitorGapInsights(
           '- 竞品有、原文缺的高价值内容：具体观点/步骤/技巧/FAQ（每条注明**建议插入的原文章节**）',
           '- 至少 3–8 条可执行要点，写入对应 H2',
           '### 建议删减或替换（REMOVE / REPLACE）',
-          '- 原文中过时、失效、不可用、误导或与现状/E-E-A-T 不符的内容（注明章节；说明删或换的方向）',
+          '- 仅列出有证据的过时/失效/误导内容（注明章节与原因）；**不要**把仍可用的产品使用步骤整段列入删除',
           '- 空洞堆砌、重复、低信任表述也应列入删减候选',
           '',
           `语言：${articleLang.label}`,
@@ -214,7 +226,7 @@ async function auditSourcePage(
   articleLang: ArticleLanguageContext,
   userContext: ReturnType<typeof parseUserWritingContext>,
   wordRange: OptimizeWordRange,
-  maxTokens: number
+  maxTokens?: number
 ): Promise<string> {
   return chatCompletion(
     llm,
@@ -223,7 +235,9 @@ async function auditSourcePage(
         role: 'system',
         content: [
           '你是 SEO/GEO 内容诊断专家。分析现有页面并制定**内容评估 + 按需增删**方案，不要撰写终稿。',
-          '须明确：哪些优质内容保留并增强、哪些缺口应补充、哪些过时/不可用/不符合 E-E-A-T 的内容应删减或替换；禁止默认整节重写，也禁止为保篇幅而保留问题内容。',
+          '须明确：哪些优质内容保留并增强、哪些缺口应补充、哪些过时/不可用/不符合 E-E-A-T 的内容应删减或替换。',
+          '**重要：** 原文中的 how-to / 产品使用步骤 / 分步教程默认视为优质可保留内容；列入 REMOVE 须给出具体失效证据（如界面已变更且步骤不可用），禁止因「可压缩」或「竞品写法不同」建议整段删除教程。',
+          '禁止默认整节重写，也禁止为保篇幅而保留问题内容。',
           getUserContextPromptBlocks(userContext),
           skillsText ? `优化规范（Skills）：\n${skillsText}` : '',
           getEditorPromptBlocks(wordRange)
@@ -240,13 +254,13 @@ async function auditSourcePage(
           '',
           '请输出 Markdown 诊断报告，包含：',
           '1. 页面现状摘要（主题、意图、语言）',
-          '2. **优质内容清单**：仍准确、可用、符合 E-E-A-T 的段落/章节（应保留；可注明可增量补充的竞品要点）',
+          '2. **优质内容清单**：仍准确、可用、符合 E-E-A-T 的段落/章节（应保留；**how-to / 产品使用步骤默认列入保留**；可注明可增量补充的竞品要点）',
           '3. **缺口清单**：原文遗漏但对用户有价值、**应补充**的具体要点（按章节列出）',
-          '4. **删减/替换清单**：过时、不可用、误导、堆砌或损害 E-E-A-T 的内容（按章节列出，说明原因与处理方式）',
+          '4. **删减/替换清单**：仅列有证据的过时、不可用、误导、堆砌内容（按章节说明原因）；**禁止**把仍可用的完整使用步骤/教程整段标为删除',
           '5. 结构与 SEO/GEO 问题（标题层级、关键词、缺失模块如 Quick Answer/FAQ 等）',
           '6. **建议局部改写**的句子（薄弱/难读/SEO 不足，具体到句）',
           '7. **优化动作清单**（KEEP+ENHANCE / ADD / REMOVE / REPLACE / **NEW H2**，按优先级）',
-          '8. 大纲骨架（H2 列表）：保留原文章节顺序；**诊断建议的新模块须用 `[新增 H2] 标题` 标出**并注明插入位置（before/after 某原文章节）',
+          '8. 大纲骨架（H2 列表）：按终稿顺序列出**最终采用的 ## 标题**（可对原 Part 改名）；新增模块用 `[新增 H2] 标题` 并注明 insert before/after；该列表将直接驱动分节写作与 H2 契约，勿写「建议」而不写最终标题',
           '9. **建议新增章节**（可选）：每条 `- [NEW H2] 标题 | insert before/after 「原文章节名」| 要点摘要`',
           '',
           `终稿语言须保持：${articleLang.label}`,
@@ -271,7 +285,7 @@ async function enrichAnchoredOutline(
   anchoredOutline: string,
   audit: string,
   articleLang: ArticleLanguageContext,
-  maxTokens: number
+  maxTokens?: number
 ): Promise<string> {
   return chatCompletion(
     llm,
@@ -279,85 +293,25 @@ async function enrichAnchoredOutline(
       {
         role: 'system',
         content:
-          '你是内容优化编辑。在大纲各 ## 章节下补充编辑要点 bullet：**KEEP+ENHANCE / ADD / REMOVE / REPLACE / 局部改写**；若诊断报告含 `[新增 H2]` / `[NEW H2]` 而大纲中缺失，**可插入该 ## 标题**到诊断指定位置（before/after 某原文章节）。**必须保留**大纲中已有的 ## Quick Answer / ## FAQ 等 GEO 新增模块（即使原文没有对应章节）。'
+          '你是内容优化编辑。在大纲各 ## 章节下补充编辑要点 bullet：**KEEP+ENHANCE / ADD / REMOVE / REPLACE / 局部改写**。**严禁修改、重命名、合并或删除任何 ## 标题文字**（标题已由诊断大纲骨架锁定）。仅当大纲明显缺少诊断中的 `[新增 H2]` / `[NEW H2]` 时才可插入该 ##；不得另起未在诊断骨架中的章节。'
       },
       {
         role: 'user',
         content: [
           '在以下大纲各 ## 章节下补充 1–3 条具体编辑说明（来自诊断报告）。',
-          '可依据诊断 **新增** 标记为 `[新增 H2]` / `[NEW H2]` 的 ## 标题并插入正确位置；不得删除已有原文章节 ## 标题；**不得删除 ## Quick Answer / ## FAQ 等 GEO 模块**；不得无诊断依据地增删其他章节。',
+          '**硬性：完整保留下方每个 ## 标题的原文，一个字都不要改。** 只改标题下的 bullet。',
+          '不得删除已有 ##；不得把 Part 标题改回原文旧名；不得另增诊断骨架未列出的 ##。',
           `语言：${articleLang.label}`,
           '',
           '--- 诊断报告 ---',
           audit.slice(0, 6000),
           '',
-          '--- 大纲（仅可补充 bullet）---',
+          '--- 大纲（仅可补充 bullet；## 标题已锁定）---',
           anchoredOutline
         ].join('\n')
       }
     ],
     { temperature: 0.25, maxTokens }
-  )
-}
-
-async function optimizeArticleSinglePass(
-  llm: LlmConfig,
-  sourceMarkdown: string,
-  title: string,
-  audit: string,
-  competitorInsights: string,
-  skillsText: string,
-  articleLang: ArticleLanguageContext,
-  userContext: ReturnType<typeof parseUserWritingContext>,
-  wordRange: OptimizeWordRange,
-  globalMaxTokens: number
-): Promise<string> {
-  return chatCompletion(
-    llm,
-    [
-      {
-        role: 'system',
-        content: [
-          '你是资深 SEO/GEO 编辑。在**原文上就地优化**：先评估内容质量，**优质处保留并增量增强，问题处删减或替换**。',
-          articleLang.lock,
-          getUserContextPromptBlocks(userContext),
-          skillsText ? `Skills：\n${skillsText}` : '',
-          getEditorPromptBlocks(wordRange)
-        ]
-          .filter(Boolean)
-          .join('\n\n')
-      },
-      {
-        role: 'user',
-        content: [
-          `页面标题：${title}`,
-          userContext.briefForPrompt,
-          '',
-          getOptimizeSinglePassHint(wordRange.label),
-          '',
-          '请输出**完整优化后 Markdown 文章**：',
-          '- 保留原文 H2/H3 顺序；**优质内容**保留有效原句并可增量补充竞品/诊断要点',
-          '- **保留文首导语**：H1 下方、首个正文 Part 前的段落须保留为 ## Introduction 或等价开篇（不可整段删除）',
-          '- **模块顺序**：Quick Answer → Introduction → 正文 Part → FAQ → Conclusion（FAQ 须在 Conclusion 之前）',
-          '- **执行诊断 ADD / NEW H2**：补充缺口、新增诊断标记的 H2 章节',
-          '- **执行诊断 REMOVE/REPLACE**：删减过时、不可用、误导或不符合 E-E-A-T 的内容；终稿变短是正常结果',
-          '- 直接输出正文，不要写修改说明',
-          '- 不要用 ```markdown 代码围栏包裹正文',
-          '',
-          '--- 诊断 ---',
-          audit.slice(0, 5000),
-          '',
-          '--- 竞品缺口 ---',
-          competitorInsights.slice(0, 3000),
-          '',
-          '--- 原文（必须在此基础上就地编辑）---',
-          sourceMarkdown
-        ]
-          .filter(Boolean)
-          .join('\n')
-      }
-    ],
-    { temperature: 0.25, maxTokens: maxTokensForOptimizeFullDraft(countWords(sourceMarkdown), globalMaxTokens) }
   )
 }
 
@@ -367,10 +321,11 @@ async function generateOptimizedOutline(
   audit: string,
   skillsText: string,
   articleLang: ArticleLanguageContext,
-  maxTokens: number
+  maxTokens?: number
 ): Promise<string> {
   const anchored = buildAnchoredOutline(sourceMarkdown, audit, skillsText)
-  return enrichAnchoredOutline(llm, anchored, audit, articleLang, maxTokens)
+  const enriched = await enrichAnchoredOutline(llm, anchored, audit, articleLang, maxTokens)
+  return lockOutlineH2TitlesToTemplate(anchored, enriched)
 }
 
 function resolveOptimizeDraftSections(
@@ -401,6 +356,75 @@ function outlineSectionsToMarkdown(sections: OutlineSection[]): string {
     .join('\n')
 }
 
+function applyOutlineH2Contract(
+  article: string,
+  outline: string,
+  fallbacks: { draft?: string; sourceMarkdown?: string },
+  emit: (event: GenerateProgressEvent) => void,
+  statusPrefix: string,
+  step: GenerateProgressEvent['step'] = 'polish'
+): string {
+  const result = enforceOutlineH2Contract(article, outline, fallbacks)
+  const note = formatOutlineH2ContractStatus(result.report)
+  if (result.fixed) {
+    emit({
+      type: 'status',
+      step,
+      message: note
+        ? `${statusPrefix}大纲 H2 契约已对齐（${note}）`
+        : `${statusPrefix}大纲 H2 契约已对齐`
+    })
+  } else if (note) {
+    emit({
+      type: 'status',
+      step,
+      message: `${statusPrefix}大纲 H2 契约未完全满足：${note}`
+    })
+  }
+  return result.article
+}
+
+/** Optimize-mode product hints: promote selected product without create-mode "ban from generic parts". */
+function getOptimizeSectionProductBlocks(
+  productName: string | undefined,
+  mentionLock: string,
+  sectionKind: DraftSectionProductKind
+): string {
+  if (!productName) return mentionLock
+
+  const base = mentionLock || getUserContextPromptBlocksForSection(productName, mentionLock, sectionKind)
+  const sectionExtra =
+    sectionKind === 'quick-answer'
+      ? getDraftQuickAnswerHint(productName)
+      : sectionKind === 'conclusion'
+        ? `Conclusion：可用 1 句自然回扣「${productName}」；勿展开硬广。`
+        : sectionKind === 'faq'
+          ? `FAQ：至多 1 个答案可轻量提及「${productName}」。`
+          : sectionKind === 'intro'
+            ? `Introduction：可在概述解决方案时轻量点名「${productName}」，勿做功能罗列。`
+            : [
+                `【优化模式 · 产品植入 — ${productName}】`,
+                `用户已选择产品「${productName}」。在本节若自然相关（对比、替代方案、推荐），可保留或轻量强化对该产品的准确全名提及。`,
+                '**禁止**为植入「' + productName + '」而删除、折叠或改写原文中的产品使用步骤 / how-to / 分步教程。',
+                '勿删除原文中已有的该产品或其他产品可用步骤；勿改成 "this tool" 等泛称。',
+                '禁止把整节改写成纯产品硬广，但允许 1–2 处自然植入。'
+              ].join('\n')
+
+  return [base, sectionExtra].filter(Boolean).join('\n\n')
+}
+
+function getOptimizeSectionActionHintWithProduct(
+  pairing: ReturnType<typeof pairOutlineSectionWithSource>,
+  productName?: string
+): string {
+  const base = getOptimizeSectionActionHint(pairing)
+  if (!productName) return base
+  return [
+    base,
+    `用户指定产品「${productName}」：即使本节动作为文本优化，也须保留/自然点名该产品全名，不得抹去或泛化。`
+  ].join('\n')
+}
+
 async function draftOptimizedSections(
   llm: LlmConfig,
   title: string,
@@ -424,6 +448,40 @@ async function draftOptimizedSections(
     emit({ type: 'status', step: 'draft', message: `大纲消毒：${sanitizeNote}…` })
   }
 
+  const pairings = sections.map((section) => {
+    const pairing = pairOutlineSectionWithSource(section, sourceSections, audit)
+    if (
+      /^introduction$/i.test(section.title.trim()) &&
+      pairing.action === 'write_new' &&
+      !pairing.sourceBody?.trim()
+    ) {
+      const leadIn = extractSourceLeadIn(sourceMarkdown)
+      if (leadIn.trim()) {
+        return {
+          ...pairing,
+          sourceTitle: 'Introduction',
+          sourceBody: leadIn,
+          match: 'exact' as const,
+          action: 'text_polish' as const,
+          reason: '原文 H1 与首个 H2 之间的开篇导语即 Introduction，就地润色、禁止重写',
+          fromLeadIn: true
+        }
+      }
+    }
+    return pairing
+  })
+  const pairingSummary = pairings
+    .map(
+      (item, index) =>
+        `${index + 1}. ${item.outlineTitle} → ${formatOptimizeSectionActionLabel(item.action)}`
+    )
+    .join('；')
+  emit({
+    type: 'status',
+    step: 'draft',
+    message: `大纲配对完成：${pairingSummary}`
+  })
+
   const editorBlocks = getEditorPromptBlocks(wordRange)
   const sectionTitles = sections.map((section) => section.title)
   const articleTitle = extractSourceH1(sourceMarkdown, title)
@@ -433,16 +491,15 @@ async function draftOptimizedSections(
   for (let i = startIndex; i < sections.length; i += 1) {
     throwIfAborted()
     const section = sections[i]
+    const pairing = pairings[i]
     const sectionWordBudget = getSectionWordBudget(section.title, sectionTitles, sourceWordTarget)
-    const originalSection = findMatchingSourceSection(section.title, sourceSections)
-    const isAuditNewH2 = isAuditRecommendedNewSection(section.title, audit)
-    const isNewSection =
-      (isNewOptimizeSection(section.title, audit) && !originalSection) || isAuditNewH2
+    const originalBody = pairing.sourceBody?.trim() ?? ''
+    const hasOriginal = Boolean(originalBody) && pairing.action !== 'write_new'
 
     emit({
       type: 'status',
       step: 'draft',
-      message: `正在优化第 ${i + 1}/${sections.length} 节：${section.title}`
+      message: `正在优化第 ${i + 1}/${sections.length} 节：${section.title}（${formatOptimizeSectionActionLabel(pairing.action)}）`
     })
 
     const sectionProductKind = classifyDraftSectionProductKind(
@@ -451,17 +508,18 @@ async function draftOptimizedSections(
       userContext.productName,
       { geo: Boolean(userContext.productName) }
     )
-    const sectionLayoutHint = getSectionDraftLayoutHint({
-      sectionTitle: section.title,
-      sectionBody: section.body,
-      productName: userContext.productName,
-      geo: Boolean(userContext.productName)
-    })
-    const sectionUserContextBlocks = getUserContextPromptBlocksForSection(
+    const sectionUserContextBlocks = getOptimizeSectionProductBlocks(
       userContext.productName,
       userContext.mentionLock,
       sectionProductKind
     )
+
+    const systemRoleByAction =
+      pairing.action === 'text_polish'
+        ? '你是 SEO/GEO 内容编辑。本节已与原文大纲配对为**文本优化**：保留有效原句与信息结构，仅做语言与可读性改进；若用户指定了产品，须保留并自然使用产品全名。'
+        : pairing.action === 'write_new'
+          ? '你是 SEO/GEO 内容编辑。本节为大纲新增模块：按诊断与竞品缺口**新写**完整正文；若用户指定了产品，在合适位置自然植入。'
+          : '你是 SEO/GEO 内容编辑。本节已与原文大纲配对为**内容增删**：优质原句保留并增量补充，过时/不可用/低 E-E-A-T 内容删减或替换；落实用户指定产品的自然提及。'
 
     const sectionText = await chatCompletion(
       llm,
@@ -469,12 +527,13 @@ async function draftOptimizedSections(
         {
           role: 'system',
           content: [
-            '你是 SEO/GEO 内容编辑。对本节做**内容评估 + 按需增删**：优质原句保留并增量补充，过时/不可用/低 E-E-A-T 内容删减或替换。',
+            systemRoleByAction,
             articleLang.lock,
             sectionUserContextBlocks,
             skillsText ? `Skills：\n${skillsText}` : '',
             editorBlocks,
-            '只输出本节 Markdown 正文（不要 ## 标题行），不要解释修改过程。'
+            '只输出本节 Markdown 正文（不要 ## / ### 本节标题行），不要解释修改过程。',
+            '本节标题与位置须严格遵循优化大纲，不得改名或并入其他章节。'
           ]
             .filter(Boolean)
             .join('\n\n')
@@ -485,25 +544,19 @@ async function draftOptimizedSections(
             `页面标题：${articleTitle}`,
             `输出语言：${articleLang.label}（与原文一致）`,
             userContext.briefForPrompt,
-            getSourceSectionEditHint({
-              isNewSection,
-              hasOriginal: Boolean(originalSection) && !isAuditNewH2,
-              sectionTitle: section.title,
-              isAuditNewH2
-            }),
+            getOptimizeSectionActionHintWithProduct(pairing, userContext.productName),
             getIntroConclusionSectionHint(section.title),
-            sectionLayoutHint,
             '',
-            originalSection ? `--- 原文本节 ---\n${originalSection.body.trim()}\n---` : '',
+            hasOriginal ? `--- 原文本节（${pairing.sourceTitle}）---\n${originalBody}\n---` : '',
             '',
-            '编辑说明（来自大纲/诊断，仅作局部修改参考）：',
-            section.body.trim() ? section.body.trim() : '',
+            '编辑说明（来自优化大纲，必须落实）：',
+            section.body.trim() ? section.body.trim() : '（无额外 bullet；按本节动作执行）',
             '',
-            '诊断摘要：',
-            audit.slice(0, 2500),
+            pairing.action === 'text_polish' ? '' : '诊断摘要：',
+            pairing.action === 'text_polish' ? '' : audit.slice(0, 2500),
             '',
-            '可补充的竞品缺口（优质章节须写入本节相关处）：',
-            competitorInsights.slice(0, 2000),
+            pairing.action === 'text_polish' ? '' : '可补充的竞品缺口（内容增删/新写时写入本节相关处）：',
+            pairing.action === 'text_polish' ? '' : competitorInsights.slice(0, 2000),
             '',
             `输出优化后的「${section.title}」正文。`,
             `词数参考：${wordRange.label}；本节约 ${sectionWordBudget} 词。`
@@ -513,17 +566,18 @@ async function draftOptimizedSections(
         }
       ],
       {
-        temperature: 0.25,
+        temperature: pairing.action === 'text_polish' ? 0.2 : 0.25,
         maxTokens: maxTokensForOptimizeSection(
-          isAuditNewH2
+          pairing.action === 'write_new'
             ? Math.max(sectionWordBudget, 280)
-            : countWords(originalSection?.body ?? ''),
+            : countWords(originalBody),
           globalMaxTokens
         )
       }
     )
 
-    const block = `## ${section.title}\n\n${sectionText.trim()}\n\n`
+    const body = stripLeadingSectionHeading(sectionText, section.title)
+    const block = `## ${section.title}\n\n${body}\n\n`
     fullDraft += block
     emit({ type: 'chunk', text: block, step: 'draft' })
     resume?.onSectionComplete?.(i, sections.length, fullDraft.trim())
@@ -556,6 +610,9 @@ async function polishOptimizedArticle(
           '你是校对编辑。对**已优化稿**做终稿校对：语法、衔接、可读性与模块完整性；不是整篇重写。',
           articleLang.lock,
           getUserContextPromptBlocks(userContext),
+          userContext.productName
+            ? getPolishProductHint(userContext.productName, { geo: true })
+            : '',
           getOptimizePolishSystemBlocks(),
           CONTENT_READABILITY_GUIDANCE
         ]
@@ -568,12 +625,17 @@ async function polishOptimizedArticle(
           '对以下优化稿做终稿校对：',
           `- 保持${articleLang.label}`,
           getOptimizePolishHint(),
+          userContext.productName
+            ? `- 保留用户指定产品「${userContext.productName}」的准确全名，勿删改成泛称`
+            : '',
           `- 全文词数参考：${wordRange.label}`,
           '- 直接输出 Markdown 正文',
           '- 不要用 ```markdown 代码围栏包裹正文',
           '',
           draft
-        ].join('\n')
+        ]
+          .filter(Boolean)
+          .join('\n')
       }
     ],
     {
@@ -635,7 +697,9 @@ export async function optimizeArticle(
     return { ok: false, message: error instanceof Error ? error.message : 'URL 无效' }
   }
 
-  const userContext = parseUserWritingContext(options.extraInstructions)
+  const userContext = parseUserWritingContext(
+    options.resume?.options.extraInstructions ?? options.extraInstructions
+  )
 
   return runWithTokenContext(createTokenRunContext('optimize', sourceUrl), async () => {
   const resume = options.resume
@@ -677,12 +741,17 @@ export async function optimizeArticle(
   let competitorInsights = resume?.competitorInsights
   let wordRange: OptimizeWordRange | undefined
   let useSinglePass = resume?.useSinglePass
+  const reusedPack = optimizeResearchPackMatchesUrl(options.reuseResearch, sourceUrl)
+    ? options.reuseResearch
+    : undefined
 
   try {
     emit({
       type: 'status',
       step: 'skills',
-      message: resume?.statusLabel ? `继续优化：${resume.statusLabel}` : '① 加载优化 Skills…'
+      message: resume?.statusLabel
+        ? `继续优化：${resume.statusLabel}`
+        : `① 加载优化 Skills…${userContext.productName ? `（产品：${userContext.productName}）` : ''}`
     })
     const skillBundles = await getEnabledSkillBundles('optimize')
     const skillsText = buildFullSkillsText(skillBundles)
@@ -692,18 +761,40 @@ export async function optimizeArticle(
     let sourceSections: OutlineSection[]
 
     if (shouldRunPipelineStep(nextStep, 'scrape', 'optimize') || !sourceMarkdown) {
-      emit({ type: 'status', step: 'scrape', message: '② 抓取页面正文…' })
-      scraped = await scrapeToMarkdown(sourceUrl, firecrawlKey, OPTIMIZE_MAX_MARKDOWN_CHARS)
-      validateSourceMarkdown(scraped.markdown)
-      sourceMarkdown = scraped.markdown
-      sourceTitle = scraped.title
-      sourceSections = parseSourceSections(scraped.markdown)
-      emit({
-        type: 'research',
-        step: 'scrape',
-        message: '页面抓取完成',
-        researchSummary: buildSourcePreviewMarkdown(scraped.url, scraped.title, scraped.markdown)
-      })
+      if (reusedPack) {
+        emit({
+          type: 'status',
+          step: 'scrape',
+          message: '② 复用上次页面抓取（跳过 Firecrawl）…'
+        })
+        scraped = {
+          url: sourceUrl,
+          title: reusedPack.sourceTitle || sourceUrl,
+          markdown: reusedPack.sourceMarkdown
+        }
+        sourceMarkdown = scraped.markdown
+        sourceTitle = scraped.title
+        sourceSections = parseSourceSections(scraped.markdown)
+        emit({
+          type: 'research',
+          step: 'scrape',
+          message: '已复用上次页面抓取',
+          researchSummary: reusedPack.researchSummary || buildSourcePreviewMarkdown(scraped.url, scraped.title, scraped.markdown)
+        })
+      } else {
+        emit({ type: 'status', step: 'scrape', message: '② 抓取页面正文…' })
+        scraped = await scrapeToMarkdown(sourceUrl, firecrawlKey, OPTIMIZE_MAX_MARKDOWN_CHARS)
+        validateSourceMarkdown(scraped.markdown)
+        sourceMarkdown = scraped.markdown
+        sourceTitle = scraped.title
+        sourceSections = parseSourceSections(scraped.markdown)
+        emit({
+          type: 'research',
+          step: 'scrape',
+          message: '页面抓取完成',
+          researchSummary: buildSourcePreviewMarkdown(scraped.url, scraped.title, scraped.markdown)
+        })
+      }
     } else {
       scraped = {
         url: sourceUrl,
@@ -735,7 +826,21 @@ export async function optimizeArticle(
             : '（未启用竞品调研，将仅基于原页面与 Skills 做缺口分析。）'
       }
 
-      if (canRunResearch(research)) {
+      if (reusedPack) {
+        emit({
+          type: 'status',
+          step: 'extract',
+          message: '③ 复用上次竞品调研（跳过 Tavily / Firecrawl）…'
+        })
+        competitorInsights = reusedPack.competitorInsights
+        emit({
+          type: 'research',
+          step: 'extract',
+          message: '已复用上次竞品调研',
+          researchSummary: reusedPack.researchSummary
+        })
+        emit({ type: 'researchPack', researchPack: reusedPack })
+      } else if (canRunResearch(research)) {
         emit({ type: 'status', step: 'expand', message: '③ 搜索意图分析 & 拆解竞品搜索词…' })
         const intentResult = await analyzeAndExpandSearchQueries(llmPre, {
           topic: researchTopic,
@@ -800,16 +905,33 @@ export async function optimizeArticle(
             stepTokens.eeatExtract
           )
 
+          const researchSummary = buildResearchDisplayMarkdown(
+            researchTopic,
+            searchQueries,
+            competitorSources,
+            research,
+            {
+              intentSummary: searchIntentSummary,
+              extractedPreview: competitorInsights
+            }
+          )
           emit({
             type: 'research',
             step: 'extract',
             message: '竞品缺口分析完成',
-            researchSummary: buildResearchDisplayMarkdown(researchTopic, searchQueries, competitorSources, research, {
-              intentSummary: searchIntentSummary,
-              extractedPreview: competitorInsights
-            }),
+            researchSummary,
             sources: mapSources(competitorSources)
           })
+
+          const pack: OptimizeResearchPack = {
+            kind: 'optimize',
+            sourceUrl,
+            sourceTitle: scraped.title,
+            sourceMarkdown: scraped.markdown,
+            competitorInsights,
+            researchSummary
+          }
+          emit({ type: 'researchPack', researchPack: pack })
         } catch (error) {
           const message = error instanceof Error ? error.message : '竞品调研失败'
           emit({
@@ -817,13 +939,34 @@ export async function optimizeArticle(
             step: 'search',
             message: `竞品调研跳过：${message}`
           })
+          // Still persist source scrape so regenerate can skip Firecrawl for the page itself.
+          const pack: OptimizeResearchPack = {
+            kind: 'optimize',
+            sourceUrl,
+            sourceTitle: scraped.title,
+            sourceMarkdown: scraped.markdown,
+            competitorInsights: competitorInsights!,
+            researchSummary: buildSourcePreviewMarkdown(scraped.url, scraped.title, scraped.markdown)
+          }
+          emit({ type: 'researchPack', researchPack: pack })
         }
-      } else if (research.enabled) {
-        emit({
-          type: 'status',
-          step: 'search',
-          message: '未配置 Tavily / Firecrawl 或未启用调研，跳过竞品调研…'
-        })
+      } else {
+        if (research.enabled) {
+          emit({
+            type: 'status',
+            step: 'search',
+            message: '未配置 Tavily / Firecrawl 或未启用调研，跳过竞品调研…'
+          })
+        }
+        const pack: OptimizeResearchPack = {
+          kind: 'optimize',
+          sourceUrl,
+          sourceTitle: scraped.title,
+          sourceMarkdown: scraped.markdown,
+          competitorInsights: competitorInsights!,
+          researchSummary: buildSourcePreviewMarkdown(scraped.url, scraped.title, scraped.markdown)
+        }
+        emit({ type: 'researchPack', researchPack: pack })
       }
 
       emit({ type: 'status', step: 'extract', message: '⑥ 诊断原页面 SEO/GEO 问题…' })
@@ -864,7 +1007,7 @@ export async function optimizeArticle(
     }
 
     if (shouldRunPipelineStep(nextStep, 'outline', 'optimize')) {
-      emit({ type: 'status', step: 'outline', message: '⑦ 基于原文章节生成优化大纲…' })
+      emit({ type: 'status', step: 'outline', message: '⑦ 按诊断大纲骨架生成优化大纲…' })
       outline = await generateOptimizedOutline(
         llmBody,
         scraped.markdown,
@@ -873,27 +1016,25 @@ export async function optimizeArticle(
         articleLang,
         stepTokens.outline
       )
-      useSinglePass = sourceSections.length <= 1
+      useSinglePass = false
       const { sections: draftSections, log: sanitizeLog } = resolveOptimizeDraftSections(outline, sourceSections)
       const sanitizeNote = formatSectionSanitizeStatus(sanitizeLog)
       if (sanitizeNote) {
         emit({ type: 'status', step: 'outline', message: `⑦ 大纲消毒：${sanitizeNote}` })
       }
-      if (!useSinglePass) {
-        outline = outlineSectionsToMarkdown(draftSections)
-      }
-      const sectionCount = useSinglePass ? 1 : draftSections.length
+      outline = outlineSectionsToMarkdown(draftSections)
+      const sectionCount = draftSections.length
       const articleTitle = extractSourceH1(scraped.markdown, scraped.title)
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('draft', {
-          statusLabel: `⑦ 大纲已完成 · 共 ${sectionCount} 节`,
+          statusLabel: `⑦ 大纲已完成 · 共 ${sectionCount} 节（将按大纲分段撰写）`,
           sourceTitle: scraped.title,
           sourceMarkdown: scraped.markdown,
           audit,
           outline,
           competitorInsights,
           wordRange,
-          useSinglePass,
+          useSinglePass: false,
           partialDraft: `# ${articleTitle}\n\n`,
           draftSectionIndex: 0,
           draftSectionCount: sectionCount
@@ -905,116 +1046,75 @@ export async function optimizeArticle(
       return { ok: false, message: '无法继续：缺少优化大纲，请重新开始。' }
     }
 
-    if (useSinglePass == null) {
-      useSinglePass = sourceSections.length <= 1
-    }
+    useSinglePass = false
 
     let draft = resume?.workText ?? resume?.partialDraft ?? ''
     if (shouldRunPipelineStep(nextStep, 'draft', 'optimize')) {
       emit({
         type: 'status',
         step: 'draft',
-        message: useSinglePass
-          ? `⑧ 就地优化全文（${articleLang.label} · 内容评估 + 按需增删）…`
-          : resume?.draftSectionIndex
-            ? `⑧ 继续按章节优化（${(resume.draftSectionIndex ?? 0) + 1}/${resume.draftSectionCount ?? '?'} 起）…`
-            : `⑧ 按章节优化（${articleLang.label} · 保留增强 / 删减替换）…`
+        message: resume?.draftSectionIndex
+          ? `⑧ 继续按大纲分段优化（${(resume.draftSectionIndex ?? 0) + 1}/${resume.draftSectionCount ?? '?'} 起）…`
+          : `⑧ 按大纲分段优化（${articleLang.label} · 先配对原文再撰写）…`
       })
 
-      if (useSinglePass) {
-        const optimized = normalizeArticleMarkdown(
-          await optimizeArticleSinglePass(
-          llmBody,
-          scraped.markdown,
-          scraped.title,
-          audit,
-          competitorInsights,
-          stepSkills,
-          articleLang,
-          userContext,
-          wordRange,
-          globalMaxTokens
-          )
-        )
-        draft = reorderArticleMarkdown(
-          optimized.startsWith('#')
-            ? optimized
-            : `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n${optimized}`
-        )
-        emit({ type: 'chunk', text: draft, step: 'draft' })
-        emitOptimizeCheckpoint(
-          buildOptimizeCheckpoint('polish', {
-            statusLabel: '⑧ 全文优化完成',
-            sourceTitle: scraped.title,
-            sourceMarkdown: scraped.markdown,
-            audit,
-            outline,
-            competitorInsights,
-            wordRange,
-            useSinglePass: true,
-            partialDraft: draft,
-            workText: draft
-          })
-        )
-      } else {
-        draft = await draftOptimizedSections(
-          llmBody,
-          scraped.title,
-          outline,
-          scraped.markdown,
-          sourceSections,
-          audit,
-          competitorInsights,
-          stepSkills,
-          articleLang,
-          userContext,
-          wordRange,
-          countWords(scraped.markdown),
-          globalMaxTokens,
-          emit,
-          {
-            startIndex: resume?.draftSectionIndex ?? 0,
-            initialDraft:
-              resume?.partialDraft ?? `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n`,
-            onSectionComplete: (sectionIndex, total, partial) => {
-              const nextIndex = sectionIndex + 1
-              if (nextIndex < total) {
-                emitOptimizeCheckpoint(
-                  buildOptimizeCheckpoint('draft', {
-                    statusLabel: `⑧ 已完成第 ${nextIndex}/${total} 节`,
-                    sourceTitle: scraped.title,
-                    sourceMarkdown: scraped.markdown,
-                    audit,
-                    outline,
-                    competitorInsights,
-                    wordRange,
-                    useSinglePass: false,
-                    partialDraft: partial,
-                    draftSectionIndex: nextIndex,
-                    draftSectionCount: total
-                  })
-                )
-              } else {
-                emitOptimizeCheckpoint(
-                  buildOptimizeCheckpoint('polish', {
-                    statusLabel: '⑧ 章节优化完成',
-                    sourceTitle: scraped.title,
-                    sourceMarkdown: scraped.markdown,
-                    audit,
-                    outline,
-                    competitorInsights,
-                    wordRange,
-                    useSinglePass: false,
-                    partialDraft: partial,
-                    workText: partial,
-                    draftSectionCount: total
-                  })
-                )
-              }
+      draft = await draftOptimizedSections(
+        llmBody,
+        scraped.title,
+        outline,
+        scraped.markdown,
+        sourceSections,
+        audit,
+        competitorInsights,
+        stepSkills,
+        articleLang,
+        userContext,
+        wordRange,
+        countWords(scraped.markdown),
+        globalMaxTokens,
+        emit,
+        {
+          startIndex: resume?.draftSectionIndex ?? 0,
+          initialDraft:
+            resume?.partialDraft ?? `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n`,
+          onSectionComplete: (sectionIndex, total, partial) => {
+            const nextIndex = sectionIndex + 1
+            if (nextIndex < total) {
+              emitOptimizeCheckpoint(
+                buildOptimizeCheckpoint('draft', {
+                  statusLabel: `⑧ 已完成第 ${nextIndex}/${total} 节`,
+                  sourceTitle: scraped.title,
+                  sourceMarkdown: scraped.markdown,
+                  audit,
+                  outline,
+                  competitorInsights,
+                  wordRange,
+                  useSinglePass: false,
+                  partialDraft: partial,
+                  draftSectionIndex: nextIndex,
+                  draftSectionCount: total
+                })
+              )
+            } else {
+              emitOptimizeCheckpoint(
+                buildOptimizeCheckpoint('polish', {
+                  statusLabel: '⑧ 章节优化完成',
+                  sourceTitle: scraped.title,
+                  sourceMarkdown: scraped.markdown,
+                  audit,
+                  outline,
+                  competitorInsights,
+                  wordRange,
+                  useSinglePass: false,
+                  partialDraft: partial,
+                  workText: partial,
+                  draftSectionCount: total
+                })
+              )
             }
           }
-        )
-      }
+        }
+      )
     }
 
     let polished =
@@ -1032,6 +1132,14 @@ export async function optimizeArticle(
         globalMaxTokens,
         emit,
         (text) => emit({ type: 'chunk', text, step: 'polish' })
+      )
+      polished = applyOutlineH2Contract(
+        polished,
+        outline,
+        { draft, sourceMarkdown: scraped.markdown },
+        emit,
+        '⑨ ',
+        'polish'
       )
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('length', {
@@ -1053,18 +1161,38 @@ export async function optimizeArticle(
       if (!polished) {
         return { ok: false, message: '无法继续：缺少校对稿，请重新开始。' }
       }
+      // Resume into length may skip polish — still enforce H2 contract first.
+      if (!shouldRunPipelineStep(nextStep, 'polish', 'optimize')) {
+        polished = applyOutlineH2Contract(
+          polished,
+          outline,
+          { draft: resume?.partialDraft, sourceMarkdown: scraped.markdown },
+          emit,
+          '⑩ ',
+          'length'
+        )
+      }
       lengthAdjusted = reorderArticleMarkdown(
         await enforceOptimizeArticleWordCount(
-        llmBody,
-        polished,
-        scraped.title,
-        articleLang,
-        wordRange,
-        scraped.markdown,
-        maxTokensForOptimizeLengthAdjust(countArticleWords(polished), globalMaxTokens),
-        emit,
-        (text) => emit({ type: 'chunk', text, step: 'length' })
+          llmBody,
+          polished,
+          scraped.title,
+          articleLang,
+          wordRange,
+          scraped.markdown,
+          maxTokensForOptimizeLengthAdjust(countArticleWords(polished), globalMaxTokens),
+          emit,
+          (text) => emit({ type: 'chunk', text, step: 'length' }),
+          { audit }
         )
+      )
+      lengthAdjusted = applyOutlineH2Contract(
+        lengthAdjusted,
+        outline,
+        { draft: polished, sourceMarkdown: scraped.markdown },
+        emit,
+        '⑩ ',
+        'length'
       )
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('meta', {

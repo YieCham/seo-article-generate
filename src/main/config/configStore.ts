@@ -11,6 +11,7 @@ import {
   normalizeQuickPicks,
   normalizeResearchConfig,
   normalizeWindowClose,
+  normalizeImageGenConfig,
   resolveLlmConfigFromSelection,
   type AppConfig,
   type LlmConfig,
@@ -50,7 +51,8 @@ function mergeWithDefaults(partial: ConfigPartial): AppConfig {
     ),
     skillEnablementInitialized:
       partial.skillEnablementInitialized ?? DEFAULT_CONFIG.skillEnablementInitialized,
-    windowClose: normalizeWindowClose(partial.windowClose ?? DEFAULT_CONFIG.windowClose)
+    windowClose: normalizeWindowClose(partial.windowClose ?? DEFAULT_CONFIG.windowClose),
+    imageGen: normalizeImageGenConfig(partial.imageGen ?? DEFAULT_CONFIG.imageGen)
   }
 }
 
@@ -164,6 +166,9 @@ export async function saveConfig(partial: Partial<AppConfig>): Promise<AppConfig
     ...partial,
     prompts: mergeModePrompts(current.prompts, partial.prompts),
     research: { ...current.research, ...partial.research },
+    imageGen: partial.imageGen
+      ? normalizeImageGenConfig({ ...current.imageGen, ...partial.imageGen })
+      : current.imageGen,
     enabledSkills: mergeModeEnabledSkills(current.enabledSkills, partial.enabledSkills),
     quickPicks: partial.quickPicks
       ? normalizeQuickPicks({ ...current.quickPicks, ...partial.quickPicks })

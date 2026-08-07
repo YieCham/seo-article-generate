@@ -1,6 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export type SessionConfirmAction = 'clear' | 'delete' | 'regenerate'
+
+export interface RegenerateConfirmOptions {
+  forceRefreshResearch: boolean
+}
 
 const CONFIRM_COPY: Record<
   SessionConfirmAction,
@@ -27,7 +31,9 @@ interface SessionConfirmDialogProps {
   open: boolean
   action: SessionConfirmAction | null
   sessionTitle: string
-  onConfirm: () => void
+  /** When regenerating a session that already has a research pack. */
+  hasResearchPack?: boolean
+  onConfirm: (options?: RegenerateConfirmOptions) => void
   onClose: () => void
 }
 
@@ -35,10 +41,12 @@ export default function SessionConfirmDialog({
   open,
   action,
   sessionTitle,
+  hasResearchPack = false,
   onConfirm,
   onClose
 }: SessionConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const [forceRefreshResearch, setForceRefreshResearch] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -53,12 +61,14 @@ export default function SessionConfirmDialog({
 
   useEffect(() => {
     if (!open) return
+    setForceRefreshResearch(false)
     cancelRef.current?.focus()
-  }, [open])
+  }, [open, action])
 
   if (!open || !action) return null
 
   const copy = CONFIRM_COPY[action]
+  const showResearchToggle = action === 'regenerate' && hasResearchPack
 
   return (
     <div className="write-mode-picker-backdrop" onClick={onClose}>
@@ -75,6 +85,12 @@ export default function SessionConfirmDialog({
         </h2>
         <p id="session-confirm-desc" className="session-confirm-desc">
           {copy.message}
+          {showResearchToggle ? (
+            <>
+              <br />
+              默认复用上次调研结果，不消耗 Tavily / Firecrawl 额度。
+            </>
+          ) : null}
           {sessionTitle ? (
             <>
               <br />
@@ -82,6 +98,16 @@ export default function SessionConfirmDialog({
             </>
           ) : null}
         </p>
+        {showResearchToggle ? (
+          <label className="session-confirm-checkbox">
+            <input
+              type="checkbox"
+              checked={forceRefreshResearch}
+              onChange={(event) => setForceRefreshResearch(event.target.checked)}
+            />
+            <span>重新拉取调研（消耗 Tavily / Firecrawl 额度）</span>
+          </label>
+        ) : null}
         <div className="session-rename-actions session-confirm-actions">
           <button ref={cancelRef} type="button" className="secondary" onClick={onClose}>
             取消
@@ -89,7 +115,13 @@ export default function SessionConfirmDialog({
           <button
             type="button"
             className={action === 'delete' ? 'danger' : undefined}
-            onClick={onConfirm}
+            onClick={() => {
+              if (action === 'regenerate') {
+                onConfirm({ forceRefreshResearch: showResearchToggle ? forceRefreshResearch : true })
+              } else {
+                onConfirm()
+              }
+            }}
           >
             {copy.confirmLabel}
           </button>

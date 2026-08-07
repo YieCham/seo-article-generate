@@ -7,8 +7,17 @@ import LlmPresetPanel from './settings/LlmPresetPanel'
 import LlmRoleRoutingPanel from './settings/LlmRoleRoutingPanel'
 import TokenLogPanel from './settings/TokenLogPanel'
 import WindowClosePanel from './settings/WindowClosePanel'
+import ImageGenPanel from './settings/ImageGenPanel'
 
-type SettingsTab = 'general' | 'llm' | 'tokenLog' | 'research' | 'shortcuts' | 'prompts' | 'skills'
+type SettingsTab =
+  | 'general'
+  | 'llm'
+  | 'tokenLog'
+  | 'research'
+  | 'shortcuts'
+  | 'prompts'
+  | 'skills'
+  | 'imageGen'
 
 const DEFAULT_CREATE_PROMPTS = {
   systemPrompt:
@@ -227,13 +236,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
 
   async function handlePersistLlmPresets(presets: LlmPreset[]): Promise<void> {
     if (!config) return
-    try {
-      const next = await window.app.saveConfig({ llmPresets: presets })
-      setConfig(next)
-      onConfigSaved?.()
-    } catch {
-      setStatus('模型列表保存失败')
-    }
+    const next = await window.app.saveConfig({ llmPresets: presets })
+    setConfig(next)
+    onConfigSaved?.()
   }
 
   async function handlePersistLlmRoleRouting(routing: AppConfig['llmRoleRouting']): Promise<void> {
@@ -252,6 +257,18 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     await handleSaveConfig({
       windowClose: config.windowClose
     })
+  }
+
+  async function handleSaveImageGen(): Promise<void> {
+    if (!config) return
+    const imageGen = config.imageGen ?? {
+      apiUrl: 'https://uuapi.shop/v1/images/generations',
+      apiKey: '',
+      model: 'gpt-image-2',
+      size: '1024x1024',
+      defaultPrompt: ''
+    }
+    await handleSaveConfig({ imageGen })
   }
 
   function handleSelectEditingPreset(id: string): void {
@@ -402,6 +419,15 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         <button
           type="button"
           role="tab"
+          aria-selected={tab === 'imageGen'}
+          className={tab === 'imageGen' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('imageGen')}
+        >
+          绘图
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === 'general'}
           className={tab === 'general' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('general')}
@@ -426,7 +452,8 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
             testingModel={testingModel}
             onConfigChange={setConfig}
             onSave={() => void handleSaveLlmPresets()}
-            onPersistPresets={(presets) => void handlePersistLlmPresets(presets)}
+            onPersistPresets={(presets) => handlePersistLlmPresets(presets)}
+            onStatus={setStatus}
             onTest={(presetId, model) => void handleTestConnection(presetId, model)}
             onSelectPreset={handleSelectEditingPreset}
             onAddPreset={handleAddLlmPreset}
@@ -841,6 +868,21 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         </>
       )}
 
+      {tab === 'imageGen' && config && (
+        <section className="panel">
+          <h2 className="section-title">绘图接口</h2>
+          <p className="section-desc">
+            配置图片生成 API（OpenAI Images 兼容）。左侧栏进入绘图后，将使用此处参数发起请求。
+          </p>
+          <ImageGenPanel
+            config={config}
+            saving={saving}
+            onConfigChange={setConfig}
+            onSave={() => void handleSaveImageGen()}
+          />
+        </section>
+      )}
+
       {tab === 'general' && config && (
         <section className="panel">
           <h2 className="section-title">关闭窗口</h2>
@@ -865,7 +907,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
             status.includes('已保存') ||
             status.includes('已删除') ||
             status.includes('已启用') ||
-            status.includes('已禁用')
+            status.includes('已禁用') ||
+            status.includes('已将') ||
+            status.includes('已清除')
               ? ' is-success'
               : ''
           }`}

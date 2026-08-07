@@ -1,9 +1,9 @@
 export const DEFAULT_LLM_MAX_TOKENS = 32768
 
-/** Mirrors main process; set false to use global llmMaxTokens only. */
+/** Mirrors main process. When false, API calls omit max_tokens. */
 export const USE_STEP_TOKEN_CAPS = false
 
-/** Per-step output caps (mirrors main process); each request uses min(stepCap, global llmMaxTokens). */
+/** Per-step output caps (mirrors main process); only used when USE_STEP_TOKEN_CAPS is true. */
 export const STEP_TOKEN_CAPS: Record<string, number> = {
   intentExpand: 6144,
   eeatExtract: 12288,
@@ -22,4 +22,3 @@ export const STEP_TOKEN_CAPS: Record<string, number> = {
   optimizePolish: 24576,
   optimizeLengthAdjust: 16384
 }
-

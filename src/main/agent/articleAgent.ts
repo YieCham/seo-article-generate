@@ -9,6 +9,7 @@ import {
 } from '../token/tokenUsageContext'
 import { maxTokensForFullArticleOutput, maxTokensForOutlineSkeleton, maxTokensForPlanning, resolveStepMaxTokens } from '../config/llmTokenLimits'
 import type { ResearchConfig } from '../config/types'
+import { LLM_REASONING_EFFORT_OPTIONS } from '../config/types'
 import { getEnabledSkillBundles, type EnabledSkillBundle } from './skillManager'
 import {
   buildFullSkillsText,
@@ -122,7 +123,12 @@ import {
   type PipelineCheckpoint,
   shouldRunPipelineStep
 } from './pipelineCheckpoint'
-import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
+import { normalizeArticleMarkdown, stripLeadingSectionHeading } from '../../shared/normalizeArticleMarkdown'
+import {
+  createResearchPackMatchesTopic,
+  type CreateResearchPack,
+  type ResearchPack
+} from '../../shared/researchPack'
 
 export interface GenerateArticleOptions {
   topic: string
@@ -131,6 +137,8 @@ export interface GenerateArticleOptions {
   llmPresetId?: string
   llmModel?: string
   resume?: CreatePipelineCheckpoint
+  /** When set and topic matches, skip Tavily/Firecrawl and reuse extracted research. */
+  reuseResearch?: CreateResearchPack
 }
 
 export interface ResearchSourcePreview {
@@ -164,6 +172,7 @@ export interface GenerateProgressEvent {
     | 'cancelled'
     | 'replace'
     | 'research'
+    | 'researchPack'
     | 'reset'
     | 'planning'
     | 'prepend'
@@ -176,6 +185,7 @@ export interface GenerateProgressEvent {
   planningSummary?: string
   sources?: ResearchSourcePreview[]
   checkpoint?: PipelineCheckpoint
+  researchPack?: ResearchPack
 }
 
 interface ArticleLanguageContext {
@@ -271,7 +281,7 @@ async function extractEeatInsights(
   skillCtx: PipelineSkillContext,
   articleLang: ArticleLanguageContext,
   userContext: UserWritingContext,
-  maxTokens: number
+  maxTokens?: number
 ): Promise<string> {
   const stepSkills = getSkillsTextForStep('extract', { bundles: skillCtx.bundles })
   if (!corpus.trim()) {
@@ -330,7 +340,7 @@ async function generateArticlePlan(
   skillCtx: PipelineSkillContext,
   articleLang: ArticleLanguageContext,
   userContext: UserWritingContext,
-  maxTokens: number
+  maxTokens?: number
 ): Promise<string> {
   const { reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
     skillCtx.skillsText,
@@ -410,7 +420,7 @@ async function generateDifferentiatedOutline(
   skillCtx: PipelineSkillContext,
   userContext: UserWritingContext,
   articleLang: ArticleLanguageContext,
-  maxTokens: number
+  maxTokens?: number
 ): Promise<string> {
   const { geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
     skillCtx.skillsText,
@@ -595,7 +605,7 @@ async function draftBySections(
             articleLang.lock,
             getWritingPromptBlocks(sectionUserContextBlocks, topic),
             stepSkills || combined,
-            '只输出本节 Markdown 正文，不要重复输出大纲。'
+            '只输出本节 Markdown 正文，不要输出 ## / ### 本节标题行，不要重复输出大纲。'
           ]
             .filter(Boolean)
             .join('\n\n')
@@ -651,7 +661,8 @@ async function draftBySections(
       { temperature: 0.65, maxTokens: maxTokensForWordBudget(tokenWordBudget, globalMaxTokens, draftTokenTier) }
     )
 
-    const block = `## ${section.title}\n\n${sectionText.trim()}\n\n`
+    const body = stripLeadingSectionHeading(sectionText, section.title)
+    const block = `## ${section.title}\n\n${body}\n\n`
     fullDraft += block
     emit({ type: 'chunk', text: block, step: 'draft' })
     resume?.onSectionComplete?.(i, sections.length, fullDraft.trim())
@@ -667,7 +678,7 @@ async function polishDraft(
   skillCtx: PipelineSkillContext,
   userContext: UserWritingContext,
   articleLang: ArticleLanguageContext,
-  maxTokens: number,
+  maxTokens: number | undefined,
   emit: (event: GenerateProgressEvent) => void,
   onChunk: (text: string) => void
 ): Promise<string> {
@@ -862,72 +873,106 @@ export async function generateArticle(
     let sources: ResearchSource[] = []
 
     if (shouldRunPipelineStep(nextStep, 'extract', 'create')) {
-      if (canRunResearch(research)) {
-      emit({ type: 'status', step: 'expand', message: '② 搜索意图分析 & 拆解搜索词…' })
-      const intentResult = await analyzeAndExpandSearchQueries(llmPre, {
-        topic,
-        research,
-        articleLang,
-        extraInstructions: options.extraInstructions,
-        userContext,
-        globalMaxTokens
-      })
-      searchQueries = intentResult.queries
-      searchIntentSummary = [
-        intentResult.intentSummary,
-        intentResult.primaryKeyword ? `核心词：${intentResult.primaryKeyword}` : '',
-        intentResult.searchIntentType ? `意图类型：${intentResult.searchIntentType}` : ''
-      ]
-        .filter(Boolean)
-        .join('\n')
+      const reusedPack = createResearchPackMatchesTopic(options.reuseResearch, topic)
+        ? options.reuseResearch
+        : undefined
 
-      emit({
-        type: 'status',
-        step: 'search',
-        message: `③ 搜索与抓取：${searchQueries.length} 组关键词 → Top ${research.maxSearchResults}`
-      })
-
-      sources = await searchWithQueries(searchQueries, research, (progress) => {
-        throwIfAborted()
+      if (reusedPack) {
         emit({
           type: 'status',
-          step: progress.phase === 'scrape' ? 'scrape' : 'search',
-          message: progress.message
+          step: 'extract',
+          message: '② 复用上次调研结果（跳过 Tavily / Firecrawl）…'
         })
-      })
+        searchQueries = reusedPack.searchQueries.length > 0 ? reusedPack.searchQueries : [topic]
+        searchIntentSummary = reusedPack.searchIntentSummary
+        extracted = reusedPack.extracted
+        emit({
+          type: 'research',
+          step: 'extract',
+          message: '已复用上次调研',
+          researchSummary: reusedPack.researchSummary,
+          sources: reusedPack.sources
+        })
+        emit({ type: 'researchPack', researchPack: reusedPack })
+      } else if (canRunResearch(research)) {
+        emit({ type: 'status', step: 'expand', message: '② 搜索意图分析 & 拆解搜索词…' })
+        const intentResult = await analyzeAndExpandSearchQueries(llmPre, {
+          topic,
+          research,
+          articleLang,
+          extraInstructions: options.extraInstructions,
+          userContext,
+          globalMaxTokens
+        })
+        searchQueries = intentResult.queries
+        searchIntentSummary = [
+          intentResult.intentSummary,
+          intentResult.primaryKeyword ? `核心词：${intentResult.primaryKeyword}` : '',
+          intentResult.searchIntentType ? `意图类型：${intentResult.searchIntentType}` : ''
+        ]
+          .filter(Boolean)
+          .join('\n')
 
-      emit({
-        type: 'research',
-        step: 'scrape',
-        message: '搜索与抓取完成',
-        researchSummary: buildResearchDisplayMarkdown(topic, searchQueries, sources, research, {
-          intentSummary: searchIntentSummary
-        }),
-        sources: mapSources(sources)
-      })
+        emit({
+          type: 'status',
+          step: 'search',
+          message: `③ 搜索与抓取：${searchQueries.length} 组关键词 → Top ${research.maxSearchResults}`
+        })
 
-      emit({ type: 'status', step: 'extract', message: '④ E-E-A-T 信息萃取…' })
-      const corpus = buildScrapedCorpus(sources)
-      extracted = await extractEeatInsights(
-        llmPre,
-        topic,
-        corpus,
-        skillCtx,
-        articleLang,
-        userContext,
-        stepTokens.eeatExtract
-      )
+        sources = await searchWithQueries(searchQueries, research, (progress) => {
+          throwIfAborted()
+          emit({
+            type: 'status',
+            step: progress.phase === 'scrape' ? 'scrape' : 'search',
+            message: progress.message
+          })
+        })
 
-      emit({
-        type: 'research',
-        step: 'extract',
-        message: 'E-E-A-T 萃取完成',
-        researchSummary: buildResearchDisplayMarkdown(topic, searchQueries, sources, research, {
+        emit({
+          type: 'research',
+          step: 'scrape',
+          message: '搜索与抓取完成',
+          researchSummary: buildResearchDisplayMarkdown(topic, searchQueries, sources, research, {
+            intentSummary: searchIntentSummary
+          }),
+          sources: mapSources(sources)
+        })
+
+        emit({ type: 'status', step: 'extract', message: '④ E-E-A-T 信息萃取…' })
+        const corpus = buildScrapedCorpus(sources)
+        extracted = await extractEeatInsights(
+          llmPre,
+          topic,
+          corpus,
+          skillCtx,
+          articleLang,
+          userContext,
+          stepTokens.eeatExtract
+        )
+
+        const researchSummary = buildResearchDisplayMarkdown(topic, searchQueries, sources, research, {
           intentSummary: searchIntentSummary,
           extractedPreview: extracted
-        }),
-        sources: mapSources(sources)
-      })
+        })
+        const mappedSources = mapSources(sources)
+        emit({
+          type: 'research',
+          step: 'extract',
+          message: 'E-E-A-T 萃取完成',
+          researchSummary,
+          sources: mappedSources
+        })
+
+        const pack: CreateResearchPack = {
+          kind: 'create',
+          topic,
+          searchQueries,
+          searchIntentSummary,
+          extracted,
+          researchSummary,
+          sources: mappedSources
+        }
+        emit({ type: 'researchPack', researchPack: pack })
       } else if (research.enabled) {
         emit({ type: 'status', message: '未配置 Tavily / Firecrawl，跳过调研阶段…' })
         extracted =
@@ -1213,6 +1258,12 @@ export async function generateArticle(
   })
 }
 
+function labelForReasoningEffortValue(value: string): string {
+  return (
+    LLM_REASONING_EFFORT_OPTIONS.find((item) => item.value === value)?.label ?? value
+  )
+}
+
 export async function testLlmConnection(options?: {
   presetId?: string
   model?: string
@@ -1228,6 +1279,10 @@ export async function testLlmConnection(options?: {
     return { ok: false, message: '请先填写 API Key' }
   }
 
+  const reasoningEffort = llm.reasoningEffort
+  const hasReasoningEffort = Boolean(reasoningEffort)
+  const effortLabel = reasoningEffort ? labelForReasoningEffortValue(reasoningEffort) : ''
+
   try {
     const response = await fetch(`${llm.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -1237,21 +1292,51 @@ export async function testLlmConnection(options?: {
       },
       body: JSON.stringify({
         model: llm.model,
-        messages: [{ role: 'user', content: 'Hi' }],
-        max_tokens: 5
+        messages: [
+          {
+            role: 'user',
+            content: hasReasoningEffort
+              ? 'Reply with exactly: OK'
+              : 'Hi'
+          }
+        ],
+        // Reasoning models may burn a small max_tokens budget before content; omit when testing effort.
+        ...(hasReasoningEffort ? {} : { max_tokens: 5 }),
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {})
       })
     })
 
     if (!response.ok) {
       const detail = await response.text()
-      return { ok: false, message: `连接失败 (${response.status})：${detail.slice(0, 160)}` }
+      const snippet = detail.slice(0, 160)
+      if (hasReasoningEffort) {
+        return {
+          ok: false,
+          message: `连接失败 (${response.status})：思考强度「${effortLabel}」(reasoning_effort=${reasoningEffort}) 可能不被该模型/接口接受。${snippet}`
+        }
+      }
+      return { ok: false, message: `连接失败 (${response.status})：${snippet}` }
     }
 
-    return { ok: true, message: '连接成功，LLM 配置可用' }
-  } catch (error) {
-    return {
-      ok: false,
-      message: error instanceof Error ? error.message : '连接测试失败'
+    if (hasReasoningEffort) {
+      return {
+        ok: true,
+        message: `连接成功；已按思考强度「${effortLabel}」发送 reasoning_effort=${reasoningEffort}，接口接受该参数`
+      }
     }
+
+    return {
+      ok: true,
+      message: '连接成功，LLM 配置可用（未设置思考强度，使用接口默认）'
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : '连接测试失败'
+    if (hasReasoningEffort) {
+      return {
+        ok: false,
+        message: `连接失败（含思考强度「${effortLabel}」）：${detail}`
+      }
+    }
+    return { ok: false, message: detail }
   }
 }

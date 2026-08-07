@@ -1,9 +1,10 @@
+import { resolveStepMaxTokens, USE_STEP_TOKEN_CAPS } from '../config/llmTokenLimits'
 import { chatCompletion, type LlmConfig } from './llmClient'
 import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
 
 export const META_TITLE_MAX_CHARS = 60
 export const META_DESCRIPTION_MAX_CHARS = 160
-/** Enough for JSON only; reasoning models may burn budget before the JSON body. */
+/** Enough for JSON only when step caps are on; reasoning models may burn budget before the JSON body. */
 export const SEO_META_MAX_OUTPUT_TOKENS = 3000
 const ARTICLE_SUMMARY_MAX_CHARS = 2200
 
@@ -251,7 +252,9 @@ async function requestSeoMeta(
 ): Promise<string> {
   return chatCompletion(llm, messages, {
     temperature: 0.25,
-    maxTokens: SEO_META_MAX_OUTPUT_TOKENS,
+    maxTokens: USE_STEP_TOKEN_CAPS
+      ? resolveStepMaxTokens('seoMeta', SEO_META_MAX_OUTPUT_TOKENS) ?? SEO_META_MAX_OUTPUT_TOKENS
+      : undefined,
     jsonObject: true,
     step: 'meta',
     label: 'SEO Meta'

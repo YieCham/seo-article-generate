@@ -219,6 +219,6 @@ export function maxTokensForWordBudget(
   words: number,
   cap = 8192,
   tier: SectionDraftTier = 'default'
-): number {
+): number | undefined {
   return maxTokensForSectionDraft(words, cap, tier)
 }

@@ -5,7 +5,7 @@ import { recordLlmTokenUsage, type ApiTokenUsage } from '../token/tokenUsageReco
 const LLM_MAX_ATTEMPTS = 5
 const LLM_RETRY_INITIAL_BACKOFF_MS = 2000
 
-function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+export function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
   }
@@ -67,9 +67,28 @@ export interface LlmRetryInfo {
 /** @deprecated Use LlmRetryInfo */
 export type RateLimitRetryInfo = LlmRetryInfo
 
+type CompletionMessage = {
+  content?: string | null
+  reasoning_content?: string | null
+  reasoning?: string | null
+}
+
 type CompletionResponse = {
-  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
+  choices?: Array<{ message?: CompletionMessage; finish_reason?: string }>
   usage?: ApiTokenUsage
+}
+
+/** Prefer visible content; fall back to reasoning fields used by DeepSeek / some gateways. */
+export function extractAssistantText(message: CompletionMessage | undefined): string {
+  if (!message) return ''
+  const content = typeof message.content === 'string' ? message.content.trim() : ''
+  if (content) return content
+
+  const reasoning =
+    (typeof message.reasoning_content === 'string' && message.reasoning_content.trim()) ||
+    (typeof message.reasoning === 'string' && message.reasoning.trim()) ||
+    ''
+  return reasoning
 }
 
 /** OpenRouter 402: credits only cover up to N max_tokens. */
@@ -121,7 +140,7 @@ export async function chatCompletion(
 
       if (response.ok) {
         const data = (await response.json()) as CompletionResponse
-        const content = data.choices?.[0]?.message?.content?.trim() ?? ''
+        const content = extractAssistantText(data.choices?.[0]?.message)
         const finishReason = data.choices?.[0]?.finish_reason
 
         await recordLlmTokenUsage({

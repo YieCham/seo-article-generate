@@ -66,7 +66,7 @@ Content flow (important):
 3. **Single product Part** — Product recommendation (pitch, optional comparison table) AND step-by-step tutorial **must live in the same Part**, split with ### subsections only — never two separate Parts.
 
 Rules:
-- Quick Answer / Key Takeaways → H2 without "Part" prefix
+- Quick Answer / Key Takeaways → H2 without "Part" prefix; **do not name the user's promoted product** — use vague phrasing (a dedicated tool / third-party converter / the steps below)
 - Introduction → ## Introduction (**max 150 English words, max 3 paragraphs**); no product pitch
 - Generic body Parts → topic-driven titles from outline + research; mention product name only when content naturally links to it (light touch, ≤1–2 mentions per Part); **H2/H3 titles name the task, setting, or method in plain words** — avoid abstract "program" rebrands (Detox, Retrain, Journey); semantic match to Topic is enough; do not paste the exact Topic into every Part heading; no keyword-stuffed H2s
 - **Multi-method generic Parts** (≥2 parallel tactics/settings/approaches) → under that ##, use **one ### per method**; first bullet "- mode: procedural|explanatory|checklist|caution", then 1–2 stub bullets — do not list multiple methods as sibling bullets under one ##
@@ -90,7 +90,7 @@ export const GEO_ARTICLE_STRUCTURE = `
 【GEO/SEO Article Structure — MANDATORY when this Skill is active】
 
 1. H1 — compelling title; include core topic words or a natural phrase (**exact Topic string not required**)
-2. ## Quick Answer (or ## Key Takeaways) — 3–4 bullets immediately after H1
+2. ## Quick Answer (or ## Key Takeaways) — 3–4 bullets immediately after H1; answer the core question with **vague** solution wording — **do not** name the user's promoted product here
 3. ## Introduction — empathize + roadmap (**max 150 English words, max 3 paragraphs**); no product pitch
 4. Main body — **2–4 flexible Parts**: prioritize generic/research-backed sections first; **one** product Part (position not fixed) combining pitch + tutorial in a single Part with ### subsections
 5. [Image: …] placeholders at key tutorial steps inside the product Part

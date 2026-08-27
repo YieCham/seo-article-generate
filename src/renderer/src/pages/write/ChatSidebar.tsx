@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   canReorderSessionsTogether,
   getSessionDisplayTitle,
@@ -165,7 +166,7 @@ export default function ChatSidebar({
     event.preventDefault()
     event.stopPropagation()
 
-    const menuWidth = 160
+    const menuWidth = 176
     const menuHeight = 240
     const padding = 8
     const x = Math.min(event.clientX, window.innerWidth - menuWidth - padding)
@@ -302,6 +303,82 @@ export default function ChatSidebar({
         : undefined
   const emptyLabel = lifecycleGroup === 'completed' ? '暂无已完成对话' : '暂无进行中对话'
 
+  const contextMenuNode =
+    contextMenu && contextSession ? (
+      <div
+        ref={menuRef}
+        className="ui-menu session-context-menu"
+        style={{ top: contextMenu.y, left: contextMenu.x }}
+        role="menu"
+        aria-label={`对话操作：${contextSession.title}`}
+      >
+        <button
+          type="button"
+          className="session-context-menu-item"
+          role="menuitem"
+          onClick={() => handleMenuAction('pin')}
+        >
+          <IconPin size={14} className="session-context-menu-icon" />
+          <span>{contextSession.pinned ? '取消置顶' : '置顶'}</span>
+        </button>
+        <button
+          type="button"
+          className="session-context-menu-item"
+          role="menuitem"
+          onClick={() => handleMenuAction('rename')}
+        >
+          <IconRename size={14} className="session-context-menu-icon" />
+          <span>重命名</span>
+        </button>
+        <button
+          type="button"
+          className="session-context-menu-item"
+          role="menuitem"
+          onClick={() => handleMenuAction('complete')}
+        >
+          {contextCompleted ? (
+            <IconMoveToActive size={14} className="session-context-menu-icon" />
+          ) : (
+            <IconPageCompleted size={14} className="session-context-menu-icon" />
+          )}
+          <span>{contextCompleted ? '移回进行中' : '页面已完成'}</span>
+        </button>
+        <button
+          type="button"
+          className="session-context-menu-item"
+          role="menuitem"
+          disabled={regenerateDisabled}
+          title={regenerateDisabledReason}
+          onClick={() => handleMenuAction('regenerate')}
+        >
+          <IconRegenerate size={14} className="session-context-menu-icon" />
+          <span>重新生成</span>
+        </button>
+        <button
+          type="button"
+          className="session-context-menu-item"
+          role="menuitem"
+          disabled={contextRunning}
+          title={contextRunning ? '生成中无法清空' : undefined}
+          onClick={() => handleMenuAction('clear')}
+        >
+          <IconClear size={14} className="session-context-menu-icon" />
+          <span>清空话题</span>
+        </button>
+        <button
+          type="button"
+          className="session-context-menu-item danger"
+          role="menuitem"
+          disabled={contextRunning}
+          title={contextRunning ? '生成中无法删除' : undefined}
+          onClick={() => handleMenuAction('delete')}
+        >
+          <IconDelete size={14} className="session-context-menu-icon" />
+          <span>删除话题</span>
+        </button>
+      </div>
+    ) : null
+
   return (
     <aside className="chat-sidebar">
       <nav className="sidebar-nav" aria-label="侧栏导航">
@@ -351,80 +428,7 @@ export default function ChatSidebar({
         </button>
       </div>
 
-      {contextMenu && contextSession ? (
-        <div
-          ref={menuRef}
-          className="session-context-menu"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          role="menu"
-          aria-label={`对话操作：${contextSession.title}`}
-        >
-          <button
-            type="button"
-            className="session-context-menu-item"
-            role="menuitem"
-            onClick={() => handleMenuAction('pin')}
-          >
-            <IconPin size={14} className="session-context-menu-icon" />
-            <span>{contextSession.pinned ? '取消置顶' : '置顶'}</span>
-          </button>
-          <button
-            type="button"
-            className="session-context-menu-item"
-            role="menuitem"
-            onClick={() => handleMenuAction('rename')}
-          >
-            <IconRename size={14} className="session-context-menu-icon" />
-            <span>重命名</span>
-          </button>
-          <button
-            type="button"
-            className="session-context-menu-item"
-            role="menuitem"
-            onClick={() => handleMenuAction('complete')}
-          >
-            {contextCompleted ? (
-              <IconMoveToActive size={14} className="session-context-menu-icon" />
-            ) : (
-              <IconPageCompleted size={14} className="session-context-menu-icon" />
-            )}
-            <span>{contextCompleted ? '移回进行中' : '页面已完成'}</span>
-          </button>
-          <button
-            type="button"
-            className="session-context-menu-item"
-            role="menuitem"
-            disabled={regenerateDisabled}
-            title={regenerateDisabledReason}
-            onClick={() => handleMenuAction('regenerate')}
-          >
-            <IconRegenerate size={14} className="session-context-menu-icon" />
-            <span>重新生成</span>
-          </button>
-          <button
-            type="button"
-            className="session-context-menu-item"
-            role="menuitem"
-            disabled={contextRunning}
-            title={contextRunning ? '生成中无法清空' : undefined}
-            onClick={() => handleMenuAction('clear')}
-          >
-            <IconClear size={14} className="session-context-menu-icon" />
-            <span>清空话题</span>
-          </button>
-          <button
-            type="button"
-            className="session-context-menu-item danger"
-            role="menuitem"
-            disabled={contextRunning}
-            title={contextRunning ? '生成中无法删除' : undefined}
-            onClick={() => handleMenuAction('delete')}
-          >
-            <IconDelete size={14} className="session-context-menu-icon" />
-            <span>删除话题</span>
-          </button>
-        </div>
-      ) : null}
+      {contextMenuNode ? createPortal(contextMenuNode, document.body) : null}
 
       <SessionRenameDialog
         open={renamingSession != null}

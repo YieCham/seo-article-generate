@@ -37,9 +37,25 @@ function stripInlineMarkdown(value: string): string {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
 }
 
+/** Strip heading hashes, list markers and emphasis so DOM text can match markdown. */
+export function stripVisibleMarkdown(value: string): string {
+  return collapseWhitespace(
+    stripInlineMarkdown(
+      value
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/^\s*[-*+]\s+/gm, '')
+        .replace(/^\s*\d+[.)]\s+/gm, '')
+        .replace(/^\s*>\s+/gm, '')
+    )
+  )
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
+
+/** Allow markdown syntax (##, -, 1.) between visible words from a DOM selection. */
+const MARKDOWN_TOKEN_GAP = '(?:\\s|[#>\\*+_`[\\]()!.,:：-]|\\d+[.)])+'
 
 /** Match selected text in markdown allowing flexible whitespace / paragraph breaks. */
 function locateFlexibleNear(
@@ -53,14 +69,14 @@ function locateFlexibleNear(
   const tokens = trimmed.split(/\s+/).filter(Boolean)
   if (tokens.length < 2) return null
 
-  const searchRadius = Math.max(800, trimmed.length * 6)
+  const searchRadius = Math.max(1200, trimmed.length * 8)
   const windowStart = Math.max(0, anchor - searchRadius)
   const windowEnd = Math.min(markdown.length, anchor + searchRadius + trimmed.length)
   const window = markdown.slice(windowStart, windowEnd)
 
-  const head = tokens.slice(0, Math.min(6, tokens.length)).map(escapeRegExp).join('\\s+')
-  const tail = tokens.slice(-Math.min(4, tokens.length)).map(escapeRegExp).join('\\s+')
-  const pattern = new RegExp(`${head}[\\s\\S]{0,${Math.max(trimmed.length * 2, 200)}}?${tail}`, 'i')
+  const head = tokens.slice(0, Math.min(6, tokens.length)).map(escapeRegExp).join(MARKDOWN_TOKEN_GAP)
+  const tail = tokens.slice(-Math.min(4, tokens.length)).map(escapeRegExp).join(MARKDOWN_TOKEN_GAP)
+  const pattern = new RegExp(`${head}[\\s\\S]{0,${Math.max(trimmed.length * 3, 280)}}?${tail}`, 'i')
   const match = pattern.exec(window)
   if (!match) return null
 
@@ -151,7 +167,7 @@ export function locateTextInMarkdown(
 export function markdownSliceMatchesSelection(markdownSlice: string, selectedText: string): boolean {
   if (markdownSlice === selectedText) return true
 
-  const normalizedSlice = collapseWhitespace(stripInlineMarkdown(markdownSlice))
+  const normalizedSlice = stripVisibleMarkdown(markdownSlice)
   const normalizedSelection = collapseWhitespace(selectedText)
   if (!normalizedSelection) return false
   if (normalizedSlice === normalizedSelection) return true
@@ -162,11 +178,60 @@ export function markdownSliceMatchesSelection(markdownSlice: string, selectedTex
 
   // Reject partial slices (e.g. "B" matching inside a long selection).
   const ratio = sliceLen / selectionLen
-  if (ratio < 0.85 || ratio > 1.4) return false
+  if (ratio < 0.7 || ratio > 1.6) return false
 
   if (normalizedSlice.includes(normalizedSelection) || normalizedSelection.includes(normalizedSlice)) {
     return true
   }
 
   return false
+}
+
+/** Include heading hashes / list markers when the DOM selection started on visible text. */
+export function expandSelectionToMarkdownMarkers(
+  markdown: string,
+  start: number,
+  end: number
+): { start: number; end: number; text: string } {
+  let nextStart = Math.max(0, Math.min(start, markdown.length))
+  let nextEnd = Math.max(nextStart, Math.min(end, markdown.length))
+
+  const lineStart = markdown.lastIndexOf('\n', Math.max(0, nextStart - 1)) + 1
+  const prefix = markdown.slice(lineStart, nextStart)
+  if (/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+)$/.test(prefix)) {
+    nextStart = lineStart
+  }
+
+  return {
+    start: nextStart,
+    end: nextEnd,
+    text: markdown.slice(nextStart, nextEnd)
+  }
+}
+
+/** Map a range found in rendered markdown back onto the stored article source. */
+export function projectRenderedRangeToSource(
+  source: string,
+  rendered: string,
+  range: { start: number; end: number; text: string }
+): { start: number; end: number; text: string } | null {
+  if (source === rendered) {
+    return expandSelectionToMarkdownMarkers(source, range.start, range.end)
+  }
+
+  const located = locateTextInMarkdown(source, range.text, range.start)
+  if (located) {
+    return expandSelectionToMarkdownMarkers(source, located.start, located.end)
+  }
+
+  const exact = pickClosestOccurrence(source, range.text, range.start)
+  if (exact) {
+    return expandSelectionToMarkdownMarkers(source, exact.start, exact.end)
+  }
+
+  if (range.end <= source.length) {
+    return expandSelectionToMarkdownMarkers(source, range.start, range.end)
+  }
+
+  return null
 }

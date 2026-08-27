@@ -7,7 +7,12 @@ import LlmPresetPanel from './settings/LlmPresetPanel'
 import LlmRoleRoutingPanel from './settings/LlmRoleRoutingPanel'
 import TokenLogPanel from './settings/TokenLogPanel'
 import WindowClosePanel from './settings/WindowClosePanel'
+import NetworkProxyPanel from './settings/NetworkProxyPanel'
 import ImageGenPanel from './settings/ImageGenPanel'
+import KnowledgeBasePanel from './settings/KnowledgeBasePanel'
+import IllustrationLibraryPanel from './settings/IllustrationLibraryPanel'
+import WordPressPanel from './settings/WordPressPanel'
+import { normalizeWordPressSettings } from '../../../shared/wordpress'
 
 type SettingsTab =
   | 'general'
@@ -17,7 +22,10 @@ type SettingsTab =
   | 'shortcuts'
   | 'prompts'
   | 'skills'
+  | 'knowledge'
+  | 'illustrations'
   | 'imageGen'
+  | 'wordpress'
 
 const DEFAULT_CREATE_PROMPTS = {
   systemPrompt:
@@ -259,6 +267,16 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     })
   }
 
+  async function handleSaveNetworkProxy(): Promise<void> {
+    if (!config) return
+    const networkProxy = config.networkProxy ?? {
+      enabled: false,
+      host: '127.0.0.1',
+      port: 8889
+    }
+    await handleSaveConfig({ networkProxy })
+  }
+
   async function handleSaveImageGen(): Promise<void> {
     if (!config) return
     const imageGen = config.imageGen ?? {
@@ -269,6 +287,11 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
       defaultPrompt: ''
     }
     await handleSaveConfig({ imageGen })
+  }
+
+  async function handleSaveWordPress(): Promise<void> {
+    if (!config) return
+    await handleSaveConfig({ wordpress: config.wordpress })
   }
 
   function handleSelectEditingPreset(id: string): void {
@@ -340,6 +363,22 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     void updateQuickPicks((items) => items.filter((item) => item.id !== id))
   }
 
+  function handleBindProductWordPressPreset(
+    productId: string,
+    wordpressPresetId: string | undefined
+  ): void {
+    void updateQuickPicks((items) =>
+      items.map((item) => {
+        if (item.id !== productId) return item
+        if (!wordpressPresetId) {
+          const { wordpressPresetId: _ignored, ...rest } = item
+          return rest
+        }
+        return { ...item, wordpressPresetId }
+      })
+    )
+  }
+
   async function handleDefaultOutputLanguageChange(code: OutputLanguageCode): Promise<void> {
     if (!config) return
     await handleSaveConfig({
@@ -396,7 +435,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           className={tab === 'shortcuts' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('shortcuts')}
         >
-          快捷选项
+          产品配置
         </button>
         <button
           type="button"
@@ -419,11 +458,38 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         <button
           type="button"
           role="tab"
+          aria-selected={tab === 'knowledge'}
+          className={tab === 'knowledge' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('knowledge')}
+        >
+          知识库
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'illustrations'}
+          className={tab === 'illustrations' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('illustrations')}
+        >
+          插图库
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === 'imageGen'}
           className={tab === 'imageGen' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('imageGen')}
         >
           绘图
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'wordpress'}
+          className={tab === 'wordpress' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('wordpress')}
+        >
+          WordPress
         </button>
         <button
           type="button"
@@ -437,6 +503,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
       </nav>
 
       <div className="settings-content">
+      <div className="settings-tab-pane" key={tab}>
       {tab === 'llm' && config && (
         <section className="panel">
           <h2 className="section-title">LLM 预设</h2>
@@ -631,11 +698,13 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         <>
           <QuickPickEditor
             title="产品名称"
-            description="创作页「产品名称」下拉选项。选中后会自动写入补充要求（Product name: …）。"
+            description="创作页「产品名称」下拉选项。选中后会自动写入补充要求（Product name: …）。可点击「绑定」关联 WordPress 站点预设，创作时选中该产品后推送草稿将默认使用对应预设。"
             items={config.quickPicks.products}
+            wordpressPresets={normalizeWordPressSettings(config.wordpress).presets}
             disabled={saving}
             onAdd={handleAddQuickPick}
             onRemove={handleRemoveQuickPick}
+            onBindWordPressPreset={handleBindProductWordPressPreset}
           />
           <section className="panel quick-pick-panel">
             <h2 className="section-title">文本语言</h2>
@@ -868,6 +937,25 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         </>
       )}
 
+      {tab === 'knowledge' && (
+        <KnowledgeBasePanel
+          visible={visible}
+          saving={saving}
+          onSavingChange={setSaving}
+          onStatus={setStatus}
+        />
+      )}
+
+      {tab === 'illustrations' && (
+        <IllustrationLibraryPanel
+          visible={visible}
+          saving={saving}
+          quickPicks={config.quickPicks?.products ?? []}
+          onSavingChange={setSaving}
+          onStatus={setStatus}
+        />
+      )}
+
       {tab === 'imageGen' && config && (
         <section className="panel">
           <h2 className="section-title">绘图接口</h2>
@@ -883,21 +971,52 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         </section>
       )}
 
-      {tab === 'general' && config && (
+      {tab === 'wordpress' && config && (
         <section className="panel">
-          <h2 className="section-title">关闭窗口</h2>
+          <h2 className="section-title">WordPress 草稿</h2>
           <p className="section-desc">
-            设置点击右上角关闭按钮时的默认行为，可与关闭确认弹窗中的「以后不再提示」联动。
+            可配置多个 WordPress 站点预设。文章生成后在正文下方手动推送为草稿；推送时可选择目标预设。批量创作与批量优化不会自动推送。
           </p>
-          <WindowClosePanel
+          <WordPressPanel
             config={config}
             saving={saving}
             onConfigChange={setConfig}
-            onSave={() => void handleSaveWindowClose()}
+            onSave={() => void handleSaveWordPress()}
+            onStatus={setStatus}
           />
         </section>
       )}
 
+      {tab === 'general' && config && (
+        <>
+          <section className="panel">
+            <h2 className="section-title">网络代理</h2>
+            <p className="section-desc">
+              配置应用出站 HTTP 代理。默认直连；开启后走下方主机与端口（默认 8889）。
+            </p>
+            <NetworkProxyPanel
+              config={config}
+              saving={saving}
+              onConfigChange={setConfig}
+              onSave={() => void handleSaveNetworkProxy()}
+            />
+          </section>
+          <section className="panel">
+            <h2 className="section-title">关闭窗口</h2>
+            <p className="section-desc">
+              设置点击右上角关闭按钮时的默认行为，可与关闭确认弹窗中的「以后不再提示」联动。
+            </p>
+            <WindowClosePanel
+              config={config}
+              saving={saving}
+              onConfigChange={setConfig}
+              onSave={() => void handleSaveWindowClose()}
+            />
+          </section>
+        </>
+      )}
+
+      </div>
       </div>
 
       {status ? (
@@ -905,9 +1024,12 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           className={`settings-toast${
             status.includes('成功') ||
             status.includes('已保存') ||
+            status.includes('已连接') ||
+            status.includes('已清空') ||
             status.includes('已删除') ||
             status.includes('已启用') ||
             status.includes('已禁用') ||
+            status.includes('已导入') ||
             status.includes('已将') ||
             status.includes('已清除')
               ? ' is-success'

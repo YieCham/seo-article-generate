@@ -70,6 +70,21 @@ function createSourceMappingComponents(): Components {
     }
   }
 
+  const inline = (Tag: 'strong' | 'em' | 'del') => {
+    return ({ node, children, ...props }: ExtraProps & { node?: MarkdownNode; children?: ReactNode }) => {
+      const { start, end } = getNodeOffsets(node)
+      const mappedProps = {
+        ...props,
+        'data-md-start': start,
+        'data-md-end': end,
+        children
+      }
+      if (Tag === 'strong') return <strong {...mappedProps} />
+      if (Tag === 'del') return <del {...mappedProps} />
+      return <em {...mappedProps} />
+    }
+  }
+
   return {
     p: block('p'),
     h1: block('h1'),
@@ -83,16 +98,28 @@ function createSourceMappingComponents(): Components {
     td: block('td'),
     th: block('th'),
     pre: block('pre'),
-    text: ({ node, children }) => {
+    strong: inline('strong'),
+    em: inline('em'),
+    del: inline('del'),
+    a: ({ node, href, children, ...props }: ExtraProps & { node?: MarkdownNode; href?: string; children?: ReactNode }) => {
       const { start, end } = getNodeOffsets(node)
-      if (start == null || end == null) return <>{children}</>
+      const isExternal =
+        typeof href === 'string' &&
+        (/^https?:\/\//i.test(href) || /^mailto:/i.test(href))
       return (
-        <span className="md-source-span" data-md-start={start} data-md-end={end}>
+        <a
+          {...props}
+          href={href}
+          data-md-start={start}
+          data-md-end={end}
+          target={isExternal ? '_blank' : undefined}
+          rel={isExternal ? 'noopener noreferrer' : undefined}
+        >
           {children}
-        </span>
+        </a>
       )
     },
-    code: ({ node, className, children, ...props }) => {
+    code: ({ node, className, children, ...props }: ExtraProps & { node?: MarkdownNode; className?: string; children?: ReactNode }) => {
       const { start, end } = getNodeOffsets(node)
       return (
         <code className={className} data-md-start={start} data-md-end={end} {...props}>
@@ -128,8 +155,8 @@ const linkComponent = createLinkComponent()
 
 function mergeMarkdownComponents(base?: Components): Components {
   return {
-    ...base,
-    a: linkComponent
+    a: linkComponent,
+    ...base
   }
 }
 

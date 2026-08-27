@@ -77,7 +77,7 @@ export default function App() {
           />
         </div>
 
-        <div className={page === 'settings' ? 'settings-shell app-page app-page-active' : 'app-page app-page-hidden'}>
+        <div className={`settings-shell app-page${page === 'settings' ? ' app-page-active' : ' app-page-hidden'}`}>
           <header className="settings-topbar">
             <button type="button" className="settings-back-btn" onClick={() => setPage('write')}>
               <IconArrowLeft size={14} />

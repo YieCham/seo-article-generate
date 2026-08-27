@@ -3,6 +3,7 @@ import { generateArticle } from '../agent/articleAgent'
 import { optimizeArticle } from '../agent/articleOptimizer'
 import { batchOptimizePage } from '../agent/batchPageOptimizer'
 import { reviseArticle } from '../agent/articleReviser'
+import { insertArticleIllustrations } from '../agent/articleIllustrationInserter'
 import type { PipelineCheckpoint } from '../agent/pipelineCheckpoint'
 import {
   beginArticleRun,
@@ -48,6 +49,17 @@ export function registerArticleIpc(): void {
     const signal = beginArticleRun(event.sender.id)
     try {
       return await runWithAbortSignal(signal, () => reviseArticle(options, event.sender))
+    } finally {
+      endArticleRun(event.sender.id)
+    }
+  })
+
+  ipcMain.handle('article:insertIllustrations', async (event, options) => {
+    const signal = beginArticleRun(event.sender.id)
+    try {
+      return await runWithAbortSignal(signal, () =>
+        insertArticleIllustrations(options, event.sender)
+      )
     } finally {
       endArticleRun(event.sender.id)
     }

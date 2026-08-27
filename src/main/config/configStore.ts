@@ -12,6 +12,8 @@ import {
   normalizeResearchConfig,
   normalizeWindowClose,
   normalizeImageGenConfig,
+  normalizeNetworkProxy,
+  normalizeWordPressSettings,
   resolveLlmConfigFromSelection,
   type AppConfig,
   type LlmConfig,
@@ -20,6 +22,7 @@ import {
   type ModeEnabledSkillsConfig,
   type ModePromptsConfig
 } from './types'
+import { applyNetworkProxy } from '../net/proxyRuntime'
 
 type ConfigPartial = Partial<AppConfig> & {
   llm?: LlmConfig
@@ -52,7 +55,9 @@ function mergeWithDefaults(partial: ConfigPartial): AppConfig {
     skillEnablementInitialized:
       partial.skillEnablementInitialized ?? DEFAULT_CONFIG.skillEnablementInitialized,
     windowClose: normalizeWindowClose(partial.windowClose ?? DEFAULT_CONFIG.windowClose),
-    imageGen: normalizeImageGenConfig(partial.imageGen ?? DEFAULT_CONFIG.imageGen)
+    imageGen: normalizeImageGenConfig(partial.imageGen ?? DEFAULT_CONFIG.imageGen),
+    networkProxy: normalizeNetworkProxy(partial.networkProxy ?? DEFAULT_CONFIG.networkProxy),
+    wordpress: normalizeWordPressSettings(partial.wordpress ?? DEFAULT_CONFIG.wordpress)
   }
 }
 
@@ -106,6 +111,7 @@ export async function loadConfig(): Promise<AppConfig> {
     cachedConfig = { ...DEFAULT_CONFIG }
   }
 
+  await applyNetworkProxy(cachedConfig.networkProxy)
   return cachedConfig
 }
 
@@ -169,6 +175,12 @@ export async function saveConfig(partial: Partial<AppConfig>): Promise<AppConfig
     imageGen: partial.imageGen
       ? normalizeImageGenConfig({ ...current.imageGen, ...partial.imageGen })
       : current.imageGen,
+    networkProxy: partial.networkProxy
+      ? normalizeNetworkProxy({ ...current.networkProxy, ...partial.networkProxy })
+      : current.networkProxy,
+    wordpress: partial.wordpress
+      ? normalizeWordPressSettings(partial.wordpress)
+      : current.wordpress,
     enabledSkills: mergeModeEnabledSkills(current.enabledSkills, partial.enabledSkills),
     quickPicks: partial.quickPicks
       ? normalizeQuickPicks({ ...current.quickPicks, ...partial.quickPicks })
@@ -209,6 +221,7 @@ export async function saveConfig(partial: Partial<AppConfig>): Promise<AppConfig
   await mkdir(app.getPath('userData'), { recursive: true })
   await writeFile(getConfigPath(), JSON.stringify(next, null, 2), 'utf-8')
   cachedConfig = next
+  await applyNetworkProxy(next.networkProxy)
   return next
 }
 

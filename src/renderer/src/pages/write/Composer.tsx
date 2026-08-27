@@ -336,7 +336,7 @@ export default function Composer({
                 />
               </button>
               {modelMenuOpen ? (
-                <div ref={modelMenuRef} className="composer-model-menu" role="menu" aria-label="选择模型">
+                <div ref={modelMenuRef} className="ui-menu composer-model-menu" role="menu" aria-label="选择模型">
                   {llmModels.map((item) => (
                     <button
                       key={item.id}

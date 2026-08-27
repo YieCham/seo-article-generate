@@ -626,7 +626,7 @@ async function polishOptimizedArticle(
           `- 保持${articleLang.label}`,
           getOptimizePolishHint(),
           userContext.productName
-            ? `- 保留用户指定产品「${userContext.productName}」的准确全名，勿删改成泛称`
+            ? `- 保留用户指定产品「${userContext.productName}」在正文/对比/结论中的准确全名；**若 Quick Answer 出现该全名，改为模糊表述**；勿在无关处删改成泛称`
             : '',
           `- 全文词数参考：${wordRange.label}`,
           '- 直接输出 Markdown 正文',
@@ -1141,6 +1141,7 @@ export async function optimizeArticle(
         '⑨ ',
         'polish'
       )
+      polished = reorderArticleMarkdown(polished)
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('length', {
           statusLabel: '⑨ 终稿校对完成',
@@ -1194,6 +1195,7 @@ export async function optimizeArticle(
         '⑩ ',
         'length'
       )
+      lengthAdjusted = reorderArticleMarkdown(lengthAdjusted)
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('meta', {
           statusLabel: '⑩ 词数校准完成',

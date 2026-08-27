@@ -1,6 +1,8 @@
 import {
+  expandSelectionToMarkdownMarkers,
   locateTextInMarkdown,
-  markdownSliceMatchesSelection
+  markdownSliceMatchesSelection,
+  stripVisibleMarkdown
 } from './markdownSelection'
 
 function findMappedElements(node: Node | null, root: HTMLElement): HTMLElement[] {
@@ -190,25 +192,32 @@ function rangeToMarkdownSelection(
 
   const located = locateTextInMarkdown(markdown, selectedText, anchor)
   if (located) {
-    return {
-      start: located.start,
-      end: located.end,
-      text: markdown.slice(located.start, located.end)
-    }
+    return expandSelectionToMarkdownMarkers(markdown, located.start, located.end)
   }
 
   if (startGuess == null || endGuess == null || startGuess === endGuess) return null
 
   const selectionStart = Math.min(startGuess, endGuess)
   const selectionEnd = Math.max(startGuess, endGuess)
-  const slice = markdown.slice(selectionStart, selectionEnd)
-  if (!slice.trim()) return null
+  const expanded = expandSelectionToMarkdownMarkers(markdown, selectionStart, selectionEnd)
+  if (!expanded.text.trim()) return null
 
-  if (markdownSliceMatchesSelection(slice, selectedText)) {
-    return { start: selectionStart, end: selectionEnd, text: slice }
+  if (markdownSliceMatchesSelection(expanded.text, selectedText)) {
+    return expanded
   }
 
-  return null
+  const visibleSlice = stripVisibleMarkdown(expanded.text)
+  const visibleSelection = selectedText.replace(/\s+/g, ' ').trim()
+  if (
+    visibleSlice &&
+    visibleSelection &&
+    (visibleSlice.includes(visibleSelection.slice(0, Math.min(40, visibleSelection.length))) ||
+      visibleSelection.includes(visibleSlice.slice(0, Math.min(40, visibleSlice.length))))
+  ) {
+    return expanded
+  }
+
+  return expanded.text.trim() ? expanded : null
 }
 
 export function getMarkdownRangeFromDomSelection(

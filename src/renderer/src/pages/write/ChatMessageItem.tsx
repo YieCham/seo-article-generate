@@ -4,33 +4,40 @@ import MarkdownContent from './MarkdownContent'
 import CollapsibleMarkdownCard from './CollapsibleMarkdownCard'
 import { formatPlanningMarkdown } from './planningContent'
 import { getMarkdownRangeFromDomSelection } from '../../utils/markdownSourceMap'
+import { projectRenderedRangeToSource } from '../../utils/markdownSelection'
 import { getArticleCopyMarkdown } from '../../utils/articleCopy'
-import { IconCopyArticle, IconMessage } from '../../components/Icons'
+import { normalizeArticleMarkdown } from '../../../../shared/normalizeArticleMarkdown'
+import { IconCopyArticle, IconIllustration, IconMessage, IconWordPress } from '../../components/Icons'
+import type { WordPressDraftBinding } from '../../../../shared/wordpress'
 
 interface ChatMessageItemProps {
   message: ChatMessage
   onCopy?: (content: string) => void
+  onPublishToWordPress?: (content: string) => void
+  onInsertIllustrations?: (messageId: string) => void
+  wordpressDraft?: WordPressDraftBinding
   onContextMenu?: (event: ReactMouseEvent) => void
   waitingLabel?: string
   waitingElapsedSec?: number
   reviseSelectionEnabled?: boolean
   reviseSelection?: ReviseArticleSelection | null
   onReviseSelectionChange?: (selection: ReviseArticleSelection | null) => void
-  onApplyRevision?: (assistantMessageId: string) => void
-  onCancelRevision?: (assistantMessageId: string) => void
+  insertIllustrationsDisabled?: boolean
 }
 
 export default function ChatMessageItem({
   message,
   onCopy,
+  onPublishToWordPress,
+  onInsertIllustrations,
+  wordpressDraft,
   onContextMenu,
   waitingLabel,
   waitingElapsedSec = 0,
   reviseSelectionEnabled = false,
   reviseSelection = null,
   onReviseSelectionChange,
-  onApplyRevision,
-  onCancelRevision
+  insertIllustrationsDisabled = false
 }: ChatMessageItemProps) {
   const markdownRef = useRef<HTMLDivElement>(null)
   const lastSelectionRef = useRef<ReviseArticleSelection | null>(null)
@@ -39,17 +46,21 @@ export default function ChatMessageItem({
     const root = markdownRef.current
     if (!root || !onReviseSelectionChange) return false
 
-    const domText = window.getSelection()?.toString().trim() ?? ''
-    const range = getMarkdownRangeFromDomSelection(root, message.content)
+    const mappingSource = normalizeArticleMarkdown(message.content)
+    const range = getMarkdownRangeFromDomSelection(root, mappingSource)
     if (!range) {
-      if (domText.length > (lastSelectionRef.current?.displayText.length ?? 0)) {
-        lastSelectionRef.current = null
-        onReviseSelectionChange(null)
-      }
       return false
     }
 
-    const next = { start: range.start, end: range.end, text: range.text, displayText: range.displayText }
+    const projected = projectRenderedRangeToSource(message.content, mappingSource, range)
+    if (!projected) return false
+
+    const next = {
+      start: projected.start,
+      end: projected.end,
+      text: projected.text,
+      displayText: range.displayText
+    }
     lastSelectionRef.current = next
     onReviseSelectionChange(next)
     return true
@@ -64,7 +75,6 @@ export default function ChatMessageItem({
   useEffect(() => {
     if (!reviseSelectionEnabled) {
       lastSelectionRef.current = null
-      onReviseSelectionChange?.(null)
       return
     }
 
@@ -110,7 +120,6 @@ export default function ChatMessageItem({
     return () => {
       document.removeEventListener('selectionchange', handleSelectionChange)
       document.removeEventListener('mouseup', handlePointerUp)
-      lastSelectionRef.current = null
     }
   }, [applyDomSelection, onReviseSelectionChange, restoreLastSelection, reviseSelectionEnabled])
 
@@ -171,11 +180,6 @@ export default function ChatMessageItem({
   const revising = message.status === 'revising'
   const pendingApply = message.status === 'pendingApply'
   const interrupted = message.status === 'interrupted'
-  const showRevisionActions =
-    isUser &&
-    Boolean(message.content.startsWith('**修改说明**')) &&
-    Boolean(message.revisionTargetAssistantId)
-
   if (isUser) {
     return (
       <article className="chat-message is-user" onContextMenu={onContextMenu}>
@@ -185,24 +189,6 @@ export default function ChatMessageItem({
           </span>
           <p className="user-prompt-text">{message.content}</p>
         </div>
-        {showRevisionActions ? (
-          <div className="revision-action-bar">
-            <button
-              type="button"
-              className="revision-action-btn is-primary"
-              onClick={() => onApplyRevision?.(message.revisionTargetAssistantId!)}
-            >
-              应用修改
-            </button>
-            <button
-              type="button"
-              className="revision-action-btn"
-              onClick={() => onCancelRevision?.(message.revisionTargetAssistantId!)}
-            >
-              取消修改
-            </button>
-          </div>
-        ) : null}
       </article>
     )
   }
@@ -216,8 +202,8 @@ export default function ChatMessageItem({
   return (
     <article className="chat-message is-assistant" onContextMenu={onContextMenu}>
       <div className="assistant-block">
-        <div
-          className={[
+          <div
+            className={[
             'assistant-card',
             reviseSelectionEnabled ? 'is-revise-selectable' : '',
             revising ? 'is-revising' : '',
@@ -226,7 +212,8 @@ export default function ChatMessageItem({
           ]
             .filter(Boolean)
             .join(' ')}
-        >
+            id={pendingApply ? 'revision-preview' : undefined}
+          >
           <div className={`section-editor-article${reviseSelectionEnabled ? ' is-active' : ''}`}>
             <MarkdownContent
               bodyRef={markdownRef}
@@ -266,6 +253,37 @@ export default function ChatMessageItem({
             >
               <IconCopyArticle size={13} />
             </button>
+            {onInsertIllustrations && message.status === 'done' ? (
+              <button
+                type="button"
+                className="assistant-copy-mini-btn"
+                disabled={insertIllustrationsDisabled}
+                onClick={() => onInsertIllustrations(message.id)}
+                aria-label="插入插图"
+                title="根据写作时选择的产品，从插图库为产品教程插入配图（需确认后生效）"
+              >
+                <IconIllustration size={13} />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={`assistant-copy-mini-btn${wordpressDraft ? ' is-wp-bound' : ''}`}
+              onClick={() => onPublishToWordPress?.(message.content)}
+              aria-label={wordpressDraft ? '更新 WordPress 草稿' : '推送到 WordPress 草稿'}
+              title={wordpressDraft ? '更新 WordPress 草稿' : '推送到 WordPress 草稿'}
+            >
+              <IconWordPress size={13} />
+            </button>
+            {wordpressDraft?.editLink ? (
+              <a
+                className="assistant-wp-link"
+                href={wordpressDraft.editLink}
+                target="_blank"
+                rel="noreferrer"
+              >
+                已推送草稿
+              </a>
+            ) : null}
           </div>
         ) : null}
         {message.status === 'error' ? <p className="message-error">生成失败，请检查 AI 配置后重试。</p> : null}

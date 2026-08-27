@@ -17,7 +17,14 @@ export interface OutlineH2ContractReport {
 }
 
 function normalizeTitle(title: string): string {
-  return title.trim().toLowerCase().replace(/\s+/g, ' ')
+  return title
+    .trim()
+    .replace(/^\*{1,3}\s*([\s\S]*?)\s*\*{1,3}$/, '$1')
+    .replace(/^_{1,3}\s*([\s\S]*?)\s*_{1,3}$/, '$1')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/^\*+|\*+$/g, '')
+    .trim()
 }
 
 function titlesMatch(a: string, b: string): boolean {

@@ -39,21 +39,21 @@ export function getTopListProductPlacementGuidance(productName?: string): string
     `2. **符合条件** → 列入 Top 榜单，**排名第 1**，H3 标题形如 \`### 1. ${productName} — Best Overall\`（或更贴切副标题）；该条目篇幅可略长于其他项。`,
     `3. **不符合条件**（如 Topic 为 Spotify 下载器但产品不支持 Spotify）→ **不得**强行放入 Top 榜单凑数；在 Top 榜单**之后**单独增加一节，如 \`## Part N. Also Worth Considering: ${productName}\`，说明其适用场景、与用户搜索意图的差异，以及为何作为补充而非主榜入选。`,
     `4. Top List 模式**不要求**独立 Part 写 4 步 How-to；若用户产品位列榜首，可在该条目内用 3–4 个简短要点说明使用流程。`,
-    `5. 全名「${productName}」**只**出现在其榜单 ### 条目（或 Also Worth Considering Part）内；其他产品条目与选型 Part 不要重复提及；该用全名时勿用 "this tool" 等泛称。`
+    `5. 全名「${productName}」**只**出现在其榜单 ### 条目（或 Also Worth Considering Part）内；**Quick Answer 禁止写该全名**；其他产品条目与选型 Part 不要重复提及；榜单条目内该用全名时勿用 "this tool" 等泛称。`
   ].join('\n')
 }
 
 export const TOP_LIST_PLAN_GUIDANCE = `
 【Top List 规划要点】
 - 从 Topic 解析榜单数量 N（如 Top 10 → 10）；不足时默认 10。
-- 规划：Quick Answer（列出榜首 3 款）→ Introduction → 选型标准 Part → Top N 榜单 Part（每条独立 ### 条目）→ 可选对比表 → FAQ → Conclusion。
+- 规划：Quick Answer（选型结论用模糊表述，**勿点名用户推广产品**）→ Introduction → 选型标准 Part → Top N 榜单 Part（每条独立 ### 条目）→ 可选对比表 → FAQ → Conclusion。
 - 为 N 个榜单席位各规划 1 条真实工具（调研驱动）；注明用户产品是否符合准入及排位。
 `.trim()
 
 export const TOP_LIST_OUTLINE_GUIDANCE = `
 【Top List 大纲硬性结构】
 1. H1 — 含 Top N + 核心品类词（如 Top 10 Spotify Music Downloaders）
-2. ## Quick Answer — 3–4 bullets，直接给出榜首推荐与选型结论
+2. ## Quick Answer — 3–4 bullets，直接给出选型结论与路径；**若用户指定了推广产品，QA 中勿写其全名**（用模糊表述），具名留给榜单 ### 条目
 3. ## Introduction — ≤150 词、≤3 段；说明读者痛点与本文如何帮他们选型
 4. ## Part 1. How We Picked the Best [Category] — 通用选型维度（音质、格式、平台、速度、合规）；以标准为主，与产品自然相关时可轻量举例
 5. ## Part 2. Top N [Category] — **核心榜单 Part**；每条产品一个 ### 小节，格式：
@@ -71,7 +71,7 @@ export const TOP_LIST_OUTLINE_GUIDANCE = `
 export const TOP_LIST_OUTLINE_SKELETON = `
 【Top List 大纲骨架 — 仅结构】
 首行：\`# …\` SEO H1（含 Top N + 品类核心词，**不得**与 Topic 逐字相同；可加年份/Best/Compared 等）
-1. ## Quick Answer — 2–3 bullets（榜首产品名 + 一句定位，无段落）
+1. ## Quick Answer — 2–3 bullets（选型结论用模糊表述；**勿在 QA stub 写用户推广产品全名**）
 2. ## Introduction — 2–3 bullets（痛点 + 本文价值）
 3. ## Part 1. How We Picked… — 3–5 bullets（选型维度关键词）
 4. ## Part 2. Top N … — **仅产品 stub**，每条一行：
@@ -89,7 +89,7 @@ export const TOP_LIST_ARTICLE_STRUCTURE = `
 This is a **ranked roundup**, NOT a single-product how-to. Do NOT use the generic GEO "one product Part + tutorial" layout.
 
 1. H1 — Top N + category keywords
-2. ## Quick Answer — 3–4 bullets naming top picks
+2. ## Quick Answer — 3–4 bullets with selection takeaways; **do not name the user's promoted product** in QA (use vague phrasing); name picks in the ranked ### list instead
 3. ## Introduction (≤150 words, ≤3 paragraphs)
 4. ## Part 1. — Selection criteria / how we evaluated (no product pitch)
 5. ## Part 2. — **The Top N list** — each product as ### 1. … ### N. with Pros/Cons/Best for

@@ -6,7 +6,16 @@ import { registerArticleIpc } from './ipc/article'
 import { registerChatIpc } from './ipc/chat'
 import { registerConfigIpc } from './ipc/config'
 import { registerImageIpc } from './ipc/image'
+import { registerIllustrationIpc } from './ipc/illustration'
+import { registerKnowledgeIpc } from './ipc/knowledge'
+import { registerWordPressIpc } from './ipc/wordpress'
 import { registerWindowIpc, attachWindowStateListeners, attachExternalLinkHandlers } from './ipc/window'
+import { loadConfig } from './config/configStore'
+import {
+  registerDrawImgProtocol,
+  registerDrawImgSchemePrivileged
+} from './image/imageHistoryStore'
+import { registerIllustrationProtocol } from './illustration/illustrationStore'
 import {
   attachCloseHandler,
   destroyTray,
@@ -17,6 +26,8 @@ import {
 if (!app.isPackaged) {
   loadEnv({ path: join(__dirname, '../../.env') })
 }
+
+registerDrawImgSchemePrivileged()
 
 const isDev = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
@@ -66,13 +77,19 @@ function createWindow(): void {
   initTrayManager(mainWindow, icon)
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null)
+  await loadConfig()
+  registerDrawImgProtocol()
+  registerIllustrationProtocol()
   registerWindowIpc()
   registerArticleIpc()
   registerChatIpc()
   registerConfigIpc()
   registerImageIpc()
+  registerKnowledgeIpc()
+  registerIllustrationIpc()
+  registerWordPressIpc()
   createWindow()
 
   app.on('activate', () => {

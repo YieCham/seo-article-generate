@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import { WRITE_MODE_OPTIONS, type WriteMode } from '../../constants/writeMode'
 import {
   IconModeBatch,
@@ -30,9 +31,16 @@ export default function ModeRail({
   onOpenDraw,
   onOpenSettings
 }: ModeRailProps) {
+  const writeModeIndex = WRITE_MODE_OPTIONS.findIndex((item) => item.value === writeMode)
+  const activeIndex = view === 'draw' ? WRITE_MODE_OPTIONS.length : Math.max(0, writeModeIndex)
+  const modesStyle = {
+    '--mode-rail-index': activeIndex
+  } as CSSProperties
+
   return (
     <nav className="mode-rail" aria-label="功能导航">
-      <div className="mode-rail-modes">
+      <div className="mode-rail-modes" style={modesStyle}>
+        <div className="mode-rail-indicator" aria-hidden="true" />
         {WRITE_MODE_OPTIONS.map((item) => {
           const active = view === 'write' && writeMode === item.value
           return (

@@ -81,9 +81,9 @@ export default function LlmModelDiscoverDialog({
   if (!open) return null
 
   return (
-    <div className="write-mode-picker-backdrop" onClick={onClose}>
+    <div className="ui-overlay write-mode-picker-backdrop" onClick={onClose}>
       <div
-        className="llm-model-discover-dialog"
+        className="ui-dialog llm-model-discover-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="llm-model-discover-title"

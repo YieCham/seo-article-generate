@@ -287,7 +287,7 @@ export default function LlmPresetPanel({
                       <img src={REASONING_MODEL_ICON} alt="" width={16} height={16} />
                     </button>
                     {menuOpen ? (
-                      <div className="llm-reasoning-menu" role="menu" aria-label={`${model} 思考强度`}>
+                      <div className="ui-menu llm-reasoning-menu" role="menu" aria-label={`${model} 思考强度`}>
                         <p className="llm-reasoning-menu-title">思考强度</p>
                         <p className="llm-reasoning-menu-note">
                           使用该模型时全局生效；仅推理模型支持，普通模型设置后可能被接口忽略或报错。

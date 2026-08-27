@@ -3,6 +3,10 @@ import { app } from 'electron'
 import { join } from 'path'
 import type { PipelineCheckpoint } from '../../shared/pipelineCheckpoint'
 import type { ResearchPack } from '../../shared/researchPack'
+import {
+  normalizeWordPressDraftBinding,
+  type WordPressDraftBinding
+} from '../../shared/wordpress'
 
 export type StoredWriteMode = 'create' | 'optimize' | 'batch-optimize'
 
@@ -40,6 +44,7 @@ export interface StoredChatSession {
   updatedAt: number
   pipelineCheckpoint?: PipelineCheckpoint
   researchPack?: ResearchPack
+  wordpressDraft?: WordPressDraftBinding
 }
 
 export interface ChatStoreData {
@@ -97,9 +102,12 @@ export async function loadChatStore(): Promise<ChatStoreData> {
         sortOrder: typeof session.sortOrder === 'number' ? session.sortOrder : undefined,
         listStatus: normalizeStoredListStatus(session.listStatus),
         writeMode: normalizeStoredWriteMode(session.writeMode),
+        llmPresetId: typeof session.llmPresetId === 'string' ? session.llmPresetId : undefined,
+        llmModel: typeof session.llmModel === 'string' ? session.llmModel : undefined,
         updatedAt: session.updatedAt || Date.now(),
         pipelineCheckpoint: session.pipelineCheckpoint,
         researchPack: session.researchPack,
+        wordpressDraft: normalizeWordPressDraftBinding(session.wordpressDraft),
         messages: Array.isArray(session.messages) ? session.messages : []
       }))
 

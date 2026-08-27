@@ -96,7 +96,7 @@ export const CONTENT_READABILITY_GUIDANCE = `
 - Use bullet lists and ### subheadings when they clarify steps or comparisons — not to artificially split every thought.
 - Never quote writing brief labels in the article (e.g. "Target audience", "for US reader", "Product name:", "Article type:").
 - **Anti-filler rule:** every added sentence must help the reader — no throat-clearing, no saying the same point twice in different words to hit word count.
-- **Anti-promo rule:** when a product name is specified, mention it in designated sections (Quick Answer, product Part, comparison, conclusion) and in generic Parts only when content naturally links; do not repeat the name in every paragraph or FAQ answer.
+- **Anti-promo rule:** when a product name is specified, do **not** name it in Quick Answer (use vague phrasing there); mention the full name in designated later sections (product Part, comparison, top-list entry, conclusion) and in generic Parts only when content naturally links; do not repeat the name in every paragraph or FAQ answer.
 `.trim()
 
 export function getArticleLengthPromptBlock(skillsText?: string, enabledSkillIds?: string[]): string {
@@ -105,21 +105,48 @@ export function getArticleLengthPromptBlock(skillsText?: string, enabledSkillIds
 }
 
 export function isIntroductionSection(title: string): boolean {
-  return /^introduction$/i.test(title.trim())
+  return /^introduction$/i.test(normalizeHeadingTitle(title))
+}
+
+/** Strip wrapping emphasis/code markers often left on ## titles by models. */
+export function normalizeHeadingTitle(title: string): string {
+  let t = title.trim()
+  for (let i = 0; i < 4; i += 1) {
+    const next = t
+      .replace(/^\*{1,3}\s*([\s\S]*?)\s*\*{1,3}$/, '$1')
+      .replace(/^_{1,3}\s*([\s\S]*?)\s*_{1,3}$/, '$1')
+      .replace(/^`+\s*([\s\S]*?)\s*`+$/, '$1')
+      .trim()
+    if (next === t) break
+    t = next
+  }
+  return t.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '').trim()
 }
 
 export function isConclusionSection(title: string): boolean {
-  return /^conclusion$/i.test(title.trim())
+  const t = normalizeHeadingTitle(title)
+  if (!t) return false
+  if (/^conclusion\b/i.test(t)) return true
+  if (/^in conclusion\b/i.test(t)) return true
+  if (/^(?:final thoughts|wrapping up|bottom line)\b/i.test(t)) return true
+  if (/^(?:the|our|a)\s+(?:bottom line|conclusion|final thoughts)\b/i.test(t)) return true
+  if (/\bpart\s*\d+\s*[.:：)\-–—]\s*(?:bottom line|conclusion|final thoughts|wrapping up|in conclusion)\b/i.test(t)) {
+    return true
+  }
+  if (/\b(?:bottom line|final thoughts|wrapping up|in conclusion|conclusion)\s*$/i.test(t)) return true
+  if (/^(?:总结|结语|結語|写在最后|寫在最後)\b/.test(t)) return true
+  return false
 }
 
 export function isFaqSection(title: string): boolean {
-  const t = title.trim()
+  const t = normalizeHeadingTitle(title)
   if (!t) return false
   if (/^faqs?$/i.test(t)) return true
   if (/frequently asked questions/i.test(t)) return true
   if (/常见问题|常見問題/.test(t)) return true
   // Topic-related FAQ H2s e.g. "FAQs About How to Fix Spotify"
   if (/\bfaqs?\b/i.test(t) && t.length <= 90) return true
+  if (/^q\s*&\s*a\b/i.test(t) && t.length <= 90) return true
   return false
 }
 

@@ -106,12 +106,12 @@ export default function ImageGenPanel({
       ) : null}
 
       <label>
-        默认提示词（可选）
+        文章封面提示词（可选）
         <textarea
           rows={4}
           value={imageGen.defaultPrompt}
           onChange={(event) => patch({ defaultPrompt: event.target.value })}
-          placeholder="进入绘图页时预填的 prompt"
+          placeholder="点击绘图页「文章封面」时填入的 prompt"
         />
       </label>
 

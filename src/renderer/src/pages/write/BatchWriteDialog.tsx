@@ -115,10 +115,10 @@ export default function BatchWriteDialog({
   }
 
   return (
-    <div className="write-mode-picker-backdrop" onClick={onClose}>
+    <div className="ui-overlay write-mode-picker-backdrop" onClick={onClose}>
       <div
         ref={dialogRef}
-        className="batch-create-dialog"
+        className="ui-dialog batch-create-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="batch-write-title"

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 interface SessionRenameDialogProps {
   open: boolean
@@ -43,10 +44,10 @@ export default function SessionRenameDialog({
     onConfirm(value.trim())
   }
 
-  return (
-    <div className="write-mode-picker-backdrop" onClick={onClose}>
+  return createPortal(
+    <div className="ui-overlay write-mode-picker-backdrop" onClick={onClose}>
       <div
-        className="session-rename-dialog"
+        className="ui-dialog session-rename-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="session-rename-title"
@@ -77,6 +78,7 @@ export default function SessionRenameDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

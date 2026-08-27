@@ -1,4 +1,20 @@
 import { DEFAULT_LLM_MAX_TOKENS, normalizeLlmMaxTokens } from './llmTokenLimits'
+import {
+  DEFAULT_WORDPRESS_SETTINGS,
+  type WordPressSettings
+} from '../../shared/wordpress'
+
+export {
+  DEFAULT_WORDPRESS,
+  DEFAULT_WORDPRESS_SETTINGS,
+  normalizeWordPressConfig,
+  normalizeWordPressSettings,
+  resolveActiveWordPressPreset,
+  resolveWordPressPreset,
+  type WordPressConfig,
+  type WordPressPreset,
+  type WordPressSettings
+} from '../../shared/wordpress'
 
 export { DEFAULT_LLM_MAX_TOKENS, normalizeLlmMaxTokens }
 
@@ -226,6 +242,8 @@ export interface ResearchConfig {
 export interface QuickPickOption {
   id: string
   label: string
+  /** Optional WordPress site preset to prefer when publishing with this product selected. */
+  wordpressPresetId?: string
 }
 
 export interface QuickPicksConfig {
@@ -273,6 +291,38 @@ export function normalizeImageGenConfig(partial?: Partial<ImageGenConfig> | null
     model: partial?.model?.trim() || DEFAULT_IMAGE_GEN.model,
     size: partial?.size?.trim() || DEFAULT_IMAGE_GEN.size,
     defaultPrompt: partial?.defaultPrompt ?? ''
+  }
+}
+
+/** HTTP proxy for outbound API requests (LLM / research / image, etc.). */
+export interface NetworkProxyConfig {
+  enabled: boolean
+  host: string
+  port: number
+}
+
+export const DEFAULT_NETWORK_PROXY: NetworkProxyConfig = {
+  enabled: false,
+  host: '127.0.0.1',
+  port: 8889
+}
+
+export function normalizeNetworkProxy(partial?: Partial<NetworkProxyConfig> | null): NetworkProxyConfig {
+  const rawPort = partial?.port as unknown
+  let port = DEFAULT_NETWORK_PROXY.port
+  if (typeof rawPort === 'number' && Number.isFinite(rawPort)) {
+    port = Math.min(65535, Math.max(1, Math.round(rawPort)))
+  } else if (typeof rawPort === 'string' && rawPort.trim() !== '') {
+    const parsed = Number(rawPort)
+    if (Number.isFinite(parsed)) {
+      port = Math.min(65535, Math.max(1, Math.round(parsed)))
+    }
+  }
+
+  return {
+    enabled: Boolean(partial?.enabled),
+    host: (partial?.host?.trim() || DEFAULT_NETWORK_PROXY.host).replace(/\/$/, ''),
+    port
   }
 }
 
@@ -326,6 +376,8 @@ export interface AppConfig {
   skillEnablementInitialized: boolean
   windowClose?: WindowCloseBehavior
   imageGen: ImageGenConfig
+  networkProxy: NetworkProxyConfig
+  wordpress: WordPressSettings
 }
 
 export interface SkillItem {
@@ -360,7 +412,17 @@ export function normalizeQuickPicks(quickPicks?: Partial<QuickPicksConfig>): Qui
   const sanitize = (items: QuickPickOption[] | undefined): QuickPickOption[] =>
     (items ?? [])
       .filter((item) => item && typeof item.id === 'string' && typeof item.label === 'string')
-      .map((item) => ({ id: item.id, label: item.label.trim() }))
+      .map((item) => {
+        const wordpressPresetId =
+          typeof item.wordpressPresetId === 'string' && item.wordpressPresetId.trim()
+            ? item.wordpressPresetId.trim()
+            : undefined
+        return {
+          id: item.id,
+          label: item.label.trim(),
+          ...(wordpressPresetId ? { wordpressPresetId } : {})
+        }
+      })
       .filter((item) => item.label.length > 0)
 
   const lang = quickPicks?.defaultOutputLanguage?.trim()
@@ -494,7 +556,12 @@ export const DEFAULT_CONFIG: AppConfig = {
     skipPrompt: false,
     defaultAction: 'minimize-to-tray'
   },
-  imageGen: { ...DEFAULT_IMAGE_GEN }
+  imageGen: { ...DEFAULT_IMAGE_GEN },
+  networkProxy: { ...DEFAULT_NETWORK_PROXY },
+  wordpress: {
+    presets: DEFAULT_WORDPRESS_SETTINGS.presets.map((item) => ({ ...item })),
+    activePresetId: DEFAULT_WORDPRESS_SETTINGS.activePresetId
+  }
 }
 
 /** @deprecated fields from older configs */

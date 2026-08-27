@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import type { WriteMode } from '../../constants/writeMode'
 import type { ChatMessage, ReviseArticleSelection } from './types'
+import type { WordPressDraftBinding } from '../../../../shared/wordpress'
 import ChatMessageItem from './ChatMessageItem'
 import MessageContextMenu from './MessageContextMenu'
 
 interface ChatThreadProps {
   messages: ChatMessage[]
   onCopy: (content: string) => void
+  onPublishToWordPress?: (content: string) => void
+  onInsertIllustrations?: (messageId: string) => void
+  wordpressDraft?: WordPressDraftBinding
   writeMode?: WriteMode
   isRunning?: boolean
   pipelineStatusMessage?: string
@@ -15,13 +19,15 @@ interface ChatThreadProps {
   reviseSelection?: ReviseArticleSelection | null
   onReviseSelectionChange?: (selection: ReviseArticleSelection | null) => void
   onDeleteMessage?: (messageId: string) => void
-  onApplyRevision?: (assistantMessageId: string) => void
-  onCancelRevision?: (assistantMessageId: string) => void
+  insertIllustrationsDisabled?: boolean
 }
 
 export default function ChatThread({
   messages,
   onCopy,
+  onPublishToWordPress,
+  onInsertIllustrations,
+  wordpressDraft,
   writeMode = 'create',
   isRunning = false,
   pipelineStatusMessage = '',
@@ -30,8 +36,7 @@ export default function ChatThread({
   reviseSelection = null,
   onReviseSelectionChange,
   onDeleteMessage,
-  onApplyRevision,
-  onCancelRevision
+  insertIllustrationsDisabled = false
 }: ChatThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ messageId: string; x: number; y: number } | null>(
@@ -43,6 +48,11 @@ export default function ChatThread({
     : null
 
   useEffect(() => {
+    const preview = document.getElementById('revision-preview')
+    if (preview) {
+      preview.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
@@ -88,6 +98,9 @@ export default function ChatThread({
               key={message.id}
               message={message}
               onCopy={onCopy}
+              onPublishToWordPress={onPublishToWordPress}
+              onInsertIllustrations={onInsertIllustrations}
+              wordpressDraft={message.role === 'assistant' ? wordpressDraft : undefined}
               onContextMenu={(event) => handleContextMenu(event, message)}
               waitingLabel={
                 message.role === 'assistant' &&
@@ -106,8 +119,7 @@ export default function ChatThread({
                 message.id === reviseTargetMessageId ? reviseSelection : null
               }
               onReviseSelectionChange={onReviseSelectionChange}
-              onApplyRevision={onApplyRevision}
-              onCancelRevision={onCancelRevision}
+              insertIllustrationsDisabled={insertIllustrationsDisabled}
             />
           ))}
           <div ref={bottomRef} />

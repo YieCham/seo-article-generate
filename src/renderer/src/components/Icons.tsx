@@ -193,6 +193,16 @@ export function IconTrash({ size = 14, className }: IconProps) {
   )
 }
 
+export function IconUpload({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M12 16V5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M8 8.5L12 4.5L16 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 19H19" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export function IconHistory({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
@@ -294,6 +304,39 @@ export function IconMoveToActive({ size = 14, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 1024 1024" fill="currentColor" className={className} aria-hidden="true">
       <path d="M588 298.4H256.8l122.8-118c6.4-6 6.4-16.4 0.4-22.8l-22-23.2c-6-6.4-16.4-6.4-22.8-0.4L142.8 318.8c-6.4 6.4-6.4 16.8 0 23.2l192.4 184.4c6.4 6 16.4 6 22.8-0.4l22-23.2c6-6.4 6-16.4-0.4-22.8L256.8 362.4H588c130.4 0 236 106.8 234 237.6-2 128.4-109.2 230.4-237.6 230.4H261.2c-8.8 0-16 7.2-16 16v32c0 8.8 7.2 16 16 16h323.2c164 0 300-131.2 301.6-295.2 1.6-165.6-132.8-300.8-298-300.8z" />
+    </svg>
+  )
+}
+
+export function IconWordPress({ size = 14, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M5 7.5A2.5 2.5 0 0 1 7.5 5h9A2.5 2.5 0 0 1 19 7.5v9A2.5 2.5 0 0 1 16.5 19h-9A2.5 2.5 0 0 1 5 16.5v-9Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path d="M8.5 9.5h7M8.5 12.5h7M8.5 15.5h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+export function IconIllustration({ size = 14, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M5 5.5A1.5 1.5 0 0 1 6.5 4h11A1.5 1.5 0 0 1 19 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 18.5v-13Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M8 14.5 10.2 12l2.3 2.3L15.2 11l2.3 3.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="9.2" cy="9" r="1.1" fill="currentColor" />
     </svg>
   )
 }

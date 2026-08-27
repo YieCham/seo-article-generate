@@ -41,9 +41,9 @@ export default function CloseConfirmDialog({
   if (!open) return null
 
   return (
-    <div className="write-mode-picker-backdrop" onClick={onClose}>
+    <div className="ui-overlay write-mode-picker-backdrop" onClick={onClose}>
       <div
-        className="session-rename-dialog close-confirm-dialog"
+        className="ui-dialog session-rename-dialog close-confirm-dialog"
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="close-confirm-title"

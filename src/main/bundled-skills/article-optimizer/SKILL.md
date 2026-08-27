@@ -46,7 +46,7 @@ description: >-
 - 多用**清晰列表**、**加粗核心观点**
 - 提供**直接、可摘录**的问题解答（如 Quick Answer、FAQ）
 - 使用引用友好的排版（短段、分节、要点前置）
-- **原文缺少 Quick Answer 时，优化稿须在 H1 后新增 ## Quick Answer**（3–4 条 bullet，直接回答核心问题）
+- **原文缺少 Quick Answer 时，优化稿须在 H1 后新增 ## Quick Answer**（3–4 条 bullet，直接回答核心问题；有用户推广产品时 **QA 勿写其全名**，用模糊表述）
 - 若与 GEO Skill 同时启用，可在不损害 E-E-A-T 的前提下补充 FAQ 等模块
 - **文章优化模式会自动关闭创作类流媒体 Skill**（`streaming-audio-domain`、`streaming-audio-compliance`、`seo-geo-streaming-top` 等），避免按「新文创作模板」重写原页面
 

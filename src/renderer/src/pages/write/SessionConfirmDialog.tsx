@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 export type SessionConfirmAction = 'clear' | 'delete' | 'regenerate'
 
@@ -70,10 +71,10 @@ export default function SessionConfirmDialog({
   const copy = CONFIRM_COPY[action]
   const showResearchToggle = action === 'regenerate' && hasResearchPack
 
-  return (
-    <div className="write-mode-picker-backdrop" onClick={onClose}>
+  return createPortal(
+    <div className="ui-overlay write-mode-picker-backdrop" onClick={onClose}>
       <div
-        className="session-rename-dialog session-confirm-dialog"
+        className="ui-dialog session-rename-dialog session-confirm-dialog"
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="session-confirm-title"
@@ -127,6 +128,7 @@ export default function SessionConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

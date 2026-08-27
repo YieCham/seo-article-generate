@@ -56,7 +56,7 @@ function LetterBadge({ brand, size }: { brand: string; size: number }) {
         fill="#fff"
         fontSize="11"
         fontWeight="700"
-        fontFamily="Inter, ui-sans-serif, system-ui, sans-serif"
+        fontFamily="system-ui, -apple-system, 'Segoe UI', sans-serif"
       >
         {label}
       </text>

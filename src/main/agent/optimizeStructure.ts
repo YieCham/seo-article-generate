@@ -1,4 +1,4 @@
-import { countArticleWords as countWords, isFaqSection } from './articleLength'
+import { countArticleWords as countWords, isConclusionSection, isFaqSection, normalizeHeadingTitle } from './articleLength'
 import { MULTI_METHOD_POLISH_PRESERVATION_HINT } from './outlineSkeleton'
 import { MULTI_METHOD_STRUCTURE_PRESERVE_RULE } from './articleStructurePreserve'
 import { parseOutlineSections } from './llmClient'
@@ -430,34 +430,21 @@ export function shouldSkipOptimizeLengthAdjust(wordCount: number): boolean {
 }
 
 function hasIntroductionSection(sections: OutlineSection[]): boolean {
-  return sections.some((item) => /^introduction$/i.test(item.title.trim()))
+  return sections.some((item) => /^introduction$/i.test(normalizeHeadingTitle(item.title)))
 }
 
 function isQuickAnswerSection(title: string): boolean {
-  return /quick answer|key takeaways/i.test(title.trim())
-}
-
-function isConclusionSection(title: string): boolean {
-  const t = title.trim()
-  if (/^conclusion$/i.test(t)) return true
-  if (/^in conclusion$/i.test(t)) return true
-  if (/^(?:final thoughts|wrapping up|bottom line)$/i.test(t)) return true
-  // Diagnosis often renames endings to「Part N. Bottom Line」
-  if (/\bpart\s*\d+\s*[.:：)]\s*(?:bottom line|conclusion|final thoughts|wrapping up)\b/i.test(t)) {
-    return true
-  }
-  if (/\b(?:bottom line|final thoughts|wrapping up)\s*$/i.test(t)) return true
-  return false
+  return /quick answer|key takeaways/i.test(normalizeHeadingTitle(title))
 }
 
 export type ArticleModuleKind = 'quickAnswer' | 'introduction' | 'faq' | 'conclusion' | 'body'
 
 export function classifyArticleModule(title: string): ArticleModuleKind {
-  const trimmed = title.trim()
-  if (isQuickAnswerSection(trimmed)) return 'quickAnswer'
+  const trimmed = normalizeHeadingTitle(title)
+  if (isQuickAnswerSection(title)) return 'quickAnswer'
   if (/^introduction$/i.test(trimmed)) return 'introduction'
-  if (isFaqSection(trimmed)) return 'faq'
-  if (isConclusionSection(trimmed)) return 'conclusion'
+  if (isFaqSection(title)) return 'faq'
+  if (isConclusionSection(title)) return 'conclusion'
   return 'body'
 }
 
@@ -553,8 +540,9 @@ export function reorderArticleMarkdown(markdown: string): string {
 
   const reorderedBody = sections
     .map((section) => {
+      const title = normalizeHeadingTitle(section.title) || section.title.trim()
       const body = section.body.trim()
-      return body ? `## ${section.title}\n\n${body}` : `## ${section.title}`
+      return body ? `## ${title}\n\n${body}` : `## ${title}`
     })
     .join('\n\n')
 

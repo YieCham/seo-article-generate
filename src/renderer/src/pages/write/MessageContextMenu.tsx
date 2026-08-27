@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { IconDelete } from '../../components/Icons'
 import type { ChatMessage } from './types'
 import { canDeleteChatMessage } from './types'
@@ -63,10 +64,10 @@ export default function MessageContextMenu({
 
   const canDelete = canDeleteChatMessage(message, deleteDisabled)
 
-  return (
+  return createPortal(
     <div
       ref={menuRef}
-      className="session-context-menu message-context-menu"
+      className="ui-menu session-context-menu message-context-menu"
       style={{ left: position.x, top: position.y }}
       role="menu"
     >
@@ -79,6 +80,7 @@ export default function MessageContextMenu({
         <IconDelete size={14} className="session-context-menu-icon" />
         <span>删除此条消息</span>
       </button>
-    </div>
+    </div>,
+    document.body
   )
 }

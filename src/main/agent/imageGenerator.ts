@@ -1,5 +1,12 @@
 import { loadConfig } from '../config/configStore'
 import { normalizeImageGenConfig } from '../config/types'
+import {
+  readHistoryImageBuffer,
+  saveImageHistoryFromBuffer,
+  toDrawImgSrc
+} from '../image/imageHistoryStore'
+
+const IMAGE_FETCH_TIMEOUT_MS = 180_000
 
 export interface GenerateImageRequest {
   prompt?: string
@@ -11,19 +18,20 @@ export interface EditImageRequest {
   prompt: string
   size?: string
   model?: string
-  /** Current preview as data URL (preferred) */
+  /** Prefer referencing a saved history file (avoids huge IPC) */
+  fileName?: string
+  /** Legacy / fallback data URL */
   imageDataUrl?: string
-  /** Fallback remote URL */
   imageUrl?: string
 }
 
 export interface GenerateImageResult {
   ok: boolean
   message?: string
-  /** Prefer data URL for renderer <img src> */
-  imageDataUrl?: string
-  /** Remote URL when API returns url instead of b64 */
-  imageUrl?: string
+  /** Custom protocol URL for <img src> */
+  imageSrc?: string
+  fileName?: string
+  mimeType?: string
   prompt?: string
   size?: string
   model?: string
@@ -73,18 +81,41 @@ function parseDataUrl(dataUrl: string): { mimeType: string; buffer: Buffer } | n
   }
 }
 
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = IMAGE_FETCH_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒），请稍后重试`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function resolveSourceImage(
-  imageDataUrl?: string,
-  imageUrl?: string
+  request: EditImageRequest
 ): Promise<{ mimeType: string; buffer: Buffer } | null> {
-  if (imageDataUrl?.trim()) {
-    const parsed = parseDataUrl(imageDataUrl)
+  if (request.fileName?.trim()) {
+    const fromDisk = await readHistoryImageBuffer(request.fileName.trim())
+    if (fromDisk) return fromDisk
+  }
+
+  if (request.imageDataUrl?.trim()) {
+    const parsed = parseDataUrl(request.imageDataUrl)
     if (parsed) return parsed
   }
 
-  if (imageUrl?.trim()) {
+  if (request.imageUrl?.trim()) {
     try {
-      const response = await fetch(imageUrl.trim())
+      const response = await fetchWithTimeout(request.imageUrl.trim(), { method: 'GET' }, 60_000)
       if (!response.ok) return null
       const arrayBuffer = await response.arrayBuffer()
       const contentType = response.headers.get('content-type') || 'image/png'
@@ -106,7 +137,8 @@ function parseImageApiPayload(
   status: number,
   failLabel: string
 ):
-  | { ok: true; imageDataUrl?: string; imageUrl?: string }
+  | { ok: true; buffer: Buffer; mimeType: string }
+  | { ok: true; remoteUrl: string }
   | { ok: false; message: string } {
   let payload: ImageApiResponse = {}
   try {
@@ -135,15 +167,58 @@ function parseImageApiPayload(
 
   if (item.b64_json?.trim()) {
     const b64 = item.b64_json.trim()
-    const mime = guessMimeFromB64(b64)
-    return { ok: true, imageDataUrl: `data:${mime};base64,${b64}` }
+    const mimeType = guessMimeFromB64(b64)
+    return { ok: true, buffer: Buffer.from(b64, 'base64'), mimeType }
   }
 
   if (item.url?.trim()) {
-    return { ok: true, imageUrl: item.url.trim() }
+    return { ok: true, remoteUrl: item.url.trim() }
   }
 
   return { ok: false, message: `${failLabel}接口未返回 b64_json 或 url。` }
+}
+
+async function persistAndBuildResult(input: {
+  prompt: string
+  size: string
+  model: string
+  buffer: Buffer
+  mimeType: string
+}): Promise<GenerateImageResult> {
+  const saved = await saveImageHistoryFromBuffer({
+    prompt: input.prompt,
+    size: input.size,
+    model: input.model,
+    mimeType: input.mimeType,
+    buffer: input.buffer
+  })
+
+  return {
+    ok: true,
+    imageSrc: toDrawImgSrc(saved.fileName),
+    fileName: saved.fileName,
+    mimeType: saved.mimeType,
+    prompt: input.prompt,
+    size: input.size,
+    model: input.model
+  }
+}
+
+async function resolveRemoteToBuffer(
+  remoteUrl: string
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  try {
+    const response = await fetchWithTimeout(remoteUrl, { method: 'GET' }, 60_000)
+    if (!response.ok) return null
+    const arrayBuffer = await response.arrayBuffer()
+    const contentType = response.headers.get('content-type') || 'image/png'
+    return {
+      buffer: Buffer.from(arrayBuffer),
+      mimeType: contentType.split(';')[0]?.trim() || 'image/png'
+    }
+  } catch {
+    return null
+  }
 }
 
 export async function generateImage(request: GenerateImageRequest = {}): Promise<GenerateImageResult> {
@@ -167,7 +242,7 @@ export async function generateImage(request: GenerateImageRequest = {}): Promise
   const model = (request.model ?? imageGen.model).trim() || 'gpt-image-2'
 
   try {
-    const response = await fetch(imageGen.apiUrl, {
+    const response = await fetchWithTimeout(imageGen.apiUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${imageGen.apiKey}`,
@@ -185,14 +260,27 @@ export async function generateImage(request: GenerateImageRequest = {}): Promise
     const parsed = parseImageApiPayload(text, response.ok, response.status, '绘图')
     if (!parsed.ok) return parsed
 
-    return {
-      ok: true,
-      imageDataUrl: parsed.imageDataUrl,
-      imageUrl: parsed.imageUrl,
+    if ('remoteUrl' in parsed) {
+      const downloaded = await resolveRemoteToBuffer(parsed.remoteUrl)
+      if (!downloaded) {
+        return { ok: false, message: '绘图接口返回了 URL，但下载图片失败。' }
+      }
+      return persistAndBuildResult({
+        prompt,
+        size,
+        model,
+        buffer: downloaded.buffer,
+        mimeType: downloaded.mimeType
+      })
+    }
+
+    return persistAndBuildResult({
       prompt,
       size,
-      model
-    }
+      model,
+      buffer: parsed.buffer,
+      mimeType: parsed.mimeType
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : '绘图请求失败'
     return { ok: false, message }
@@ -201,7 +289,6 @@ export async function generateImage(request: GenerateImageRequest = {}): Promise
 
 /**
  * Image-to-image edit via OpenAI-compatible /v1/images/edits (multipart).
- * Size / model / prompt / response_format follow the generations API params.
  */
 export async function editImage(request: EditImageRequest): Promise<GenerateImageResult> {
   const config = await loadConfig()
@@ -220,7 +307,7 @@ export async function editImage(request: EditImageRequest): Promise<GenerateImag
     return { ok: false, message: '请输入编辑提示词。' }
   }
 
-  const source = await resolveSourceImage(request.imageDataUrl, request.imageUrl)
+  const source = await resolveSourceImage(request)
   if (!source) {
     return { ok: false, message: '缺少可编辑的预览图数据。' }
   }
@@ -241,7 +328,7 @@ export async function editImage(request: EditImageRequest): Promise<GenerateImag
       `source.${guessExt(source.mimeType)}`
     )
 
-    const response = await fetch(editsUrl, {
+    const response = await fetchWithTimeout(editsUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${imageGen.apiKey}`
@@ -253,14 +340,27 @@ export async function editImage(request: EditImageRequest): Promise<GenerateImag
     const parsed = parseImageApiPayload(text, response.ok, response.status, '编辑')
     if (!parsed.ok) return parsed
 
-    return {
-      ok: true,
-      imageDataUrl: parsed.imageDataUrl,
-      imageUrl: parsed.imageUrl,
+    if ('remoteUrl' in parsed) {
+      const downloaded = await resolveRemoteToBuffer(parsed.remoteUrl)
+      if (!downloaded) {
+        return { ok: false, message: '编辑接口返回了 URL，但下载图片失败。' }
+      }
+      return persistAndBuildResult({
+        prompt,
+        size,
+        model,
+        buffer: downloaded.buffer,
+        mimeType: downloaded.mimeType
+      })
+    }
+
+    return persistAndBuildResult({
       prompt,
       size,
-      model
-    }
+      model,
+      buffer: parsed.buffer,
+      mimeType: parsed.mimeType
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : '编辑请求失败'
     return { ok: false, message }

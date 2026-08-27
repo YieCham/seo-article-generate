@@ -20,6 +20,8 @@ import {
   formatOptimizeUserMessageContent,
   parseBatchOptimizeUserMessage,
   formatReviseUserMessageContent,
+  formatIllustrationInsertUserMessage,
+  resolveProductNameFromUserMessages,
   formatUserMessageContent,
   parseCreateUserMessage,
   parseOptimizeUserMessage
@@ -42,8 +44,10 @@ import type { ModeRailView } from './write/ModeRail'
 import ChatThread from './write/ChatThread'
 
 import Composer from './write/Composer'
+import RevisionConfirmBar from './write/RevisionConfirmBar'
 
 import BatchWriteDialog from './write/BatchWriteDialog'
+import WordPressPublishDialog from './write/WordPressPublishDialog'
 
 import type { PipelineCheckpoint } from '../../../shared/pipelineCheckpoint'
 import {
@@ -70,6 +74,7 @@ import {
   normalizeIdleStreamingAssistants,
   reorderSessions,
   sessionCanResume,
+  getPendingRevisionAssistant,
   sessionHasPendingRevision,
   sessionIsInFollowUpMode,
   sessionTitleFromPrompt,
@@ -80,6 +85,7 @@ import {
   type SessionLifecycleGroup,
   type SessionListGroup
 } from './write/types'
+import type { WordPressDraftBinding } from '../../../shared/wordpress'
 
 
 
@@ -136,6 +142,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   } | null>(null)
 
   const [toast, setToast] = useState('')
+  const [wpPublishOpen, setWpPublishOpen] = useState(false)
+  const [wpPublishMarkdown, setWpPublishMarkdown] = useState('')
+  const [wpPublishSessionId, setWpPublishSessionId] = useState('')
 
   const generatingSessionIdRef = useRef<string>('')
   const batchActiveRef = useRef(false)
@@ -1119,7 +1128,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
               customTitle: undefined,
               messages: [],
               pipelineCheckpoint: undefined,
-              researchPack: undefined
+              researchPack: undefined,
+              wordpressDraft: undefined
             }
           : session
       )
@@ -1277,6 +1287,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         sourceUrl: parsed.sourceUrl,
         extraInstructions: parsed.extraInstructions || undefined,
         outputLanguage,
+        llmPresetId: session.llmPresetId,
+        llmModel: session.llmModel,
         reuseResearch
       })
 
@@ -1311,6 +1323,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       topic: parsed.topic,
       extraInstructions: parsed.extraInstructions || undefined,
       outputLanguage,
+      llmPresetId: session.llmPresetId,
+      llmModel: session.llmModel,
       reuseResearch
     })
 
@@ -1454,6 +1468,99 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       } else {
         setToast(result.message ?? '修订失败')
         window.setTimeout(() => setToast(''), 2200)
+      }
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+    }
+  }
+
+  async function handleInsertIllustrations(messageId: string): Promise<void> {
+    if (isRunning || !activeSession) return
+
+    if (sessionHasPendingRevision(activeSession)) {
+      setToast('请先应用或取消当前修改')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    const articleMessage = activeSession.messages.find(
+      (message) =>
+        message.id === messageId &&
+        message.role === 'assistant' &&
+        message.status === 'done' &&
+        message.content.trim()
+    )
+    if (!articleMessage) {
+      setToast('当前没有可插入插图的文章')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    const productNameFromSession = resolveProductNameFromUserMessages(activeSession.messages)
+    const productFromPick =
+      quickPicks.products.find((item) => item.id === selectedProductId) ??
+      quickPicks.products.find(
+        (item) =>
+          Boolean(productNameFromSession) &&
+          item.label.trim().toLowerCase() === productNameFromSession!.trim().toLowerCase()
+      )
+    const productName = productFromPick?.label?.trim() || productNameFromSession
+    if (!productName) {
+      setToast('未找到写作时选择的产品（补充要求中的 Product name）。请确认开篇已选产品。')
+      window.setTimeout(() => setToast(''), 2800)
+      return
+    }
+
+    const userMessage = createMessage('user', formatIllustrationInsertUserMessage(productName))
+    const sessionId = activeSession.id
+    const articleContent = articleMessage.content
+
+    revisionBaselineRef.current = {
+      messageId: articleMessage.id,
+      content: articleContent,
+      userMessageId: userMessage.id
+    }
+
+    updateSession(sessionId, (session) => {
+      const filtered = session.messages.filter((item) => item.role !== 'status')
+      const messages = filtered.map((item) =>
+        item.id === articleMessage.id ? { ...item, status: 'revising' as const } : item
+      )
+
+      return {
+        ...session,
+        messages: [...messages, userMessage],
+        updatedAt: Date.now()
+      }
+    })
+
+    setReviseSelection(null)
+    window.getSelection()?.removeAllRanges()
+    finishedGenerationSessionsRef.current.delete(sessionId)
+    setIsRunning(true)
+    generatingSessionIdRef.current = sessionId
+    setRunningSessionId(sessionId)
+
+    const result = await window.app.insertIllustrations({
+      article: articleContent,
+      productId: productFromPick?.id,
+      productName,
+      outputLanguage,
+      pipeline:
+        activeWriteMode === 'create' || activeWriteMode === 'optimize'
+          ? activeWriteMode
+          : 'optimize',
+      topic: activeSession.messages.find((message) => message.role === 'user')?.content,
+      ...resolveLlmRequestFields()
+    })
+
+    if (!result.ok && result.message !== '已中止生成') {
+      if (!abortRevisionAttempt()) {
+        markAssistantError(result.message ?? '插图插入失败')
+      } else {
+        setToast(result.message ?? '插图插入失败')
+        window.setTimeout(() => setToast(''), 2800)
       }
       setIsRunning(false)
       generatingSessionIdRef.current = ''
@@ -2024,6 +2131,24 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
+  function handlePublishToWordPress(content: string): void {
+    setWpPublishMarkdown(content)
+    setWpPublishSessionId(activeSessionId)
+    setWpPublishOpen(true)
+  }
+
+  function handleWordPressPublished(binding: WordPressDraftBinding, message: string): void {
+    const sessionId = wpPublishSessionId || activeSessionId
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.id === sessionId ? { ...session, wordpressDraft: binding, updatedAt: Date.now() } : session
+      )
+    )
+    setWpPublishOpen(false)
+    setToast(message)
+    window.setTimeout(() => setToast(''), 2800)
+  }
+
   function handleClearReviseSelection(): void {
     setReviseSelection(null)
     window.getSelection()?.removeAllRanges()
@@ -2033,6 +2158,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const canResumeSession = activeSession ? sessionCanResume(activeSession) : false
   const resumeStatusLabel = activeSession ? getResumeStatusLabel(activeSession) : '继续生成'
   const hasPendingRevision = activeSession ? sessionHasPendingRevision(activeSession) : false
+  const pendingRevisionAssistant = activeSession ? getPendingRevisionAssistant(activeSession) : null
+  const pendingRevisionInstruction = pendingRevisionAssistant?.revisionUserMessageId
+    ? activeSession?.messages.find(
+        (message) => message.id === pendingRevisionAssistant.revisionUserMessageId
+      )?.content ?? null
+    : null
   const isActiveSessionRunning = isRunning && runningSessionId === activeSession?.id
   const latestArticleMessage = activeSession ? getLatestDoneAssistantMessage(activeSession) : null
   const reviseTargetMessageId =
@@ -2117,6 +2248,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
             <ChatThread
               messages={activeSession.messages}
               onCopy={(content) => void handleCopy(content)}
+              onPublishToWordPress={handlePublishToWordPress}
+              onInsertIllustrations={(messageId) => void handleInsertIllustrations(messageId)}
+              wordpressDraft={activeSession.wordpressDraft}
               writeMode={activeWriteMode}
               isRunning={isActiveSessionRunning}
               pipelineStatusMessage={isActiveSessionRunning ? pipelineStatusMessage : ''}
@@ -2125,13 +2259,19 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
               reviseSelection={reviseSelection}
               onReviseSelectionChange={setReviseSelection}
               onDeleteMessage={handleDeleteMessage}
-              onApplyRevision={handleApplyRevision}
-              onCancelRevision={handleCancelRevision}
+              insertIllustrationsDisabled={isActiveSessionRunning || hasPendingRevision}
             />
 
             <div className="composer-area">
+              {hasPendingRevision && pendingRevisionAssistant ? (
+                <RevisionConfirmBar
+                  instructionPreview={pendingRevisionInstruction}
+                  onApply={() => handleApplyRevision(pendingRevisionAssistant.id)}
+                  onCancel={() => handleCancelRevision(pendingRevisionAssistant.id)}
+                />
+              ) : (
               <Composer
-                disabled={hasPendingRevision}
+                disabled={false}
                 isGenerating={isActiveSessionRunning}
                 canResume={canResumeSession}
                 resumeLabel={resumeStatusLabel}
@@ -2172,6 +2312,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
                     : undefined
                 }
               />
+              )}
 
               <footer className="write-statusbar">
                 <span className="write-status-label">{getWriteModeLabel(activeWriteMode)}</span>
@@ -2223,6 +2364,23 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
                   void handleBatchCreate(itemsText, extra)
                 }
               }}
+            />
+
+            <WordPressPublishDialog
+              open={wpPublishOpen}
+              markdown={wpPublishMarkdown}
+              sessionId={wpPublishSessionId || activeSession.id}
+              sessionTitle={topbarTitle || activeSession.title}
+              existingDraft={
+                (wpPublishSessionId
+                  ? sessions.find((session) => session.id === wpPublishSessionId)?.wordpressDraft
+                  : activeSession.wordpressDraft)
+              }
+              preferredWordpressPresetId={
+                quickPicks.products.find((item) => item.id === selectedProductId)?.wordpressPresetId
+              }
+              onClose={() => setWpPublishOpen(false)}
+              onPublished={handleWordPressPublished}
             />
           </main>
         </>

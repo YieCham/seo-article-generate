@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { PipelineCheckpoint } from '../shared/pipelineCheckpoint'
 import type { CreateResearchPack, OptimizeResearchPack, ResearchPack } from '../shared/researchPack'
+import type {
+  WordPressConfig,
+  WordPressDraftBinding,
+  WordPressPreset,
+  WordPressPublishLogRecord,
+  WordPressPublishRequest,
+  WordPressPublishResult,
+  WordPressSettings,
+  WordPressTermsResult,
+  WordPressTestResult
+} from '../shared/wordpress'
 
 export interface GenerateArticleRequest {
   topic: string
@@ -80,6 +91,17 @@ export interface ReviseArticleRequest {
   llmModel?: string
 }
 
+export interface InsertIllustrationsRequest {
+  article: string
+  productId?: string
+  productName?: string
+  outputLanguage?: string
+  pipeline?: 'create' | 'optimize'
+  topic?: string
+  llmPresetId?: string
+  llmModel?: string
+}
+
 export interface GenerateArticleResult {
   ok: boolean
   message?: string
@@ -133,12 +155,15 @@ export interface ResearchConfig {
 export interface QuickPickOption {
   id: string
   label: string
+  wordpressPresetId?: string
 }
 
 export interface QuickPicksConfig {
   products: QuickPickOption[]
   defaultOutputLanguage: string
 }
+
+export type { WordPressConfig, WordPressDraftBinding, WordPressPreset, WordPressSettings }
 
 export interface AppConfig {
   llmPresets: LlmPreset[]
@@ -155,6 +180,7 @@ export interface AppConfig {
   enabledSkills: ModeEnabledSkillsConfig
   skillEnablementInitialized?: boolean
   imageGen?: ImageGenConfig
+  wordpress?: WordPressSettings
 }
 
 export interface ImageGenConfig {
@@ -175,6 +201,7 @@ export interface EditImageRequest {
   prompt: string
   size?: string
   model?: string
+  fileName?: string
   imageDataUrl?: string
   imageUrl?: string
 }
@@ -182,8 +209,9 @@ export interface EditImageRequest {
 export interface GenerateImageResult {
   ok: boolean
   message?: string
-  imageDataUrl?: string
-  imageUrl?: string
+  imageSrc?: string
+  fileName?: string
+  mimeType?: string
   prompt?: string
   size?: string
   model?: string
@@ -197,7 +225,14 @@ export interface ImageHistoryItem {
   createdAt: number
   fileName: string
   mimeType: string
-  imageDataUrl: string
+  imageSrc: string
+}
+
+export interface ImportImageResult {
+  ok: boolean
+  canceled?: boolean
+  message?: string
+  item?: ImageHistoryItem
 }
 
 export interface SkillItem {
@@ -207,6 +242,51 @@ export interface SkillItem {
   content: string
   enabled: boolean
   bundled?: boolean
+}
+
+export interface KnowledgeDoc {
+  id: string
+  title: string
+  tags: string[]
+  content: string
+  enabled: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface SaveKnowledgeDocInput {
+  id?: string
+  title: string
+  tags?: string[] | string
+  content: string
+  enabled?: boolean
+}
+
+export type {
+  IllustrationImage,
+  IllustrationLibrary,
+  IllustrationProduct
+} from '../shared/illustrationLibrary'
+
+export interface SaveIllustrationProductInput {
+  id?: string
+  name: string
+}
+
+export interface SaveIllustrationImageInput {
+  productId: string
+  id?: string
+  url: string
+  alt?: string
+  caption?: string
+  stepKey?: string
+  matchKeywords?: string[] | string
+}
+
+export interface ImportIllustrationFileResult {
+  ok: true
+  canceled?: boolean
+  library: import('../shared/illustrationLibrary').IllustrationLibrary
 }
 
 export interface ActionResult {
@@ -280,6 +360,7 @@ export interface ChatStoreData {
     llmModel?: string
     pipelineCheckpoint?: import('../shared/pipelineCheckpoint').PipelineCheckpoint
     researchPack?: import('../shared/researchPack').ResearchPack
+    wordpressDraft?: WordPressDraftBinding
   }>
 }
 
@@ -295,6 +376,8 @@ const api = {
   cancelArticle: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('article:cancel'),
   reviseArticle: (request: ReviseArticleRequest): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:revise', request),
+  insertIllustrations: (request: InsertIllustrationsRequest): Promise<GenerateArticleResult> =>
+    ipcRenderer.invoke('article:insertIllustrations', request),
   onProgress: (callback: (event: GenerateProgressEvent) => void): (() => void) => {
     const listener = (_: Electron.IpcRendererEvent, event: GenerateProgressEvent): void => {
       callback(event)
@@ -309,6 +392,7 @@ const api = {
     ipcRenderer.invoke('image:generate', request),
   editImage: (request: EditImageRequest): Promise<GenerateImageResult> =>
     ipcRenderer.invoke('image:edit', request),
+  importImage: (): Promise<ImportImageResult> => ipcRenderer.invoke('image:import'),
   listImageHistory: (): Promise<ImageHistoryItem[]> => ipcRenderer.invoke('image:history:list'),
   deleteImageHistoryItem: (id: string): Promise<{ ok: true }> =>
     ipcRenderer.invoke('image:history:delete', id),
@@ -329,8 +413,47 @@ const api = {
     ipcRenderer.invoke('skills:setEnabled', id, enabled, mode),
   syncArticleTypeSkills: (articleType: 'how-to' | 'review' | 'top-rank'): Promise<void> =>
     ipcRenderer.invoke('skills:syncArticleType', articleType),
+  listKnowledgeDocs: (): Promise<KnowledgeDoc[]> => ipcRenderer.invoke('knowledge:list'),
+  saveKnowledgeDoc: (input: SaveKnowledgeDocInput): Promise<KnowledgeDoc> =>
+    ipcRenderer.invoke('knowledge:save', input),
+  deleteKnowledgeDoc: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('knowledge:delete', id),
+  setKnowledgeDocEnabled: (id: string, enabled: boolean): Promise<KnowledgeDoc> =>
+    ipcRenderer.invoke('knowledge:setEnabled', id, enabled),
+  importKnowledgeDocs: (): Promise<{ ok: true; imported: KnowledgeDoc[]; canceled?: boolean }> =>
+    ipcRenderer.invoke('knowledge:import'),
+  getIllustrationLibrary: (): Promise<
+    import('../shared/illustrationLibrary').IllustrationLibrary
+  > => ipcRenderer.invoke('illustration:get'),
+  saveIllustrationProduct: (
+    input: SaveIllustrationProductInput
+  ): Promise<import('../shared/illustrationLibrary').IllustrationLibrary> =>
+    ipcRenderer.invoke('illustration:saveProduct', input),
+  deleteIllustrationProduct: (
+    id: string
+  ): Promise<import('../shared/illustrationLibrary').IllustrationLibrary> =>
+    ipcRenderer.invoke('illustration:deleteProduct', id),
+  saveIllustrationImage: (
+    input: SaveIllustrationImageInput
+  ): Promise<import('../shared/illustrationLibrary').IllustrationLibrary> =>
+    ipcRenderer.invoke('illustration:saveImage', input),
+  deleteIllustrationImage: (
+    productId: string,
+    imageId: string
+  ): Promise<import('../shared/illustrationLibrary').IllustrationLibrary> =>
+    ipcRenderer.invoke('illustration:deleteImage', productId, imageId),
+  importIllustrationFile: (productId: string): Promise<ImportIllustrationFileResult> =>
+    ipcRenderer.invoke('illustration:importFile', productId),
   getTokenUsageLog: (): Promise<TokenUsageLogResponse> => ipcRenderer.invoke('tokenUsage:get'),
   clearTokenUsageLog: (): Promise<{ ok: true }> => ipcRenderer.invoke('tokenUsage:clear'),
+  testWordPressConnection: (override?: Partial<WordPressPreset>): Promise<WordPressTestResult> =>
+    ipcRenderer.invoke('wordpress:test', override),
+  listWordPressTerms: (override?: Partial<WordPressPreset>): Promise<WordPressTermsResult> =>
+    ipcRenderer.invoke('wordpress:listTerms', override),
+  publishWordPressDraft: (request: WordPressPublishRequest): Promise<WordPressPublishResult> =>
+    ipcRenderer.invoke('wordpress:publish', request),
+  getWordPressPublishLog: (): Promise<{ records: WordPressPublishLogRecord[] }> =>
+    ipcRenderer.invoke('wordpress:log:list'),
+  clearWordPressPublishLog: (): Promise<{ ok: true }> => ipcRenderer.invoke('wordpress:log:clear'),
   loadChatStore: (): Promise<ChatStoreData> => ipcRenderer.invoke('chat:load'),
   saveChatStore: (data: ChatStoreData): Promise<{ ok: true }> => ipcRenderer.invoke('chat:save', data),
   platform: process.platform,

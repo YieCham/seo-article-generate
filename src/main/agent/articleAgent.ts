@@ -27,6 +27,7 @@ import {
   chatCompletion,
   createRateLimitRetryStatus,
   parseOutlineSections,
+  sleepWithAbort,
   type LlmConfig
 } from './llmClient'
 import {
@@ -69,6 +70,7 @@ import {
   getReviewSectionDraftHint,
   getReviewSectionWordBudget,
   isReviewComparisonSection,
+  isReviewOurProductPartSection,
   REVIEW_PLAN_GUIDANCE
 } from './reviewStructure'
 import {
@@ -101,6 +103,7 @@ import {
 import { enforceArticleWordCount } from './articleWordEnforcement'
 import { formatSeoMetaBlock, generateSeoMeta } from './seoMeta'
 import { parseUserWritingContext, getUserContextPromptBlocks, type UserWritingContext } from './userContext'
+import { retrieveProductIntroKnowledge } from '../knowledge/knowledgeStore'
 import {
   formatWritingBriefForPrompt,
   formatWritingBriefForSection,
@@ -333,6 +336,19 @@ async function extractEeatInsights(
   )
 }
 
+const PLAN_EMPTY_FALLBACK =
+  '<thinking>\n（规划步骤未返回内容，将基于写作简报继续。）\n</thinking>'
+/** Extra attempts after the first empty plan response. */
+const PLAN_EMPTY_MAX_RETRIES = 2
+const PLAN_EMPTY_RETRY_BACKOFF_MS = 1200
+
+function normalizePlanOutput(raw: string): string {
+  if (raw.includes('<thinking>')) return raw.trim()
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
+  return `<thinking>\n${trimmed}\n</thinking>`
+}
+
 async function generateArticlePlan(
   llm: LlmConfig,
   topic: string,
@@ -340,7 +356,8 @@ async function generateArticlePlan(
   skillCtx: PipelineSkillContext,
   articleLang: ArticleLanguageContext,
   userContext: UserWritingContext,
-  maxTokens?: number
+  maxTokens?: number,
+  onStatus?: (message: string) => void
 ): Promise<string> {
   const { reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
     skillCtx.skillsText,
@@ -349,67 +366,82 @@ async function generateArticlePlan(
   )
   const stepSkills = getSkillsTextForStep('plan', { bundles: skillCtx.bundles })
   const useSectionLayoutPlan = !reviewBlock && !topListBlock
-  const raw = await chatCompletion(
-    llm,
-    [
-      {
-        role: 'system',
-        content: [
-          '你是 SEO/GEO 内容策略师。完成内部分析与规划，不要撰写正文或章节大纲。',
-          articleLang.lock,
-          buildPlanSkeletonRules(useSectionLayoutPlan),
-          getWritingPromptBlocks(getUserContextPromptBlocks(userContext), topic),
-          stepSkills ? `领域写作要点（节选）：\n${stepSkills}` : ''
-        ]
-          .filter(Boolean)
-          .join('\n\n')
-      },
-      {
-        role: 'user',
-        content: [
-          `主题：${topic}`,
-          getPrimaryKeywordOutlineHint(topic),
-          userContext.briefForPrompt,
-          userContext.productName
-            ? reviewBlock
-              ? `规划须含被测评产品 **Overview（必选）** + 按产品性质与调研的可选 Part +「The Best … Alternative: ${userContext.productName}」专属 Part + 对比表 + FAQ 的顺序与目的（各 1 句）。`
-              : topListBlock
-                ? `规划 Top ${parseTopListCount(topic)} 榜单结构；判断「${userContext.productName}」准入与排位。`
-                : `规划通用 Part 与「${userContext.productName}」产品 Part 的位置（各 1 句目的）。`
-            : '',
-          reviewBlock ? REVIEW_PLAN_GUIDANCE : '',
-          topListBlock ? TOP_LIST_PLAN_GUIDANCE : '',
-          '',
-          '在 <thinking> 与 </thinking> 标签内输出内部规划，包含：',
-          '1. 搜索意图与读者痛点（≤5 bullet）',
-          '2. 竞品/行业要点如何整合（≤5 bullet）',
-          `3. **${MIN_FAQ_QUESTIONS}–${MAX_FAQ_QUESTIONS}** 个 FAQ **问题句**（无答案）`,
-          useSectionLayoutPlan
-            ? '4. **Part 结构规划**（每条格式：`- Part N · [标题] · layout: <type> · [1 句目的]`；layout 取值见 system 规则；**不要**输出 ## 大纲）'
-            : '4. 各 Part 名称 + 差异化策略（**不要**输出 ## 大纲或正文段落）',
-          '',
-          '写作简报（摘要）：',
-          formatWritingBriefForPrompt(writingBrief),
-          reviewBlock
-            ? `终稿 ${wordBounds.min}–${wordBounds.max} 词；被测评产品占正文主体。`
+  const messages = [
+    {
+      role: 'system' as const,
+      content: [
+        '你是 SEO/GEO 内容策略师。完成内部分析与规划，不要撰写正文或章节大纲。',
+        articleLang.lock,
+        buildPlanSkeletonRules(useSectionLayoutPlan),
+        getWritingPromptBlocks(getUserContextPromptBlocks(userContext), topic),
+        stepSkills ? `领域写作要点（节选）：\n${stepSkills}` : ''
+      ]
+        .filter(Boolean)
+        .join('\n\n')
+    },
+    {
+      role: 'user' as const,
+      content: [
+        `主题：${topic}`,
+        getPrimaryKeywordOutlineHint(topic),
+        userContext.briefForPrompt,
+        userContext.productName
+          ? reviewBlock
+            ? `规划须含被测评产品 **Overview（必选）** + 按产品性质与调研的可选 Part +「The Best … Alternative: ${userContext.productName}」专属 Part + 对比表 + FAQ 的顺序与目的（各 1 句）。`
             : topListBlock
-              ? `终稿 ${wordBounds.min}–${wordBounds.max} 词；榜单 Part 只规划 N 个产品席位名称。`
-              : `终稿 ${wordBounds.min}–${wordBounds.max} 词；建议 2–4 个 Part。`,
-          `语言：${articleLang.label}`
-        ]
-          .filter(Boolean)
-          .join('\n')
-      }
-    ],
-    { temperature: 0.35, maxTokens: maxTokens }
-  )
+              ? `规划 Top ${parseTopListCount(topic)} 榜单结构；判断「${userContext.productName}」准入与排位。`
+              : `规划通用 Part 与「${userContext.productName}」产品 Part 的位置（各 1 句目的）。`
+          : '',
+        reviewBlock ? REVIEW_PLAN_GUIDANCE : '',
+        topListBlock ? TOP_LIST_PLAN_GUIDANCE : '',
+        '',
+        '在 <thinking> 与 </thinking> 标签内输出内部规划，包含：',
+        '1. 搜索意图与读者痛点（≤5 bullet）',
+        '2. 竞品/行业要点如何整合（≤5 bullet）',
+        `3. **${MIN_FAQ_QUESTIONS}–${MAX_FAQ_QUESTIONS}** 个 FAQ **问题句**（无答案）`,
+        useSectionLayoutPlan
+          ? '4. **Part 结构规划**（每条格式：`- Part N · [标题] · layout: <type> · [1 句目的]`；layout 取值见 system 规则；**不要**输出 ## 大纲）'
+          : '4. 各 Part 名称 + 差异化策略（**不要**输出 ## 大纲或正文段落）',
+        '',
+        '写作简报（摘要）：',
+        formatWritingBriefForPrompt(writingBrief),
+        reviewBlock
+          ? `终稿 ${wordBounds.min}–${wordBounds.max} 词；被测评产品占正文主体。`
+          : topListBlock
+            ? `终稿 ${wordBounds.min}–${wordBounds.max} 词；榜单 Part 只规划 N 个产品席位名称。`
+            : `终稿 ${wordBounds.min}–${wordBounds.max} 词；建议 2–4 个 Part。`,
+        `语言：${articleLang.label}`,
+        '必须在回复的可见正文（content）中输出完整 <thinking>…</thinking> 规划，不要只写在内部推理里。'
+      ]
+        .filter(Boolean)
+        .join('\n')
+    }
+  ]
 
-  if (raw.includes('<thinking>')) return raw.trim()
-  const trimmed = raw.trim()
-  if (!trimmed) {
-    return '<thinking>\n（规划步骤未返回内容，将基于写作简报继续。）\n</thinking>'
+  for (let attempt = 0; attempt <= PLAN_EMPTY_MAX_RETRIES; attempt += 1) {
+    throwIfAborted()
+    if (attempt > 0) {
+      onStatus?.(
+        `⑤ 规划未返回内容，正在重试（${attempt}/${PLAN_EMPTY_MAX_RETRIES}）…`
+      )
+      await sleepWithAbort(PLAN_EMPTY_RETRY_BACKOFF_MS * attempt)
+    }
+
+    const raw = await chatCompletion(llm, messages, {
+      temperature: 0.35 + attempt * 0.05,
+      maxTokens,
+      step: 'plan',
+      label:
+        attempt === 0
+          ? '⑤ 分析与规划（搜索意图 / FAQ / 大纲构思）…'
+          : `⑤ 分析与规划重试 ${attempt}/${PLAN_EMPTY_MAX_RETRIES}`
+    })
+
+    const normalized = normalizePlanOutput(raw)
+    if (normalized) return normalized
   }
-  return `<thinking>\n${trimmed}\n</thinking>`
+
+  return PLAN_EMPTY_FALLBACK
 }
 
 async function generateDifferentiatedOutline(
@@ -517,14 +549,38 @@ async function draftBySections(
   const sectionTitles = sections.map((section) => section.title)
   const articleH1 = resolveArticleH1(outline, topic, resume?.initialDraft)
   const startIndex = resume?.startIndex ?? 0
+  const productName = userContext.productName ?? ''
+  const productKnowledge = productName
+    ? await retrieveProductIntroKnowledge(productName)
+    : { promptBlock: '', documentCount: 0 }
+  const productIntroSectionIndex = findUserProductIntroSectionIndex(sections, productName, {
+    review: Boolean(reviewBlock),
+    topList: Boolean(topListBlock),
+    geo: Boolean(geoBlock)
+  })
   let fullDraft =
     startIndex === 0 ? `# ${articleH1}\n\n` : (resume?.initialDraft ?? `# ${articleH1}\n\n`)
+
+  if (productName) {
+    emit({
+      type: 'status',
+      step: 'draft',
+      message: productKnowledge.documentCount
+        ? `知识库：已匹配 ${productKnowledge.documentCount} 条「${productName}」相关条目，将在产品介绍节注入`
+        : `知识库：未匹配到「${productName}」相关条目，跳过注入`
+    })
+  } else {
+    emit({
+      type: 'status',
+      step: 'draft',
+      message: '知识库：未选择产品，跳过读取'
+    })
+  }
 
   for (let i = startIndex; i < sections.length; i += 1) {
     throwIfAborted()
     const section = sections[i]
     const sectionContext = `${section.title} ${section.body}`
-    const productName = userContext.productName ?? ''
     const sectionProductKind = classifyDraftSectionProductKind(
       section.title,
       section.body,
@@ -561,6 +617,8 @@ async function draftBySections(
       (isGeoMode
         ? isProductPartSection
         : /how[\s-]?to|step|guide|tutorial|教程|步骤|使用/i.test(sectionContext))
+    const injectProductKnowledge =
+      Boolean(productKnowledge.promptBlock) && i === productIntroSectionIndex
 
     const { wordBudget: tokenWordBudget, tier: draftTokenTier } = resolveSectionDraftTokenPlan(
       section.title,
@@ -576,7 +634,9 @@ async function draftBySections(
     emit({
       type: 'status',
       step: 'draft',
-      message: `正在撰写第 ${i + 1}/${sections.length} 节：${section.title}`
+      message: `正在撰写第 ${i + 1}/${sections.length} 节：${section.title}${
+        injectProductKnowledge ? '（已读取知识库）' : ''
+      }`
     })
 
     const stepSkills = getSkillsTextForStep('draft', {
@@ -643,6 +703,7 @@ async function draftBySections(
             '',
             '写作简报（本节可用要点）：',
             formatWritingBriefForSection(writingBrief),
+            injectProductKnowledge ? productKnowledge.promptBlock : '',
             '',
             `请撰写本节「${section.title}」`,
             getPrimaryKeywordSectionHint(topic, section.title),
@@ -669,6 +730,57 @@ async function draftBySections(
   }
 
   return reorderArticleMarkdown(fullDraft.trim())
+}
+
+function findUserProductIntroSectionIndex(
+  sections: Array<{ title: string; body: string }>,
+  productName: string,
+  mode: { review: boolean; topList: boolean; geo: boolean }
+): number {
+  if (!productName || sections.length === 0) return -1
+  const productLower = productName.toLowerCase()
+
+  const ranked = sections.map((section, index) => {
+    const kind = classifyDraftSectionProductKind(section.title, section.body, productName, {
+      geo: mode.geo
+    })
+    if (kind === 'quick-answer' || kind === 'intro' || kind === 'faq' || kind === 'conclusion') {
+      return { index, score: 0 }
+    }
+
+    const context = `${section.title}\n${section.body}`
+    const contextLower = context.toLowerCase()
+    let score = 0
+
+    if (mode.review && isReviewOurProductPartSection(section.title, section.body)) score += 100
+    if (kind === 'product-part') score += 90
+    if (mode.topList && /also worth considering|补充推荐|额外推荐/i.test(context)) score += 85
+    if (
+      mode.topList &&
+      /top\s*\d+|best\s+\d+|downloaders?|converters?|榜单/i.test(context) &&
+      contextLower.includes(productLower)
+    ) {
+      score += 75
+    }
+    if (contextLower.includes(productLower)) score += 40
+    if (/how[\s-]?to|tutorial|step[- ]by[- ]step|alternative|为什么选择|推荐/i.test(context)) {
+      score += 15
+    }
+
+    return { index, score }
+  })
+
+  const best = ranked.filter((item) => item.score > 0).sort((a, b) => b.score - a.score)[0]
+  if (best) return best.index
+
+  for (let i = sections.length - 1; i >= 0; i -= 1) {
+    const kind = classifyDraftSectionProductKind(sections[i].title, sections[i].body, productName, {
+      geo: mode.geo
+    })
+    if (kind === 'generic-part' || kind === 'product-part') return i
+  }
+
+  return -1
 }
 
 async function polishDraft(
@@ -1029,7 +1141,8 @@ export async function generateArticle(
         skillCtx,
         articleLang,
         userContext,
-        maxTokensForPlanning(globalMaxTokens)
+        maxTokensForPlanning(globalMaxTokens),
+        (message) => emit({ type: 'status', step: 'plan', message })
       )
       emit({
         type: 'planning',

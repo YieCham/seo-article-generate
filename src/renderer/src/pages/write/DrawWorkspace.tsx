@@ -1,11 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ImageGenConfig, ImageHistoryItem } from '../../env.d'
-import { IconDelete, IconHistory } from '../../components/Icons'
+import { IconDelete, IconHistory, IconUpload } from '../../components/Icons'
 
 const SIZE_PRESETS = ['1024x1024', '1024x1536', '1536x1024', '512x512']
 
 const KEEP_STYLE_PREFIX =
   '保持参考图的整体视觉风格、色调、光影与画质，仅按下列指令调整内容：\n'
+
+function snapOutputSize(width: number, height: number): string {
+  if (!width || !height) return '1024x1024'
+  const ratio = width / height
+  if (ratio > 1.15) return '1536x1024'
+  if (ratio < 0.87) return '1024x1536'
+  return '1024x1024'
+}
+
+function detectImageSize(src: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => resolve(snapOutputSize(img.naturalWidth, img.naturalHeight))
+    img.onerror = () => resolve('1024x1024')
+    img.src = src
+  })
+}
 
 function formatHistoryTime(ts: number): string {
   try {
@@ -27,6 +44,7 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
   const [imageSrc, setImageSrc] = useState<string | null>(null)
+  const [previewFileName, setPreviewFileName] = useState<string | null>(null)
   const [previewSize, setPreviewSize] = useState('1024x1024')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -52,7 +70,6 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
         defaultPrompt: ''
       }
       setImageGen(next)
-      setPrompt((prev) => (prev.trim() ? prev : next.defaultPrompt))
       setSize(next.size || '1024x1024')
     })
     return () => {
@@ -118,13 +135,43 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
     await loadHistory()
   }
 
-  function applyPreview(src: string, nextSize?: string, nextPrompt?: string): void {
-    setImageSrc(src)
-    if (nextSize?.trim()) {
-      setPreviewSize(nextSize.trim())
-      setSize(nextSize.trim())
+  async function handleImportImage(): Promise<void> {
+    if (generating || editing) return
+    setError('')
+    try {
+      const result = await window.app.importImage()
+      if (!result.ok) {
+        setError(result.message ?? '上传图片失败')
+        return
+      }
+      if (result.canceled || !result.item) return
+
+      const nextSize = await detectImageSize(result.item.imageSrc)
+      applyPreview(result.item.imageSrc, {
+        size: nextSize,
+        fileName: result.item.fileName
+      })
+      setEditPrompt('')
+      setEditError('')
+      setEditOpen(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '上传图片失败')
     }
-    if (nextPrompt?.trim()) setPrompt(nextPrompt.trim())
+  }
+
+  function applyPreview(
+    src: string,
+    options?: { size?: string; prompt?: string; fileName?: string | null }
+  ): void {
+    setImageSrc(src)
+    if (options?.fileName !== undefined) {
+      setPreviewFileName(options.fileName)
+    }
+    if (options?.size?.trim()) {
+      setPreviewSize(options.size.trim())
+      setSize(options.size.trim())
+    }
+    if (options?.prompt?.trim()) setPrompt(options.prompt.trim())
   }
 
   async function handleGenerate(): Promise<void> {
@@ -135,13 +182,18 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
     setError('')
     setGenerating(true)
     try {
-      const useStyleLock = keepStyle && Boolean(imageSrc)
+      const useStyleLock = keepStyle && Boolean(previewFileName || imageSrc)
       const result = useStyleLock
         ? await window.app.editImage({
             prompt: `${KEEP_STYLE_PREFIX}${userPrompt}`,
             size: size.trim() || undefined,
-            imageDataUrl: imageSrc!.startsWith('data:') ? imageSrc! : undefined,
-            imageUrl: imageSrc!.startsWith('data:') ? undefined : imageSrc!
+            fileName: previewFileName || undefined,
+            imageDataUrl:
+              !previewFileName && imageSrc?.startsWith('data:') ? imageSrc : undefined,
+            imageUrl:
+              !previewFileName && imageSrc && !imageSrc.startsWith('data:')
+                ? imageSrc
+                : undefined
           })
         : await window.app.generateImage({
             prompt: userPrompt,
@@ -151,12 +203,16 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
         setError(result.message ?? '绘图失败')
         return
       }
-      const src = result.imageDataUrl || result.imageUrl || null
+      const src = result.imageSrc || null
       if (!src) {
         setError('未收到图片数据')
         return
       }
-      applyPreview(src, result.size || size, userPrompt)
+      applyPreview(src, {
+        size: result.size || size,
+        prompt: userPrompt,
+        fileName: result.fileName || null
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : '绘图请求失败')
     } finally {
@@ -185,19 +241,25 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
       const result = await window.app.editImage({
         prompt: nextPrompt,
         size: previewSize.trim() || size.trim() || undefined,
-        imageDataUrl: imageSrc.startsWith('data:') ? imageSrc : undefined,
-        imageUrl: imageSrc.startsWith('data:') ? undefined : imageSrc
+        fileName: previewFileName || undefined,
+        imageDataUrl: !previewFileName && imageSrc.startsWith('data:') ? imageSrc : undefined,
+        imageUrl:
+          !previewFileName && !imageSrc.startsWith('data:') ? imageSrc : undefined
       })
       if (!result.ok) {
         setEditError(result.message ?? '编辑失败')
         return
       }
-      const src = result.imageDataUrl || result.imageUrl || null
+      const src = result.imageSrc || null
       if (!src) {
         setEditError('未收到图片数据')
         return
       }
-      applyPreview(src, result.size || previewSize, nextPrompt)
+      applyPreview(src, {
+        size: result.size || previewSize,
+        prompt: nextPrompt,
+        fileName: result.fileName || null
+      })
       setError('')
       setEditOpen(false)
     } catch (err) {
@@ -210,32 +272,38 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
   async function handleCopyImage(): Promise<void> {
     if (!imageSrc) return
     try {
-      if (imageSrc.startsWith('data:')) {
-        const response = await fetch(imageSrc)
-        const blob = await response.blob()
-        await navigator.clipboard.write([
-          new ClipboardItem({ [blob.type || 'image/png']: blob })
-        ])
-      } else {
-        await navigator.clipboard.writeText(imageSrc)
-      }
+      const response = await fetch(imageSrc)
+      const blob = await response.blob()
+      await navigator.clipboard.write([
+        new ClipboardItem({ [blob.type || 'image/png']: blob })
+      ])
     } catch {
       setError('复制图片失败')
     }
   }
 
-  function handleDownload(): void {
+  async function handleDownload(): Promise<void> {
     if (!imageSrc) return
-    const anchor = document.createElement('a')
-    anchor.href = imageSrc
-    anchor.download = `draw-${Date.now()}.png`
-    anchor.target = '_blank'
-    anchor.rel = 'noopener'
-    anchor.click()
+    try {
+      const response = await fetch(imageSrc)
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = previewFileName || `draw-${Date.now()}.png`
+      anchor.click()
+      URL.revokeObjectURL(objectUrl)
+    } catch {
+      setError('下载图片失败')
+    }
   }
 
   function handleSelectHistoryItem(item: ImageHistoryItem): void {
-    applyPreview(item.imageDataUrl, item.size, item.prompt)
+    applyPreview(item.imageSrc, {
+      size: item.size,
+      prompt: item.prompt,
+      fileName: item.fileName
+    })
     setError('')
     setHistoryOpen(false)
   }
@@ -261,6 +329,16 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
 
   const configured = Boolean(imageGen?.apiKey?.trim() && imageGen?.apiUrl?.trim())
   const busy = generating || editing
+  const coverPrompt = imageGen?.defaultPrompt?.trim() ?? ''
+
+  function handleFillCoverPrompt(): void {
+    if (!coverPrompt) {
+      setError('请先在设置 → 绘图中填写默认提示词')
+      return
+    }
+    setPrompt(coverPrompt)
+    setError('')
+  }
 
   return (
     <main className="draw-workspace">
@@ -276,12 +354,23 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
       <div className="draw-body">
         <section className="draw-form panel">
           <label>
-            提示词
+            <span className="draw-prompt-label">
+              提示词
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                title={coverPrompt ? '填入文章封面预设提示词' : '请先在设置 → 绘图中填写默认提示词'}
+                onClick={handleFillCoverPrompt}
+              >
+                文章封面
+              </button>
+            </span>
             <textarea
               rows={6}
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="描述你想生成的图片…"
+              placeholder="描述你想生成的图片，或上传图片后填写修改说明…"
               disabled={busy}
             />
           </label>
@@ -294,7 +383,7 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
                 value={SIZE_PRESETS.includes(size) ? size : '__custom__'}
                 onChange={(event) => {
                   if (event.target.value === '__custom__') {
-                    if (SIZE_PRESETS.includes(size)) setSize('1024x1024')
+                    setSize(SIZE_PRESETS.includes(size) ? '' : size)
                     return
                   }
                   setSize(event.target.value)
@@ -313,7 +402,9 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
                   type="text"
                   value={size}
                   onChange={(event) => setSize(event.target.value)}
-                  placeholder="宽x高"
+                  placeholder="宽x高，例如 1024x1024"
+                  autoComplete="off"
+                  autoFocus
                   disabled={busy}
                 />
               ) : null}
@@ -327,6 +418,15 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
               onClick={() => void handleGenerate()}
             >
               {generating ? '生成中…' : '生成图片'}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => void handleImportImage()}
+            >
+              <IconUpload size={15} />
+              上传图片
             </button>
             <button
               type="button"
@@ -384,7 +484,12 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
                 >
                   复制
                 </button>
-                <button type="button" className="secondary" disabled={busy} onClick={handleDownload}>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => void handleDownload()}
+                >
                   下载
                 </button>
                 <button
@@ -400,6 +505,15 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
           ) : (
             <div className="draw-preview-empty">
               <p>生成结果将显示在这里</p>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => void handleImportImage()}
+              >
+                <IconUpload size={15} />
+                上传图片进行编辑
+              </button>
             </div>
           )}
         </section>
@@ -432,13 +546,13 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
 
       {editOpen ? (
         <div
-          className="write-mode-picker-backdrop draw-history-backdrop"
+          className="ui-overlay write-mode-picker-backdrop"
           onClick={() => {
             if (!editing) setEditOpen(false)
           }}
         >
           <div
-            className="draw-edit-dialog"
+            className="ui-dialog draw-edit-dialog"
             role="dialog"
             aria-modal="true"
             aria-labelledby="draw-edit-title"
@@ -447,7 +561,9 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
             <h2 id="draw-edit-title" className="write-mode-picker-title">
               编辑图片
             </h2>
-            <p className="draw-edit-desc">基于当前预览图进行图生图编辑，尺寸保持不变。</p>
+            <p className="draw-edit-desc">
+              基于当前预览图进行图生图编辑。可先上传本地图片，再填写修改说明。
+            </p>
 
             <div className="draw-edit-preview">
               <img src={imageSrc ?? ''} alt="待编辑预览" />
@@ -498,9 +614,9 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
       ) : null}
 
       {historyOpen ? (
-        <div className="write-mode-picker-backdrop draw-history-backdrop" onClick={() => setHistoryOpen(false)}>
+        <div className="ui-overlay write-mode-picker-backdrop" onClick={() => setHistoryOpen(false)}>
           <div
-            className="draw-history-dialog"
+            className="ui-dialog draw-history-dialog"
             role="dialog"
             aria-modal="true"
             aria-labelledby="draw-history-title"
@@ -548,7 +664,19 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
                       onClick={() => handleSelectHistoryItem(item)}
                       title="加载到预览"
                     >
-                      <img src={item.imageDataUrl} alt={item.prompt || '历史图片'} />
+                      <img
+                        src={item.imageSrc}
+                        alt={item.prompt || '历史图片'}
+                        onError={(event) => {
+                          const target = event.currentTarget
+                          target.style.display = 'none'
+                          target.parentElement?.classList.add('is-broken')
+                          if (target.parentElement && !target.parentElement.dataset.brokenLabel) {
+                            target.parentElement.dataset.brokenLabel = '1'
+                            target.parentElement.append('无法预览')
+                          }
+                        }}
+                      />
                     </button>
                     <div className="draw-history-meta">
                       <p className="draw-history-prompt" title={item.prompt}>

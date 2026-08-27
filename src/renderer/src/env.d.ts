@@ -1,3 +1,35 @@
+import type {
+  WordPressConfig,
+  WordPressDraftBinding,
+  WordPressPreset,
+  WordPressPublishLogRecord,
+  WordPressPublishRequest,
+  WordPressPublishResult,
+  WordPressSettings,
+  WordPressTerm,
+  WordPressTermsResult,
+  WordPressTestResult
+} from '../../shared/wordpress'
+
+export type {
+  WordPressConfig,
+  WordPressDraftBinding,
+  WordPressPreset,
+  WordPressPublishLogRecord,
+  WordPressPublishRequest,
+  WordPressPublishResult,
+  WordPressSettings,
+  WordPressTerm,
+  WordPressTermsResult,
+  WordPressTestResult
+}
+
+export type {
+  IllustrationImage,
+  IllustrationLibrary,
+  IllustrationProduct
+} from '../../shared/illustrationLibrary'
+
 export interface ResearchSourcePreview {
   title: string
   url: string
@@ -88,6 +120,7 @@ export interface ResearchConfig {
 export interface QuickPickOption {
   id: string
   label: string
+  wordpressPresetId?: string
 }
 
 export interface QuickPicksConfig {
@@ -113,6 +146,20 @@ export interface LlmRoleRoutingConfig {
   bodyWork: LlmModelRef
 }
 
+export interface ImageGenConfig {
+  apiUrl: string
+  apiKey: string
+  model: string
+  size: string
+  defaultPrompt: string
+}
+
+export interface NetworkProxyConfig {
+  enabled: boolean
+  host: string
+  port: number
+}
+
 export interface AppConfig {
   llmPresets: LlmPreset[]
   activeLlmPresetId: string
@@ -125,14 +172,8 @@ export interface AppConfig {
   skillEnablementInitialized?: boolean
   windowClose?: WindowCloseBehavior
   imageGen: ImageGenConfig
-}
-
-export interface ImageGenConfig {
-  apiUrl: string
-  apiKey: string
-  model: string
-  size: string
-  defaultPrompt: string
+  networkProxy: NetworkProxyConfig
+  wordpress: WordPressSettings
 }
 
 export interface GenerateImageRequest {
@@ -145,6 +186,7 @@ export interface EditImageRequest {
   prompt: string
   size?: string
   model?: string
+  fileName?: string
   imageDataUrl?: string
   imageUrl?: string
 }
@@ -152,8 +194,9 @@ export interface EditImageRequest {
 export interface GenerateImageResult {
   ok: boolean
   message?: string
-  imageDataUrl?: string
-  imageUrl?: string
+  imageSrc?: string
+  fileName?: string
+  mimeType?: string
   prompt?: string
   size?: string
   model?: string
@@ -167,7 +210,14 @@ export interface ImageHistoryItem {
   createdAt: number
   fileName: string
   mimeType: string
-  imageDataUrl: string
+  imageSrc: string
+}
+
+export interface ImportImageResult {
+  ok: boolean
+  canceled?: boolean
+  message?: string
+  item?: ImageHistoryItem
 }
 
 export interface SkillItem {
@@ -177,6 +227,45 @@ export interface SkillItem {
   content: string
   enabled: boolean
   bundled?: boolean
+}
+
+export interface KnowledgeDoc {
+  id: string
+  title: string
+  tags: string[]
+  content: string
+  enabled: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface SaveKnowledgeDocInput {
+  id?: string
+  title: string
+  tags?: string[] | string
+  content: string
+  enabled?: boolean
+}
+
+export interface SaveIllustrationProductInput {
+  id?: string
+  name: string
+}
+
+export interface SaveIllustrationImageInput {
+  productId: string
+  id?: string
+  url: string
+  alt?: string
+  caption?: string
+  stepKey?: string
+  matchKeywords?: string[] | string
+}
+
+export interface ImportIllustrationFileResult {
+  ok: true
+  canceled?: boolean
+  library: import('../../shared/illustrationLibrary').IllustrationLibrary
 }
 
 export interface ChatStoreData {
@@ -201,6 +290,7 @@ export interface ChatStoreData {
     llmModel?: string
     pipelineCheckpoint?: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
     researchPack?: import('../../shared/researchPack').ResearchPack
+    wordpressDraft?: WordPressDraftBinding
   }>
 }
 
@@ -300,11 +390,22 @@ declare global {
         llmPresetId?: string
         llmModel?: string
       }) => Promise<GenerateArticleResult>
+      insertIllustrations: (request: {
+        article: string
+        productId?: string
+        productName?: string
+        outputLanguage?: string
+        pipeline?: 'create' | 'optimize'
+        topic?: string
+        llmPresetId?: string
+        llmModel?: string
+      }) => Promise<GenerateArticleResult>
       onProgress: (callback: (event: GenerateProgressEvent) => void) => () => void
       getConfig: () => Promise<AppConfig>
       saveConfig: (partial: Partial<AppConfig>) => Promise<AppConfig>
       generateImage: (request?: GenerateImageRequest) => Promise<GenerateImageResult>
       editImage: (request: EditImageRequest) => Promise<GenerateImageResult>
+      importImage: () => Promise<ImportImageResult>
       listImageHistory: () => Promise<ImageHistoryItem[]>
       deleteImageHistoryItem: (id: string) => Promise<{ ok: true }>
       clearImageHistory: () => Promise<{ ok: true }>
@@ -317,8 +418,35 @@ declare global {
       deleteSkill: (id: string) => Promise<void>
       setSkillEnabled: (id: string, enabled: boolean, mode?: PipelineMode) => Promise<void>
       syncArticleTypeSkills: (articleType: 'how-to' | 'review' | 'top-rank') => Promise<void>
+      listKnowledgeDocs: () => Promise<KnowledgeDoc[]>
+      saveKnowledgeDoc: (input: SaveKnowledgeDocInput) => Promise<KnowledgeDoc>
+      deleteKnowledgeDoc: (id: string) => Promise<{ ok: true }>
+      setKnowledgeDocEnabled: (id: string, enabled: boolean) => Promise<KnowledgeDoc>
+      importKnowledgeDocs: () => Promise<{ ok: true; imported: KnowledgeDoc[]; canceled?: boolean }>
+      getIllustrationLibrary: () => Promise<
+        import('../../shared/illustrationLibrary').IllustrationLibrary
+      >
+      saveIllustrationProduct: (
+        input: SaveIllustrationProductInput
+      ) => Promise<import('../../shared/illustrationLibrary').IllustrationLibrary>
+      deleteIllustrationProduct: (
+        id: string
+      ) => Promise<import('../../shared/illustrationLibrary').IllustrationLibrary>
+      saveIllustrationImage: (
+        input: SaveIllustrationImageInput
+      ) => Promise<import('../../shared/illustrationLibrary').IllustrationLibrary>
+      deleteIllustrationImage: (
+        productId: string,
+        imageId: string
+      ) => Promise<import('../../shared/illustrationLibrary').IllustrationLibrary>
+      importIllustrationFile: (productId: string) => Promise<ImportIllustrationFileResult>
       getTokenUsageLog: () => Promise<TokenUsageLogResponse>
       clearTokenUsageLog: () => Promise<{ ok: true }>
+      testWordPressConnection: (override?: Partial<WordPressPreset>) => Promise<WordPressTestResult>
+      listWordPressTerms: (override?: Partial<WordPressPreset>) => Promise<WordPressTermsResult>
+      publishWordPressDraft: (request: WordPressPublishRequest) => Promise<WordPressPublishResult>
+      getWordPressPublishLog: () => Promise<{ records: WordPressPublishLogRecord[] }>
+      clearWordPressPublishLog: () => Promise<{ ok: true }>
       loadChatStore: () => Promise<ChatStoreData>
       saveChatStore: (data: ChatStoreData) => Promise<{ ok: true }>
       platform: NodeJS.Platform

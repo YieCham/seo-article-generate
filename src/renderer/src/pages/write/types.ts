@@ -1,6 +1,7 @@
 import { normalizeWriteMode, type WriteMode } from '../../constants/writeMode'
 import type { PipelineCheckpoint } from '../../../../shared/pipelineCheckpoint'
 import type { ResearchPack } from '../../../../shared/researchPack'
+import type { WordPressDraftBinding } from '../../../../shared/wordpress'
 
 export interface ReviseArticleSelection {
   start: number
@@ -42,6 +43,7 @@ export interface ChatSession {
   pipelineCheckpoint?: PipelineCheckpoint
   /** Survives successful runs; reused on regenerate to skip Tavily/Firecrawl. */
   researchPack?: ResearchPack
+  wordpressDraft?: WordPressDraftBinding
 }
 
 export function getSessionLifecycleGroup(session: ChatSession): SessionLifecycleGroup {

@@ -91,7 +91,8 @@ export function getUserContextPromptBlocksForSection(
     case 'quick-answer':
       return [
         `【本节产品提及 — ${productName}】`,
-        `Quick Answer 可自然点名「${productName}」作为首推（1–2 条 bullet），勿让每条都成为广告。`
+        `## Quick Answer：**禁止**出现「${productName}」全名或品牌缩写。`,
+        '用模糊表述回答核心问题（如 a dedicated converter / a reliable third-party tool / the method below），把具名推荐留给后文产品 Part / 榜单 / 对比。'
       ].join('\n')
     case 'intro':
       return [
@@ -118,14 +119,14 @@ export function buildProductMentionLock(productName: string): string {
   return [
     `【用户推广产品 — ${productName}】`,
     '提及须克制、精准，避免过度推广感：',
-    `1. 全名「${productName}」**主要**出现在：Quick Answer（可点名首推）、产品专属 Part、对比表、Top 榜单中该产品的 ### 条目、Conclusion 的 1 句自然回扣。`,
-    `2. ## Quick Answer：可自然点名「${productName}」作为首推/解决方案（1–2 条 bullet 即可），勿让每条 bullet 都成为产品广告。`,
+    `1. 全名「${productName}」**主要**出现在：产品专属 Part、对比表、Top 榜单中该产品的 ### 条目、Conclusion 的 1 句自然回扣。`,
+    `2. ## Quick Answer：**禁止**写出「${productName}」全名；只用模糊表述（dedicated tool / third-party converter / the approach below 等）概括答案，勿首推点名。`,
     '3. Introduction：共情痛点、概述结构，首段避免硬推销产品。',
     `4. 通用/调研 Part：以行业知识与读者价值为主；**若内容与产品自然联动**（举例、场景、对比维度），可合理轻量提及「${productName}」（每 Part 至多 1–2 处），勿让产品名成为段落主线或硬广推销。`,
     '5. FAQ：至多 1 个问题可自然涉及该产品；不要在每个答案里重复产品名。',
     `6. 产品 Part / 教程：在章节开篇、### 小节标题与关键步骤处使用全名即可（每节约 3–5 次），**禁止**同一段落连续重复或每句都带产品名。`,
-    `7. 该用全名时勿换成 "the tool"、"this converter" 等泛称；无自然关联处则不要强行插入产品名。`,
-    '8. 润色/改写：保留应有位置的提及，**不要**为推广而追加重复产品名或额外推销句。'
+    `7. 除 Quick Answer 外，该用全名时勿换成 "the tool"、"this converter" 等泛称；无自然关联处则不要强行插入产品名。`,
+    '8. 润色/改写：保留应有位置的提及；**若 Quick Answer 出现了产品全名，改为模糊表述**；不要为推广而追加重复产品名。'
   ].join('\n')
 }
 
@@ -135,21 +136,21 @@ export function getProductMentionSupplement(productName: string | undefined, mod
   if (mode.review) {
     return [
       `【Review 产品提及】`,
-      `我方产品「${productName}」全名集中在：**The Best … Alternative: ${productName}** 专属 Part、**对比表 Part** 与 **Conclusion**；被测评产品的前几个 Part 不要提前大段写我方产品，必要时整篇至多轻量提及 1 次。`
+      `我方产品「${productName}」全名集中在：**The Best … Alternative: ${productName}** 专属 Part、**对比表 Part** 与 **Conclusion**；**Quick Answer 禁止写出我方产品全名**；被测评产品的前几个 Part 不要提前大段写我方产品，必要时整篇至多轻量提及 1 次。`
     ].join('\n')
   }
 
   if (mode.topList) {
     return [
       `【Top List 产品提及】`,
-      `「${productName}」只在其榜单 ### 条目（或 Also Worth Considering Part）内充分描述；其他产品条目与选型标准 Part 不要夹带我方产品名。`
+      `「${productName}」只在其榜单 ### 条目（或 Also Worth Considering Part）内充分描述；**Quick Answer 禁止写出该产品全名**（可用模糊表述概括选型结论）；其他产品条目与选型标准 Part 不要夹带我方产品名。`
     ].join('\n')
   }
 
   if (mode.geo) {
     return [
       `【GEO How-to 产品提及】`,
-      `Quick Answer 可轻量点名「${productName}」；通用 Part 在内容自然联动时可合理轻量提及；主打推广仍放在产品 Part，避免逐步骤重复堆砌全名。`
+      `## Quick Answer **禁止**点名「${productName}」，用模糊表述作答；通用 Part 在内容自然联动时可合理轻量提及；主打推广仍放在产品 Part，避免逐步骤重复堆砌全名。`
     ].join('\n')
   }
 
@@ -157,14 +158,18 @@ export function getProductMentionSupplement(productName: string | undefined, mod
 }
 
 export function getExtractProductHint(productName: string): string {
-  return `- 萃取时可记录「${productName}」适合植入的 Quick Answer 要点、产品 Part 切入点，以及通用章节中**自然联动**时的举例位置；勿规划全文反复提及。`
+  return `- 萃取时可记录「${productName}」适合植入的产品 Part 切入点，以及通用章节中**自然联动**时的举例位置；Quick Answer 勿规划点名该产品；勿规划全文反复提及。`
 }
 
 export function getDraftQuickAnswerHint(productName?: string): string {
   if (!productName) {
-    return '本节为 Quick Answer：3–4 条 bullet，直接回答核心问题，可点名推荐方案。'
+    return '本节为 Quick Answer：3–4 条 bullet，直接回答核心问题；推荐方案用中性/模糊表述即可。'
   }
-  return `本节为 Quick Answer：3–4 条 bullet，可直接点名「${productName}」作为首推/解决方案（1–2 条即可），勿让每条 bullet 都成为产品广告。`
+  return [
+    `本节为 Quick Answer：3–4 条 bullet，直接回答核心问题。`,
+    `**禁止**出现「${productName}」全名或明显品牌指代；用模糊表述（如 a dedicated converter / a reliable third-party tool / the steps below）。`,
+    '具名推荐留给后文产品 Part / 对比 / 榜单条目。'
+  ].join('\n')
 }
 
 export function getDraftProductPartHint(productName: string): string {
@@ -248,5 +253,5 @@ export function getPolishProductHint(productName: string, mode: ProductMentionMo
   if (mode.topList) {
     return `- 保留 Top 榜单中「${productName}」的条目与排位；润色时**不要**在其他章节追加该产品名`
   }
-  return `- 保留 Quick Answer、产品 Part、通用 Part 中合理提及与 Conclusion 中对「${productName}」的必要表述；润色时**不要**在无关章节追加产品名或改成泛称`
+  return `- 保留产品 Part、通用 Part 中合理提及与 Conclusion 中对「${productName}」的必要表述；**若 Quick Answer 含该产品全名，改为模糊表述**；润色时**不要**在无关章节追加产品名`
 }

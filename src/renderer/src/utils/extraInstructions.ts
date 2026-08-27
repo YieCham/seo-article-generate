@@ -132,3 +132,52 @@ export function formatReviseUserMessageContent(
   }
   return `**修改说明**\n${trimmed}`
 }
+
+export function formatIllustrationInsertUserMessage(productName?: string): string {
+  const product = productName?.trim()
+  return product
+    ? `**插图插入**\n根据插图库为「${product}」产品教程匹配并插入配图`
+    : '**插图插入**\n根据插图库为产品教程匹配并插入配图'
+}
+
+/** Pull `Product name: …` from writer extras (create / optimize / batch). */
+export function extractProductNameFromInstructions(text: string): string | undefined {
+  const match = text.match(/product\s*name\s*[:：]\s*([^\n,;，；]+)/i)
+  const name = match?.[1]?.trim()
+  return name && name.length >= 2 ? name : undefined
+}
+
+/**
+ * Resolve the product chosen at article start from the first user message(s),
+ * so follow-up actions (e.g. illustration insert) need not re-select it.
+ */
+export function resolveProductNameFromUserMessages(
+  messages: Array<{ role: string; content: string }>
+): string | undefined {
+  for (const message of messages) {
+    if (message.role !== 'user') continue
+    const content = message.content
+
+    const create = parseCreateUserMessage(content)
+    if (create) {
+      const fromCreate = extractProductNameFromInstructions(create.extraInstructions)
+      if (fromCreate) return fromCreate
+    }
+
+    const optimize = parseOptimizeUserMessage(content)
+    if (optimize) {
+      const fromOptimize = extractProductNameFromInstructions(optimize.extraInstructions)
+      if (fromOptimize) return fromOptimize
+    }
+
+    const batch = parseBatchOptimizeUserMessage(content)
+    if (batch) {
+      const fromBatch = extractProductNameFromInstructions(batch.extraInstructions)
+      if (fromBatch) return fromBatch
+    }
+
+    const direct = extractProductNameFromInstructions(content)
+    if (direct) return direct
+  }
+  return undefined
+}

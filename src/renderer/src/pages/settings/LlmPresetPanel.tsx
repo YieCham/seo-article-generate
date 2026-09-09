@@ -10,10 +10,10 @@ import {
   type LlmReasoningEffortChoice
 } from '../../constants/llmReasoningEffort'
 
-const DISCOVER_MODELS_ICON = '/查找大模型.svg'
-const TEST_MODEL_ICON = '/连通性测试.svg'
-const DELETE_MODEL_ICON = '/删除.svg'
-const REASONING_MODEL_ICON = '/思考强度.svg'
+const DISCOVER_MODELS_ICON = './查找大模型.svg'
+const TEST_MODEL_ICON = './连通性测试.svg'
+const DELETE_MODEL_ICON = './删除.svg'
+const REASONING_MODEL_ICON = './思考强度.svg'
 
 interface LlmPresetPanelProps {
   config: AppConfig

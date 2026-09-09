@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { app } from 'electron'
 import { join } from 'path'
+import { getArticleUserDataDir } from '../paths'
 import { randomUUID } from 'crypto'
 import type { TokenUsagePipeline } from './tokenUsageContext'
 
@@ -40,7 +40,7 @@ export interface TokenUsageLogData {
 const MAX_RECORDS = 2000
 
 function getStorePath(): string {
-  return join(app.getPath('userData'), 'token-usage.json')
+  return join(getArticleUserDataDir(), 'token-usage.json')
 }
 
 function emptyStore(): TokenUsageLogData {
@@ -83,13 +83,13 @@ export async function appendTokenUsageRecord(
     store.records = store.records.slice(0, MAX_RECORDS)
   }
 
-  await mkdir(app.getPath('userData'), { recursive: true })
+  await mkdir(getArticleUserDataDir(), { recursive: true })
   await writeFile(getStorePath(), JSON.stringify(store, null, 2), 'utf-8')
   return record
 }
 
 export async function clearTokenUsageLog(): Promise<void> {
-  await mkdir(app.getPath('userData'), { recursive: true })
+  await mkdir(getArticleUserDataDir(), { recursive: true })
   await writeFile(getStorePath(), JSON.stringify(emptyStore(), null, 2), 'utf-8')
 }
 

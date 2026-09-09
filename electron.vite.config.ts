@@ -22,7 +22,9 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'src/main/index.ts')
+          index: resolve(__dirname, 'src/main/index.ts'),
+          /** Hosted by AIGC workbench via require(out/main/embed.js) — no window lifecycle. */
+          embed: resolve(__dirname, 'src/main/embed.ts')
         }
       }
     }
@@ -38,6 +40,8 @@ export default defineConfig({
     }
   },
   renderer: {
+    // Relative base so public icons resolve under file:// (prod / workbench embed).
+    base: './',
     publicDir: resolve(__dirname, 'icons'),
     resolve: {
       alias: {

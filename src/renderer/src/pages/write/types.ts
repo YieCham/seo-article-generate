@@ -37,6 +37,8 @@ export interface ChatSession {
   listStatus?: SessionLifecycleGroup
   messages: ChatMessage[]
   writeMode: WriteMode
+  /** Composer writing-style Skill id; empty/undefined = AI default. */
+  writingStyleSkillId?: string
   llmPresetId?: string
   llmModel?: string
   updatedAt: number

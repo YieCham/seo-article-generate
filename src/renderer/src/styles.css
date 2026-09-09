@@ -1377,6 +1377,12 @@ input[type='range'] {
   pointer-events: auto;
 }
 
+/* Embedded in AIGC workbench: host owns the window chrome */
+html.embed .title-bar,
+body.embed .title-bar {
+  display: none !important;
+}
+
 /* ── Title bar ── */
 .title-bar {
   height: 32px;

@@ -28,6 +28,8 @@ export default function App() {
   }, [configRevision])
 
   useEffect(() => {
+    if (document.documentElement.classList.contains('embed')) return
+
     function executeCloseAction(action: WindowCloseAction): void {
       if (action === 'minimize-to-tray') {
         window.app.windowMinimizeToTray()

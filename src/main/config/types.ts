@@ -218,6 +218,9 @@ export interface PromptConfig {
 
 export type PipelineMode = 'create' | 'optimize' | 'batch-optimize'
 
+/** Settings Skill 列表分类：含写作风格（启用状态仍写入 create） */
+export type SkillListMode = PipelineMode | 'writing-style'
+
 export interface ModePromptsConfig {
   create: PromptConfig
   optimize: PromptConfig
@@ -387,6 +390,8 @@ export interface SkillItem {
   content: string
   enabled: boolean
   bundled?: boolean
+  /** Always-on for create polish; UI toggle is locked. */
+  forced?: boolean
 }
 
 export const DEFAULT_SYSTEM_PROMPT = `你是一位专业内容创作者。请严格遵循以下 Skills 中的写作规范：

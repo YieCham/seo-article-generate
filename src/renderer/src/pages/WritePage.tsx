@@ -6,6 +6,10 @@ import {
   isArticleType,
   type ArticleType
 } from '../constants/articleTypes'
+import {
+  DEFAULT_WRITING_STYLE_ID,
+  type WritingStyleId
+} from '../constants/writingStyles'
 import { getWriteModeLabel, normalizeWriteMode, WRITE_MODE_STORAGE_KEY, type BatchDialogMode, type BatchWriteMode, type WriteMode } from '../constants/writeMode'
 import {
   DEFAULT_OUTPUT_LANGUAGE,
@@ -112,6 +116,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [selectedProductId, setSelectedProductId] = useState('')
   const [outputLanguage, setOutputLanguage] = useState<OutputLanguageCode>(DEFAULT_OUTPUT_LANGUAGE)
   const [articleType, setArticleType] = useState<ArticleType>('how-to')
+  const [writingStyleId, setWritingStyleId] = useState<WritingStyleId>(DEFAULT_WRITING_STYLE_ID)
   const [llmPresets, setLlmPresets] = useState<LlmPreset[]>([])
   const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
   const [selectedLlmModelId, setSelectedLlmModelId] = useState('')
@@ -1016,6 +1021,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       ...session,
       title,
       messages: [userMessage, assistantMessage],
+      writingStyleSkillId: mode === 'create' ? writingStyleId || undefined : undefined,
       llmPresetId: llmFields.llmPresetId,
       llmModel: llmFields.llmModel,
       updatedAt: Date.now()
@@ -1325,6 +1331,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       outputLanguage,
       llmPresetId: session.llmPresetId,
       llmModel: session.llmModel,
+      writingStyleSkillId: session.writingStyleSkillId || undefined,
       reuseResearch
     })
 
@@ -1672,6 +1679,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         ...session,
         title: session.messages.length === 0 ? sessionTitleFromPrompt(topic) : session.title,
         messages: [...session.messages, userMessage, assistantMessage],
+        writingStyleSkillId: writingStyleId || undefined,
         llmPresetId: llmFields.llmPresetId,
         llmModel: llmFields.llmModel,
         updatedAt: Date.now()
@@ -1679,6 +1687,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     } else {
       updateSession(sessionId, (session) => ({
         ...session,
+        writingStyleSkillId: session.writingStyleSkillId ?? (writingStyleId || undefined),
         llmPresetId: llmFields.llmPresetId,
         llmModel: llmFields.llmModel,
         updatedAt: Date.now()
@@ -1694,6 +1703,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       topic,
       extraInstructions: extraInstructions || undefined,
       outputLanguage,
+      writingStyleSkillId: writingStyleId || undefined,
       ...llmFields
     })
 
@@ -2283,9 +2293,11 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
                 selectedProductId={selectedProductId}
                 outputLanguage={outputLanguage}
                 articleType={articleType}
+                writingStyleId={writingStyleId}
                 onProductChange={setSelectedProductId}
                 onOutputLanguageChange={handleOutputLanguageChange}
                 onArticleTypeChange={(type) => void handleArticleTypeChange(type)}
+                onWritingStyleChange={setWritingStyleId}
                 llmModels={llmModels}
                 selectedLlmModelId={selectedLlmModelId}
                 onLlmModelChange={handleLlmModelChange}

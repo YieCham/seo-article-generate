@@ -12,6 +12,11 @@ export function getQuitting(): boolean {
   return isQuitting
 }
 
+/** Bind the host BrowserWindow without creating a tray (used when embedded in workbench). */
+export function setHostWindow(window: BrowserWindow): void {
+  mainWindow = window
+}
+
 export function initTrayManager(window: BrowserWindow, iconPath?: string): void {
   mainWindow = window
 

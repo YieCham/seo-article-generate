@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AppConfig, LlmPreset, PipelineMode, QuickPickOption, SkillItem } from '../env.d'
+import type { AppConfig, LlmPreset, PipelineMode, QuickPickOption, SkillItem, SkillListMode } from '../env.d'
 import { LANGUAGE_OPTIONS, REGION_OPTIONS } from '../constants/localeOptions'
 import QuickPickEditor from './settings/QuickPickEditor'
 import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../constants/outputLanguage'
@@ -46,12 +46,17 @@ const PIPELINE_MODE_OPTIONS: Array<{ value: SettingsPipelineMode; label: string;
   { value: 'optimize', label: '文章优化', hint: '用于抓取原页并做 E-E-A-T 增量优化' }
 ]
 
-const SKILL_PIPELINE_MODE_OPTIONS: Array<{ value: PipelineMode; label: string; hint: string }> = [
+const SKILL_LIST_MODE_OPTIONS: Array<{ value: SkillListMode; label: string; hint: string }> = [
   ...PIPELINE_MODE_OPTIONS,
   {
     value: 'batch-optimize',
     label: '页面批量优化',
     hint: '仅 Firecrawl 抓取 + 单次生成优化全文'
+  },
+  {
+    value: 'writing-style',
+    label: '写作风格',
+    hint: '文风类 Skill 清单；explainer-voice 由创作页下拉选择。Humanizer 在润色去 AI 味阶段强制注入，不可关闭。'
   }
 ]
 
@@ -82,7 +87,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   const [testingFirecrawl, setTestingFirecrawl] = useState(false)
   const [saving, setSaving] = useState(false)
   const [pipelineMode, setPipelineMode] = useState<SettingsPipelineMode>('create')
-  const [skillPipelineMode, setSkillPipelineMode] = useState<PipelineMode>('create')
+  const [skillListMode, setSkillListMode] = useState<SkillListMode>('create')
   const [editingPresetId, setEditingPresetId] = useState('')
 
   useEffect(() => {
@@ -91,9 +96,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
 
   useEffect(() => {
     if (visible && tab === 'skills') {
-      void window.app.listSkills(skillPipelineMode).then(setSkills)
+      void window.app.listSkills(skillListMode).then(setSkills)
     }
-  }, [visible, tab, skillPipelineMode])
+  }, [visible, tab, skillListMode])
 
   useEffect(() => {
     if (!status || status === '正在保存…' || status.startsWith('正在测试')) return
@@ -107,7 +112,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     setStatus('')
   }
 
-  async function loadData(mode: PipelineMode = skillPipelineMode): Promise<void> {
+  async function loadData(mode: SkillListMode = skillListMode): Promise<void> {
     const [nextConfig, nextSkills] = await Promise.all([
       window.app.getConfig(),
       window.app.listSkills(mode)
@@ -115,6 +120,30 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     setConfig(nextConfig)
     setSkills(nextSkills)
     setEditingPresetId(nextConfig.activeLlmPresetId || nextConfig.llmPresets[0]?.id || '')
+  }
+
+  function renderSkillListModeTabs(
+    options: Array<{ value: SkillListMode; label: string; hint: string }>,
+    activeMode: SkillListMode,
+    onSelect: (mode: SkillListMode) => void
+  ) {
+    return (
+      <div className="settings-pipeline-tabs" role="tablist" aria-label="Skill 分类">
+        {options.map((item) => (
+          <button
+            key={item.value}
+            type="button"
+            role="tab"
+            className={`settings-pipeline-tab${activeMode === item.value ? ' active' : ''}`}
+            aria-selected={activeMode === item.value}
+            title={item.hint}
+            onClick={() => onSelect(item.value)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    )
   }
 
   function renderPipelineModeTabs(
@@ -188,7 +217,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   async function handleToggleSkill(id: string, enabled: boolean): Promise<void> {
     setSkills((prev) => prev.map((skill) => (skill.id === id ? { ...skill, enabled } : skill)))
     try {
-      await window.app.setSkillEnabled(id, enabled, skillPipelineMode)
+      await window.app.setSkillEnabled(id, enabled, skillListMode)
       setStatus(enabled ? 'Skill 已启用' : 'Skill 已禁用')
     } catch {
       await loadData()
@@ -207,7 +236,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
     }
     setSaving(true)
     try {
-      await window.app.saveSkill(editingSkill, skillPipelineMode)
+      await window.app.saveSkill(editingSkill, skillListMode === 'writing-style' ? 'create' : skillListMode)
       setEditingSkill(null)
       await loadData()
       setStatus('Skill 已保存')
@@ -808,14 +837,15 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
               <div>
                 <h2 className="section-title">Skill 列表</h2>
                 <p className="section-desc">
-                  文章创作列表不含 article-optimizer；文章优化仅展示 article-optimizer；页面批量优化仅展示 page-batch-optimizer。切换上方标签后，开关仅影响对应 Pipeline。
+                  文章创作不含优化类与写作风格 Skill；文章优化仅 article-optimizer；页面批量优化仅
+                  page-batch-optimizer；写作风格为文风类 Skill 清单。创作时是否套用文风，以对话页「文风」下拉为准，与此处开关无关。
                 </p>
               </div>
               <div className="section-actions">
                 <button type="button" className="secondary" onClick={() => void loadData()}>
                   刷新列表
                 </button>
-                {skillPipelineMode === 'create' ? (
+                {skillListMode === 'create' ? (
                   <button
                     type="button"
                     className="secondary"
@@ -827,13 +857,23 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
               </div>
             </div>
 
-            {renderPipelineModeTabs(SKILL_PIPELINE_MODE_OPTIONS, skillPipelineMode, (mode) => {
-              setSkillPipelineMode(mode)
+            {renderSkillListModeTabs(SKILL_LIST_MODE_OPTIONS, skillListMode, (mode) => {
+              setSkillListMode(mode)
               void window.app.listSkills(mode).then(setSkills)
             })}
 
+            {skillListMode === 'writing-style' ? (
+              <p className="empty-hint">
+                explainer-voice 由创作页「文风」下拉选择。Humanizer 在文章创作的「润色并降低 AI 味」阶段强制注入，不可关闭。
+              </p>
+            ) : null}
+
             {skills.length === 0 ? (
-              <p className="empty-hint">暂无 Skill，点击「新建 Skill」添加。</p>
+              <p className="empty-hint">
+                {skillListMode === 'writing-style'
+                  ? '暂无写作风格 Skill。'
+                  : '暂无 Skill，点击「新建 Skill」添加。'}
+              </p>
             ) : (
               <ul className="skill-list">
                 {skills.map((skill) => (
@@ -843,15 +883,19 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
                         type="checkbox"
                         className="toggle-input"
                         checked={skill.enabled}
+                        disabled={Boolean(skill.forced)}
                         onChange={(e) => void handleToggleSkill(skill.id, e.target.checked)}
                       />
                       <span className="toggle-switch" aria-hidden="true" />
-                      <span className="toggle-label">{skill.enabled ? '已启用' : '已禁用'}</span>
+                      <span className="toggle-label">
+                        {skill.forced ? '润色强制' : skill.enabled ? '已启用' : '已禁用'}
+                      </span>
                     </label>
                     <div className="skill-meta">
                       <strong>
                         {skill.name}
                         {skill.bundled ? <span className="skill-badge">内置</span> : null}
+                        {skill.forced ? <span className="skill-badge">润色强制</span> : null}
                       </strong>
                       <span>{skill.description || '无描述'}</span>
                     </div>

@@ -35,6 +35,7 @@ export interface CreatePipelineCheckpoint {
     outputLanguage?: string
     llmPresetId?: string
     llmModel?: string
+    writingStyleSkillId?: string
   }
   statusLabel?: string
   outline?: string

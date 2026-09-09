@@ -3,12 +3,16 @@ import { IconClose, IconMaximize, IconMinimize, IconRestore } from './Icons'
 
 export default function TitleBar() {
   const [maximized, setMaximized] = useState(false)
-  const showWinControls = window.app.platform !== 'darwin'
+  const isEmbedded = document.documentElement.classList.contains('embed')
+  const showWinControls = !isEmbedded && window.app.platform !== 'darwin'
 
   useEffect(() => {
+    if (isEmbedded) return
     void window.app.windowIsMaximized().then(setMaximized)
     return window.app.onWindowMaximized(setMaximized)
-  }, [])
+  }, [isEmbedded])
+
+  if (isEmbedded) return null
 
   return (
     <header className="title-bar">

@@ -75,6 +75,7 @@ export function registerArticleIpc(): void {
               topic: checkpoint.options.topic,
               extraInstructions: checkpoint.options.extraInstructions,
               outputLanguage: checkpoint.options.outputLanguage,
+              writingStyleSkillId: checkpoint.options.writingStyleSkillId,
               resume: checkpoint
             },
             event.sender

@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { app } from 'electron'
 import { join } from 'path'
+import { getArticleUserDataDir } from '../paths'
 import { randomUUID } from 'crypto'
 import type { WordPressPublishLogRecord } from '../../shared/wordpress'
 
@@ -11,7 +11,7 @@ interface PublishLogStoreData {
 }
 
 function getStorePath(): string {
-  return join(app.getPath('userData'), 'wordpress-publish-log.json')
+  return join(getArticleUserDataDir(), 'wordpress-publish-log.json')
 }
 
 function emptyStore(): PublishLogStoreData {
@@ -41,7 +41,7 @@ export async function loadWordPressPublishLog(): Promise<PublishLogStoreData> {
 }
 
 async function saveStore(data: PublishLogStoreData): Promise<void> {
-  await mkdir(app.getPath('userData'), { recursive: true })
+  await mkdir(getArticleUserDataDir(), { recursive: true })
   await writeFile(getStorePath(), JSON.stringify(data, null, 2), 'utf-8')
 }
 

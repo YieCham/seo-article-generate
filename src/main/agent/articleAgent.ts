@@ -10,10 +10,11 @@ import {
 import { maxTokensForFullArticleOutput, maxTokensForOutlineSkeleton, maxTokensForPlanning, resolveStepMaxTokens } from '../config/llmTokenLimits'
 import type { ResearchConfig } from '../config/types'
 import { LLM_REASONING_EFFORT_OPTIONS } from '../config/types'
-import { getEnabledSkillBundles, type EnabledSkillBundle } from './skillManager'
+import { getCreateSkillBundles, type EnabledSkillBundle } from './skillManager'
 import {
   buildFullSkillsText,
   getEnabledSkillIdsFromBundles,
+  getForcedHumanizerPolishText,
   getSkillsTextForStep
 } from './skillPipeline'
 import {
@@ -139,6 +140,8 @@ export interface GenerateArticleOptions {
   outputLanguage?: OutputLanguageCode | string
   llmPresetId?: string
   llmModel?: string
+  /** Composer-selected writing style Skill id; empty/omit = AI default (no style Skill). */
+  writingStyleSkillId?: string
   resume?: CreatePipelineCheckpoint
   /** When set and topic matches, skip Tavily/Firecrawl and reuse extracted research. */
   reuseResearch?: CreateResearchPack
@@ -803,6 +806,7 @@ async function polishDraft(
     skillCtx.enabledSkillIds
   )
   const stepSkills = getSkillsTextForStep('polish', { bundles: skillCtx.bundles })
+  const humanizer = await getForcedHumanizerPolishText()
   const polished = await chatCompletion(
     llm,
     [
@@ -815,7 +819,10 @@ async function polishDraft(
           POLISH_EDIT_SCOPE_RULE,
           MULTI_METHOD_STRUCTURE_PRESERVE_RULE,
           getWritingPromptBlocks(getUserContextPromptBlocks(userContext), topic),
-          stepSkills ? `合规与风格要点：\n${stepSkills}` : ''
+          stepSkills ? `合规与风格要点：\n${stepSkills}` : '',
+          humanizer
+            ? `去 AI 味必须遵循下列 Humanizer Skill（embedded 模式，完整注入，优先于其它文风中与 AI 套话相关的条款）：\n${humanizer}`
+            : ''
         ]
           .filter(Boolean)
           .join('\n\n')
@@ -837,6 +844,7 @@ async function polishDraft(
               : '',
           userContext.briefForPrompt,
           '- 保留事实与结构，但改写句式与过渡',
+          '- 按 Humanizer 的 35 条 AI 写作特征清理套话、销售腔、空洞三段式与机器人收尾；不得增删事实',
           '- 增强自然语气与具体判断',
           '- 删除模板化开头/空洞总结',
           '- 正文中禁止出现 "Target audience"、"for US reader"、"目标读者" 等来自写作 brief 的标签或元信息',
@@ -944,7 +952,9 @@ export async function generateArticle(
       extraInstructions: resume?.options.extraInstructions ?? options.extraInstructions,
       outputLanguage: resume?.options.outputLanguage ?? options.outputLanguage,
       llmPresetId: resume?.options.llmPresetId ?? options.llmPresetId,
-      llmModel: resume?.options.llmModel ?? options.llmModel
+      llmModel: resume?.options.llmModel ?? options.llmModel,
+      writingStyleSkillId:
+        resume?.options.writingStyleSkillId ?? options.writingStyleSkillId
     },
     ...partial
   })
@@ -963,7 +973,9 @@ export async function generateArticle(
         ? `继续生成：${resume.statusLabel}`
         : `① 加载 Skills…（成文语言：${articleLang.label}${userContext.productName ? ` · 产品：${userContext.productName}` : ''}）`
     })
-    const skillBundles = await getEnabledSkillBundles('create')
+    const skillBundles = await getCreateSkillBundles(
+      resume?.options.writingStyleSkillId ?? options.writingStyleSkillId
+    )
     const enabledSkillIds = getEnabledSkillIdsFromBundles(skillBundles)
     const skillsText = buildFullSkillsText(skillBundles)
     const skillCtx: PipelineSkillContext = {

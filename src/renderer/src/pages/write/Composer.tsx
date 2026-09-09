@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { QuickPicksConfig } from '../../env.d'
 import { ARTICLE_TYPE_OPTIONS, type ArticleType } from '../../constants/articleTypes'
+import {
+  WRITING_STYLE_OPTIONS,
+  type WritingStyleId
+} from '../../constants/writingStyles'
 import type { WriteMode } from '../../constants/writeMode'
 import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../../constants/outputLanguage'
 import {
@@ -24,6 +28,7 @@ interface ComposerProps {
   selectedProductId: string
   outputLanguage: OutputLanguageCode
   articleType: ArticleType
+  writingStyleId: WritingStyleId
   llmModels: LlmModelOption[]
   selectedLlmModelId: string
   llmRoleRoutingEnabled?: boolean
@@ -31,6 +36,7 @@ interface ComposerProps {
   onProductChange: (id: string) => void
   onOutputLanguageChange: (code: OutputLanguageCode) => void
   onArticleTypeChange: (type: ArticleType) => void
+  onWritingStyleChange: (id: WritingStyleId) => void
   onLlmModelChange: (optionId: string) => void
   onSubmit: (input: string, extraInstructions: string) => void
   onStop: () => void
@@ -56,6 +62,7 @@ export default function Composer({
   selectedProductId,
   outputLanguage,
   articleType,
+  writingStyleId,
   llmModels,
   selectedLlmModelId,
   llmRoleRoutingEnabled = false,
@@ -63,6 +70,7 @@ export default function Composer({
   onProductChange,
   onOutputLanguageChange,
   onArticleTypeChange,
+  onWritingStyleChange,
   onLlmModelChange,
   onSubmit,
   onStop,
@@ -211,6 +219,27 @@ export default function Composer({
                     {ARTICLE_TYPE_OPTIONS.map((item) => (
                       <option key={item.value} value={item.value}>
                         {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {!isUrlMode ? (
+                <label className="composer-option">
+                  <select
+                    className="composer-control"
+                    value={writingStyleId}
+                    onChange={(e) => onWritingStyleChange(e.target.value as WritingStyleId)}
+                    disabled={panelDisabled}
+                    aria-label="文风"
+                    title={
+                      WRITING_STYLE_OPTIONS.find((item) => item.value === writingStyleId)?.hint
+                    }
+                  >
+                    {WRITING_STYLE_OPTIONS.map((item) => (
+                      <option key={item.value || 'default'} value={item.value}>
+                        文风：{item.label}
                       </option>
                     ))}
                   </select>

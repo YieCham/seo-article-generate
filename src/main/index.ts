@@ -1,33 +1,17 @@
-import { config as loadEnv } from 'dotenv'
 import { existsSync } from 'fs'
 import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
-import { registerArticleIpc } from './ipc/article'
-import { registerChatIpc } from './ipc/chat'
-import { registerConfigIpc } from './ipc/config'
-import { registerImageIpc } from './ipc/image'
-import { registerIllustrationIpc } from './ipc/illustration'
-import { registerKnowledgeIpc } from './ipc/knowledge'
-import { registerWordPressIpc } from './ipc/wordpress'
-import { registerWindowIpc, attachWindowStateListeners, attachExternalLinkHandlers } from './ipc/window'
-import { loadConfig } from './config/configStore'
+import { bootstrapArticleAgent } from './embed'
 import {
-  registerDrawImgProtocol,
-  registerDrawImgSchemePrivileged
-} from './image/imageHistoryStore'
-import { registerIllustrationProtocol } from './illustration/illustrationStore'
+  attachWindowStateListeners,
+  attachExternalLinkHandlers
+} from './ipc/window'
 import {
   attachCloseHandler,
   destroyTray,
   initTrayManager,
   setQuitting
 } from './window/trayManager'
-
-if (!app.isPackaged) {
-  loadEnv({ path: join(__dirname, '../../.env') })
-}
-
-registerDrawImgSchemePrivileged()
 
 const isDev = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
@@ -79,17 +63,7 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null)
-  await loadConfig()
-  registerDrawImgProtocol()
-  registerIllustrationProtocol()
-  registerWindowIpc()
-  registerArticleIpc()
-  registerChatIpc()
-  registerConfigIpc()
-  registerImageIpc()
-  registerKnowledgeIpc()
-  registerIllustrationIpc()
-  registerWordPressIpc()
+  await bootstrapArticleAgent()
   createWindow()
 
   app.on('activate', () => {

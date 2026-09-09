@@ -1,7 +1,8 @@
 import { mkdir, readFile, rm, writeFile } from 'fs/promises'
 import { randomUUID } from 'crypto'
-import { app, protocol } from 'electron'
+import { protocol } from 'electron'
 import { extname, join } from 'path'
+import { getArticleUserDataDir } from '../paths'
 import { ILLUSTRATION_SCHEME } from '../../shared/illustrationLibrary'
 
 const MAX_HISTORY_ITEMS = 100
@@ -39,11 +40,11 @@ export interface SaveImageHistoryBufferInput {
 const EMPTY_STORE: ImageHistoryStoreData = { items: [] }
 
 export function getHistoryDir(): string {
-  return join(app.getPath('userData'), 'image-history')
+  return join(getArticleUserDataDir(), 'image-history')
 }
 
 function getIndexPath(): string {
-  return join(app.getPath('userData'), 'image-history.json')
+  return join(getArticleUserDataDir(), 'image-history.json')
 }
 
 function guessExt(mimeType: string): string {
@@ -154,7 +155,7 @@ async function loadIndex(): Promise<ImageHistoryStoreData> {
 }
 
 async function saveIndex(data: ImageHistoryStoreData): Promise<void> {
-  await mkdir(app.getPath('userData'), { recursive: true })
+  await mkdir(getArticleUserDataDir(), { recursive: true })
   await writeFile(getIndexPath(), JSON.stringify(data, null, 2), 'utf-8')
 }
 

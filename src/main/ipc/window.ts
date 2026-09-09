@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, shell } from 'electron'
+import { BrowserWindow, ipcMain, shell, type WebContents } from 'electron'
 import { isAppMenuLabel, popupAppSubmenu } from '../menu/appMenu'
 import { hideMainWindowToTray, quitApplication } from '../window/trayManager'
 
@@ -91,8 +91,9 @@ export function attachWindowStateListeners(window: BrowserWindow): void {
   window.on('unmaximize', () => sendMaximized(false))
 }
 
-export function attachExternalLinkHandlers(window: BrowserWindow): void {
-  const webContents = window.webContents
+export function attachExternalLinkHandlers(windowOrContents: BrowserWindow | WebContents): void {
+  const webContents =
+    windowOrContents instanceof BrowserWindow ? windowOrContents.webContents : windowOrContents
 
   webContents.setWindowOpenHandler(({ url }) => {
     openExternalLink(url)

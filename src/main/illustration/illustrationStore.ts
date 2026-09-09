@@ -2,7 +2,8 @@ import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'fs/promises'
 import { randomUUID } from 'crypto'
 import { extname, join } from 'path'
 import { pathToFileURL } from 'url'
-import { app, net, protocol } from 'electron'
+import { net, protocol } from 'electron'
+import { getArticleUserDataDir } from '../paths'
 import {
   EMPTY_ILLUSTRATION_LIBRARY,
   ILLUSTRATION_SCHEME,
@@ -33,11 +34,11 @@ const MAX_IMPORT_BYTES = 20 * 1024 * 1024
 const ALLOWED_IMPORT_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'])
 
 function getStorePath(): string {
-  return join(app.getPath('userData'), 'illustration-library.json')
+  return join(getArticleUserDataDir(), 'illustration-library.json')
 }
 
 export function getIllustrationDir(): string {
-  return join(app.getPath('userData'), 'illustrations')
+  return join(getArticleUserDataDir(), 'illustrations')
 }
 
 function clampText(value: unknown, max: number): string {
@@ -100,7 +101,7 @@ async function loadLibrary(): Promise<IllustrationLibrary> {
 
 async function persistLibrary(data: IllustrationLibrary): Promise<IllustrationLibrary> {
   const library = normalizeLibrary(data)
-  await mkdir(app.getPath('userData'), { recursive: true })
+  await mkdir(getArticleUserDataDir(), { recursive: true })
   await writeFile(getStorePath(), JSON.stringify(library, null, 2), 'utf-8')
   return library
 }

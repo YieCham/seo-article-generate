@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import type { LlmModelBrandGroup } from '../../env.d'
 import { LlmModelIcon, LlmVendorIcon } from '../../components/LlmBrandIcon'
 
-const ADD_MODEL_ICON = '/添加大模型.svg'
-const ADDED_MODEL_ICON = '/大模型已添加.svg'
+const ADD_MODEL_ICON = './添加大模型.svg'
+const ADDED_MODEL_ICON = './大模型已添加.svg'
 
 interface LlmModelDiscoverDialogProps {
   open: boolean

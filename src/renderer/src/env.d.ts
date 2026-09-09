@@ -95,6 +95,7 @@ export interface PromptConfig {
 }
 
 export type PipelineMode = 'create' | 'optimize' | 'batch-optimize'
+export type SkillListMode = PipelineMode | 'writing-style'
 
 export interface ModePromptsConfig {
   create: PromptConfig
@@ -227,6 +228,7 @@ export interface SkillItem {
   content: string
   enabled: boolean
   bundled?: boolean
+  forced?: boolean
 }
 
 export interface KnowledgeDoc {
@@ -359,6 +361,7 @@ declare global {
         outputLanguage?: string
         llmPresetId?: string
         llmModel?: string
+        writingStyleSkillId?: string
         reuseResearch?: import('../../shared/researchPack').CreateResearchPack
       }) => Promise<GenerateArticleResult>
       optimizeArticle: (request: {
@@ -413,10 +416,10 @@ declare global {
       listLlmModels: (presetId: string) => Promise<ListLlmModelsResult>
       testTavilyConnection: (apiKey: string) => Promise<ActionResult>
       testFirecrawlConnection: (apiKey: string) => Promise<ActionResult>
-      listSkills: (mode?: PipelineMode) => Promise<SkillItem[]>
-      saveSkill: (skill: SkillItem, mode?: PipelineMode) => Promise<SkillItem>
+      listSkills: (mode?: SkillListMode) => Promise<SkillItem[]>
+      saveSkill: (skill: SkillItem, mode?: SkillListMode) => Promise<SkillItem>
       deleteSkill: (id: string) => Promise<void>
-      setSkillEnabled: (id: string, enabled: boolean, mode?: PipelineMode) => Promise<void>
+      setSkillEnabled: (id: string, enabled: boolean, mode?: SkillListMode) => Promise<void>
       syncArticleTypeSkills: (articleType: 'how-to' | 'review' | 'top-rank') => Promise<void>
       listKnowledgeDocs: () => Promise<KnowledgeDoc[]>
       saveKnowledgeDoc: (input: SaveKnowledgeDocInput) => Promise<KnowledgeDoc>

@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { app } from 'electron'
 import { join } from 'path'
+import { getArticleUserDataDir } from '../paths'
 import {
   DEFAULT_CONFIG,
   normalizeLlmMaxTokens,
@@ -34,7 +34,7 @@ type ConfigPartial = Partial<AppConfig> & {
 let cachedConfig: AppConfig | null = null
 
 function getConfigPath(): string {
-  return join(app.getPath('userData'), 'config.json')
+  return join(getArticleUserDataDir(), 'config.json')
 }
 
 function mergeWithDefaults(partial: ConfigPartial): AppConfig {
@@ -218,7 +218,7 @@ export async function saveConfig(partial: Partial<AppConfig>): Promise<AppConfig
 
   const next = mergeWithDefaults(mergedPartial)
 
-  await mkdir(app.getPath('userData'), { recursive: true })
+  await mkdir(getArticleUserDataDir(), { recursive: true })
   await writeFile(getConfigPath(), JSON.stringify(next, null, 2), 'utf-8')
   cachedConfig = next
   await applyNetworkProxy(next.networkProxy)

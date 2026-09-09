@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import { loadConfig, saveConfig } from '../config/configStore'
-import type { AppConfig, PipelineMode, SkillItem } from '../config/types'
+import type { AppConfig, SkillItem, SkillListMode } from '../config/types'
 import { deleteSkillItem, listSkills, saveSkillItem, setSkillEnabled, syncCreateSkillsForArticleType } from '../agent/skillManager'
 import { testLlmConnection } from '../agent/articleAgent'
 import { listLlmModelsForPreset } from '../agent/llmModelCatalog'
@@ -41,9 +41,9 @@ export function registerConfigIpc(): void {
     return { ok: true as const }
   })
 
-  ipcMain.handle('skills:list', async (_event, mode?: PipelineMode) => listSkills(mode ?? 'create'))
+  ipcMain.handle('skills:list', async (_event, mode?: SkillListMode) => listSkills(mode ?? 'create'))
 
-  ipcMain.handle('skills:save', async (_event, skill: SkillItem, mode?: PipelineMode) =>
+  ipcMain.handle('skills:save', async (_event, skill: SkillItem, mode?: SkillListMode) =>
     saveSkillItem(skill, mode ?? 'create')
   )
 
@@ -53,7 +53,7 @@ export function registerConfigIpc(): void {
 
   ipcMain.handle(
     'skills:setEnabled',
-    async (_event, id: string, enabled: boolean, mode?: PipelineMode) => {
+    async (_event, id: string, enabled: boolean, mode?: SkillListMode) => {
       await setSkillEnabled(id, enabled, mode ?? 'create')
     }
   )

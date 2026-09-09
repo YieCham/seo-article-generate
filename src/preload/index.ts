@@ -19,6 +19,7 @@ export interface GenerateArticleRequest {
   outputLanguage?: string
   llmPresetId?: string
   llmModel?: string
+  writingStyleSkillId?: string
   reuseResearch?: CreateResearchPack
 }
 
@@ -131,6 +132,7 @@ export interface PromptConfig {
 }
 
 export type PipelineMode = 'create' | 'optimize' | 'batch-optimize'
+export type SkillListMode = PipelineMode | 'writing-style'
 
 export interface ModePromptsConfig {
   create: PromptConfig
@@ -242,6 +244,7 @@ export interface SkillItem {
   content: string
   enabled: boolean
   bundled?: boolean
+  forced?: boolean
 }
 
 export interface KnowledgeDoc {
@@ -405,11 +408,11 @@ const api = {
     ipcRenderer.invoke('config:testTavily', apiKey),
   testFirecrawlConnection: (apiKey: string): Promise<ActionResult> =>
     ipcRenderer.invoke('config:testFirecrawl', apiKey),
-  listSkills: (mode?: PipelineMode): Promise<SkillItem[]> => ipcRenderer.invoke('skills:list', mode),
-  saveSkill: (skill: SkillItem, mode?: PipelineMode): Promise<SkillItem> =>
+  listSkills: (mode?: SkillListMode): Promise<SkillItem[]> => ipcRenderer.invoke('skills:list', mode),
+  saveSkill: (skill: SkillItem, mode?: SkillListMode): Promise<SkillItem> =>
     ipcRenderer.invoke('skills:save', skill, mode),
   deleteSkill: (id: string): Promise<void> => ipcRenderer.invoke('skills:delete', id),
-  setSkillEnabled: (id: string, enabled: boolean, mode?: PipelineMode): Promise<void> =>
+  setSkillEnabled: (id: string, enabled: boolean, mode?: SkillListMode): Promise<void> =>
     ipcRenderer.invoke('skills:setEnabled', id, enabled, mode),
   syncArticleTypeSkills: (articleType: 'how-to' | 'review' | 'top-rank'): Promise<void> =>
     ipcRenderer.invoke('skills:syncArticleType', articleType),

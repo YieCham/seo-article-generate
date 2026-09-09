@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { app } from 'electron'
 import { join } from 'path'
+import { getArticleUserDataDir } from '../paths'
 import type { PipelineCheckpoint } from '../../shared/pipelineCheckpoint'
 import type { ResearchPack } from '../../shared/researchPack'
 import {
@@ -58,7 +58,7 @@ const EMPTY_STORE: ChatStoreData = {
 }
 
 function getChatStorePath(): string {
-  return join(app.getPath('userData'), 'chat-sessions.json')
+  return join(getArticleUserDataDir(), 'chat-sessions.json')
 }
 
 function normalizeForSave(data: ChatStoreData): ChatStoreData {
@@ -124,6 +124,6 @@ export async function loadChatStore(): Promise<ChatStoreData> {
 
 export async function saveChatStore(data: ChatStoreData): Promise<void> {
   const next = normalizeForSave(data)
-  await mkdir(app.getPath('userData'), { recursive: true })
+  await mkdir(getArticleUserDataDir(), { recursive: true })
   await writeFile(getChatStorePath(), JSON.stringify(next, null, 2), 'utf-8')
 }

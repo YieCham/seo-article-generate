@@ -2,9 +2,12 @@ import { existsSync } from 'fs'
 import { mkdir, readFile, readdir, rm, writeFile } from 'fs/promises'
 import { app } from 'electron'
 import { join } from 'path'
+import { getArticleAgentRoot, getArticleUserDataDir } from '../paths'
 import { loadConfig, saveConfig } from '../config/configStore'
-import type { PipelineMode, SkillItem, ModeEnabledSkillsConfig } from '../config/types'
+import type { PipelineMode, SkillItem, ModeEnabledSkillsConfig, SkillListMode } from '../config/types'
 import { parseSkillMarkdown, serializeSkillMarkdown } from '../agent/skillLoader'
+
+export type { SkillListMode }
 
 export interface EnabledSkillBundle {
   id: string
@@ -22,6 +25,22 @@ export const STREAMING_DOMAIN_SKILL_ID = 'streaming-audio-domain'
 export const STREAMING_COMPLIANCE_SKILL_ID = 'streaming-audio-compliance'
 export const IOS_GEO_SKILL_ID = 'seo-geo-ios-security'
 export const STREAMING_TOP_SKILL_ID = 'seo-geo-streaming-top'
+export const EXPLAINER_VOICE_SKILL_ID = 'explainer-voice'
+export const HUMANIZER_SKILL_ID = 'humanizer'
+
+/** Writing-style skills: listed under「写作风格」, enabled state stored in create. */
+export const WRITING_STYLE_SKILL_IDS = new Set([EXPLAINER_VOICE_SKILL_ID, HUMANIZER_SKILL_ID])
+
+/** Always injected at create-pipeline polish; not selectable as a composer voice. */
+export const POLISH_FORCE_SKILL_IDS = new Set([HUMANIZER_SKILL_ID])
+
+export function isWritingStyleSkillId(id: string): boolean {
+  return WRITING_STYLE_SKILL_IDS.has(id)
+}
+
+export function isPolishForceSkillId(id: string): boolean {
+  return POLISH_FORCE_SKILL_IDS.has(id)
+}
 
 export const BUNDLED_SKILL_IDS = new Set([
   SEO_GEO_SKILL_ID,
@@ -31,7 +50,9 @@ export const BUNDLED_SKILL_IDS = new Set([
   STREAMING_TOP_SKILL_ID,
   REVIEW_SKILL_ID,
   OPTIMIZER_SKILL_ID,
-  BATCH_OPTIMIZER_SKILL_ID
+  BATCH_OPTIMIZER_SKILL_ID,
+  EXPLAINER_VOICE_SKILL_ID,
+  HUMANIZER_SKILL_ID
 ])
 
 /** Disabled until the user explicitly enables them in settings (create mode). */
@@ -43,7 +64,9 @@ const SKILLS_DISABLED_BY_DEFAULT = new Set([
   STREAMING_DOMAIN_SKILL_ID,
   STREAMING_COMPLIANCE_SKILL_ID,
   IOS_GEO_SKILL_ID,
-  STREAMING_TOP_SKILL_ID
+  STREAMING_TOP_SKILL_ID,
+  EXPLAINER_VOICE_SKILL_ID,
+  HUMANIZER_SKILL_ID
 ])
 
 /** Map legacy seo-geo-streaming-audio → domain + compliance on config read. */
@@ -72,18 +95,23 @@ interface SkillLocation {
 }
 
 function getUserSkillsRoot(): string {
-  return join(app.getPath('userData'), 'skills')
+  return join(getArticleUserDataDir(), 'skills')
 }
 
 function resolveBundledSkillsRoot(): string | null {
+  const articleRoot = getArticleAgentRoot()
   const candidates = [
+    articleRoot ? join(articleRoot, 'out/main/bundled-skills') : null,
+    articleRoot ? join(articleRoot, 'src/main/bundled-skills') : null,
+    articleRoot ? join(articleRoot, '.cursor', 'skills') : null,
     join(__dirname, 'bundled-skills'),
+    join(__dirname, '..', 'bundled-skills'),
     join(app.getAppPath(), 'src/main/bundled-skills'),
     join(app.getAppPath(), '.cursor', 'skills')
   ]
 
   for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate
+    if (candidate && existsSync(candidate)) return candidate
   }
 
   return null
@@ -132,25 +160,43 @@ function enabledSkillsConfigKey(mode: PipelineMode): keyof ModeEnabledSkillsConf
   return mode
 }
 
-function filterSkillIdsForMode(ids: string[], mode: PipelineMode): string[] {
+function resolveStorageMode(mode: SkillListMode): PipelineMode {
+  return mode === 'writing-style' ? 'create' : mode
+}
+
+function filterSkillIdsForMode(ids: string[], mode: SkillListMode): string[] {
   if (mode === 'optimize') {
     return ids.filter((id) => id === OPTIMIZER_SKILL_ID)
   }
   if (mode === 'batch-optimize') {
     return ids.filter((id) => id === BATCH_OPTIMIZER_SKILL_ID)
   }
-  return ids.filter((id) => id !== OPTIMIZER_SKILL_ID && id !== BATCH_OPTIMIZER_SKILL_ID)
+  if (mode === 'writing-style') {
+    return ids.filter((id) => isWritingStyleSkillId(id))
+  }
+  return ids.filter(
+    (id) =>
+      id !== OPTIMIZER_SKILL_ID &&
+      id !== BATCH_OPTIMIZER_SKILL_ID &&
+      !isWritingStyleSkillId(id)
+  )
 }
 
-function filterLocationsForMode(locations: SkillLocation[], mode: PipelineMode): SkillLocation[] {
+function filterLocationsForMode(locations: SkillLocation[], mode: SkillListMode): SkillLocation[] {
   if (mode === 'optimize') {
     return locations.filter((item) => item.id === OPTIMIZER_SKILL_ID)
   }
   if (mode === 'batch-optimize') {
     return locations.filter((item) => item.id === BATCH_OPTIMIZER_SKILL_ID)
   }
+  if (mode === 'writing-style') {
+    return locations.filter((item) => isWritingStyleSkillId(item.id))
+  }
   return locations.filter(
-    (item) => item.id !== OPTIMIZER_SKILL_ID && item.id !== BATCH_OPTIMIZER_SKILL_ID
+    (item) =>
+      item.id !== OPTIMIZER_SKILL_ID &&
+      item.id !== BATCH_OPTIMIZER_SKILL_ID &&
+      !isWritingStyleSkillId(item.id)
   )
 }
 
@@ -162,9 +208,12 @@ function defaultEnabledSkillsForMode(mode: PipelineMode, allIds: string[]): stri
     return allIds.includes(BATCH_OPTIMIZER_SKILL_ID) ? [BATCH_OPTIMIZER_SKILL_ID] : []
   }
 
-  return filterSkillIdsForMode(
-    allIds.filter((id) => !SKILLS_DISABLED_BY_DEFAULT.has(id)),
-    'create'
+  // Create defaults: domain skills only (writing-style stays off until user enables)
+  return allIds.filter(
+    (id) =>
+      !SKILLS_DISABLED_BY_DEFAULT.has(id) &&
+      id !== OPTIMIZER_SKILL_ID &&
+      id !== BATCH_OPTIMIZER_SKILL_ID
   )
 }
 
@@ -196,15 +245,17 @@ async function persistCreateSkillMigrationIfNeeded(current: string[]): Promise<s
   return migrated
 }
 
-async function getEnabledSkillIds(mode: PipelineMode, allIds: string[]): Promise<string[]> {
+async function getEnabledSkillIds(mode: SkillListMode, locationIds: string[]): Promise<string[]> {
+  const allIds = (await collectSkillLocations()).map((item) => item.id)
   await ensureEnabledSkillsInitialized(allIds)
   const config = await loadConfig()
-  let enabled = config.enabledSkills[enabledSkillsConfigKey(mode)] ?? []
-  if (mode === 'create') {
+  const storageMode = resolveStorageMode(mode)
+  let enabled = config.enabledSkills[enabledSkillsConfigKey(storageMode)] ?? []
+  if (storageMode === 'create') {
     enabled = await persistCreateSkillMigrationIfNeeded(enabled)
   }
   const filtered = filterSkillIdsForMode(
-    enabled.filter((id) => allIds.includes(id)),
+    enabled.filter((id) => locationIds.includes(id)),
     mode
   )
   if (mode === 'batch-optimize' && filtered.length === 0) {
@@ -213,8 +264,12 @@ async function getEnabledSkillIds(mode: PipelineMode, allIds: string[]): Promise
   return filtered
 }
 
+function sanitizePersistedCreateIds(ids: string[]): string[] {
+  return ids.filter((id) => id !== OPTIMIZER_SKILL_ID && id !== BATCH_OPTIMIZER_SKILL_ID)
+}
+
 async function updateEnabledSkillIds(
-  mode: PipelineMode,
+  mode: SkillListMode,
   updater: (current: Set<string>) => void
 ): Promise<void> {
   const allIds = (await collectSkillLocations()).map((item) => item.id)
@@ -225,10 +280,10 @@ async function updateEnabledSkillIds(
     optimize: new Set(config.enabledSkills.optimize),
     batchOptimize: new Set(config.enabledSkills.batchOptimize)
   }
-  updater(next[enabledSkillsConfigKey(mode)])
+  updater(next[enabledSkillsConfigKey(resolveStorageMode(mode))])
   await saveConfig({
     enabledSkills: {
-      create: filterSkillIdsForMode([...next.create], 'create'),
+      create: sanitizePersistedCreateIds([...next.create]),
       optimize: filterSkillIdsForMode([...next.optimize], 'optimize'),
       batchOptimize: filterSkillIdsForMode([...next.batchOptimize], 'batch-optimize')
     },
@@ -236,10 +291,10 @@ async function updateEnabledSkillIds(
   })
 }
 
-export async function listSkills(mode: PipelineMode = 'create'): Promise<SkillItem[]> {
+export async function listSkills(mode: SkillListMode = 'create'): Promise<SkillItem[]> {
   const locations = filterLocationsForMode(await collectSkillLocations(), mode)
-  const allIds = locations.map((item) => item.id)
-  const enabledSkills = await getEnabledSkillIds(mode, allIds)
+  const locationIds = locations.map((item) => item.id)
+  const enabledSkills = await getEnabledSkillIds(mode, locationIds)
   const enabledSet = new Set(enabledSkills)
   const skills: SkillItem[] = []
 
@@ -252,8 +307,9 @@ export async function listSkills(mode: PipelineMode = 'create'): Promise<SkillIt
         name: parsed.name,
         description: parsed.description,
         content: parsed.body,
-        enabled: enabledSet.has(location.id),
-        bundled: location.bundled
+        enabled: isPolishForceSkillId(location.id) ? true : enabledSet.has(location.id),
+        bundled: location.bundled,
+        forced: isPolishForceSkillId(location.id)
       })
     } catch {
       // skip invalid skill folders
@@ -263,7 +319,10 @@ export async function listSkills(mode: PipelineMode = 'create'): Promise<SkillIt
   return skills.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 }
 
-export async function saveSkillItem(skill: SkillItem, mode: PipelineMode = 'create'): Promise<SkillItem> {
+export async function saveSkillItem(skill: SkillItem, mode: SkillListMode = 'create'): Promise<SkillItem> {
+  if (mode === 'writing-style') {
+    throw new Error('写作风格分类仅支持启用内置 Skill，请在「文章创作」中新建自定义 Skill。')
+  }
   const userRoot = getUserSkillsRoot()
   const id = skill.id.trim() || slugify(skill.name)
   if (BUNDLED_SKILL_IDS.has(id)) {
@@ -312,11 +371,18 @@ export async function deleteSkillItem(id: string): Promise<void> {
 export async function setSkillEnabled(
   id: string,
   enabled: boolean,
-  mode: PipelineMode = 'create'
+  mode: SkillListMode = 'create'
 ): Promise<void> {
+  if (isPolishForceSkillId(id)) return
   if (mode === 'optimize' && id !== OPTIMIZER_SKILL_ID) return
   if (mode === 'batch-optimize' && id !== BATCH_OPTIMIZER_SKILL_ID) return
-  if (mode === 'create' && (id === OPTIMIZER_SKILL_ID || id === BATCH_OPTIMIZER_SKILL_ID)) return
+  if (mode === 'writing-style' && !isWritingStyleSkillId(id)) return
+  if (
+    mode === 'create' &&
+    (id === OPTIMIZER_SKILL_ID || id === BATCH_OPTIMIZER_SKILL_ID || isWritingStyleSkillId(id))
+  ) {
+    return
+  }
 
   await updateEnabledSkillIds(mode, (enabledSkills) => {
     if (enabled) enabledSkills.add(id)
@@ -349,6 +415,8 @@ export async function syncCreateSkillsForArticleType(articleType: ArticleTypeSki
 }
 
 async function buildEnabledSkillBundles(mode: PipelineMode): Promise<EnabledSkillBundle[]> {
+  // Writing-style skills are NOT included from settings toggles — they are selected
+  // per conversation in the composer and merged via getCreateSkillBundles.
   const skills = await listSkills(mode)
   return skills
     .filter((item) => item.enabled)
@@ -358,6 +426,40 @@ async function buildEnabledSkillBundles(mode: PipelineMode): Promise<EnabledSkil
       description: skill.description,
       content: skill.content
     }))
+}
+
+export async function loadSkillBundleById(id: string): Promise<EnabledSkillBundle | null> {
+  const location = (await collectSkillLocations()).find((item) => item.id === id)
+  if (!location) return null
+  try {
+    const raw = await readFile(join(location.root, location.id, 'SKILL.md'), 'utf-8')
+    const parsed = parseSkillMarkdown(raw, location.id)
+    return {
+      id: location.id,
+      name: parsed.name,
+      description: parsed.description,
+      content: parsed.body
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Create-pipeline skills: domain skills from settings + optional writing-style Skill
+ * chosen in the composer (ignores settings writing-style toggle).
+ */
+export async function getCreateSkillBundles(
+  writingStyleSkillId?: string | null
+): Promise<EnabledSkillBundle[]> {
+  const domain = await buildEnabledSkillBundles('create')
+  const styleId = writingStyleSkillId?.trim() ?? ''
+  if (!styleId || !isWritingStyleSkillId(styleId) || isPolishForceSkillId(styleId)) return domain
+  if (domain.some((item) => item.id === styleId)) return domain
+
+  const style = await loadSkillBundleById(styleId)
+  if (!style) return domain
+  return [...domain, style]
 }
 
 async function buildEnabledSkillsText(mode: PipelineMode): Promise<string> {

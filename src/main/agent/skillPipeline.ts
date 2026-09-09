@@ -1,10 +1,13 @@
 import {
+  EXPLAINER_VOICE_SKILL_ID,
+  HUMANIZER_SKILL_ID,
   IOS_GEO_SKILL_ID,
   REVIEW_SKILL_ID,
   SEO_GEO_SKILL_ID,
   STREAMING_COMPLIANCE_SKILL_ID,
   STREAMING_DOMAIN_SKILL_ID,
   STREAMING_TOP_SKILL_ID,
+  loadSkillBundleById,
   type EnabledSkillBundle
 } from './skillManager'
 import {
@@ -45,6 +48,29 @@ function bundleById(bundles: EnabledSkillBundle[], id: string): EnabledSkillBund
 
 function bundleContent(bundles: EnabledSkillBundle[], id: string): string {
   return bundleById(bundles, id)?.content ?? ''
+}
+
+function bundlesWithoutVoice(bundles: EnabledSkillBundle[]): EnabledSkillBundle[] {
+  return bundles.filter(
+    (item) => item.id !== EXPLAINER_VOICE_SKILL_ID && item.id !== HUMANIZER_SKILL_ID
+  )
+}
+
+function appendExplainerVoice(base: string, bundles: EnabledSkillBundle[], limit: number): string {
+  const voice = bundleContent(bundles, EXPLAINER_VOICE_SKILL_ID)
+  if (!voice) return base
+  const fragment = truncateSkillText(voice, limit, {
+    preferSection: /句式变化|动词与名词|如何开篇|禁止事项|落笔自检/i
+  })
+  if (!base.trim()) return fragment
+  return `${base}\n\n---\n\n${fragment}`
+}
+
+function voiceCharLimit(step: PipelineSkillStep): number {
+  if (step === 'draft') return 550
+  if (step === 'plan') return 500
+  if (step === 'polish') return 400
+  return 350
 }
 
 function formatBundle(bundle: EnabledSkillBundle): string {
@@ -149,6 +175,40 @@ export function buildFullSkillsText(bundles: EnabledSkillBundle[]): string {
 }
 
 export function getSkillsTextForStep(step: PipelineSkillStep, ctx: SkillPipelineContext): string {
+  if (step === 'outline' || step === 'length') return ''
+
+  const others = bundlesWithoutVoice(ctx.bundles)
+  const core = others.length
+    ? getSkillsTextForStepCore(step, { ...ctx, bundles: others })
+    : ''
+  return appendExplainerVoice(core, ctx.bundles, voiceCharLimit(step))
+}
+
+/** Full Humanizer skill for create-pipeline polish. Not truncated. Embedded mode only. */
+const HUMANIZER_POLISH_ADAPTER = `
+【Humanizer — Embedded mode · 创作润色强制注入】
+This step is the article-creation polish pass ("降低 AI 味"). Use Humanizer in **embedded mode**: return ONLY the final Markdown article. Do not return a critique list, a draft/final pair, or process notes.
+
+Pipeline overrides win when they conflict with Humanizer defaults:
+- Keep every \`#\` / \`##\` / \`###\` heading **verbatim** (text, numbering, order). Ignore Humanizer §17 title-case on existing headings.
+- Keep Quick Answer bullets, numbered how-to steps, comparison tables, FAQ question headings, \`[Image: …]\` placeholders, product names, and SEO Meta if present.
+- You may rewrite sentences and merge or split **paragraphs** inside a section. Do not merge, split, or reorder heading sections.
+- Do not invent facts, URLs, ratings, quotes, or citations.
+- Keep the article language unchanged.
+- Keep useful limits, legal disclaimers, safety notes, and FAQ answers (Humanizer false-positive list).
+`.trim()
+
+export async function getForcedHumanizerPolishText(): Promise<string> {
+  const bundle = await loadSkillBundleById(HUMANIZER_SKILL_ID)
+  if (!bundle) {
+    throw new Error(
+      'Humanizer Skill 未找到（bundled-skills/humanizer/SKILL.md）。文章创作润色去 AI 味阶段必须注入该 Skill。'
+    )
+  }
+  return [HUMANIZER_POLISH_ADAPTER, formatBundle(bundle)].join('\n\n')
+}
+
+function getSkillsTextForStepCore(step: PipelineSkillStep, ctx: SkillPipelineContext): string {
   const { bundles, structureBlock = '', sectionTitle, sectionProductKind, sectionOutlineBody } = ctx
   if (bundles.length === 0) return ''
 

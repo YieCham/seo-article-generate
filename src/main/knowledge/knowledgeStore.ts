@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { randomUUID } from 'crypto'
-import { app } from 'electron'
 import { join } from 'path'
+import { getArticleUserDataDir } from '../paths'
 import {
   MAX_KNOWLEDGE_CONTENT_CHARS,
   MAX_KNOWLEDGE_TITLE_CHARS,
@@ -26,7 +26,7 @@ interface KnowledgeStoreData {
 const EMPTY_STORE: KnowledgeStoreData = { documents: [] }
 
 function getStorePath(): string {
-  return join(app.getPath('userData'), 'knowledge-base.json')
+  return join(getArticleUserDataDir(), 'knowledge-base.json')
 }
 
 function isKnowledgeDoc(value: unknown): value is KnowledgeDoc {
@@ -68,7 +68,7 @@ async function loadStore(): Promise<KnowledgeStoreData> {
 }
 
 async function persistStore(data: KnowledgeStoreData): Promise<void> {
-  await mkdir(app.getPath('userData'), { recursive: true })
+  await mkdir(getArticleUserDataDir(), { recursive: true })
   await writeFile(getStorePath(), JSON.stringify(data, null, 2), 'utf-8')
 }
 

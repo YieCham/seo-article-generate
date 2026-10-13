@@ -7,7 +7,9 @@ import { registerChatIpc } from './ipc/chat'
 import { registerConfigIpc } from './ipc/config'
 import { registerImageIpc } from './ipc/image'
 import { registerIllustrationIpc } from './ipc/illustration'
+import { registerDomainPackIpc } from './ipc/domainPack'
 import { registerKnowledgeIpc } from './ipc/knowledge'
+import { registerInternalLinkIpc } from './ipc/internalLinks'
 import { registerWordPressIpc } from './ipc/wordpress'
 import { attachExternalLinkHandlers, registerWindowIpc } from './ipc/window'
 import {
@@ -82,8 +84,10 @@ export async function bootstrapArticleAgent(
   registerConfigIpc()
   registerImageIpc()
   registerKnowledgeIpc()
+  registerDomainPackIpc()
   registerIllustrationIpc()
   registerWordPressIpc()
+  registerInternalLinkIpc()
 
   if (options.hostWindow) {
     setHostWindow(options.hostWindow)

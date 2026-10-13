@@ -14,6 +14,12 @@ export interface GenerateImageRequest {
   model?: string
 }
 
+export interface EditImageReference {
+  fileName?: string
+  imageDataUrl?: string
+  imageUrl?: string
+}
+
 export interface EditImageRequest {
   prompt: string
   size?: string
@@ -23,6 +29,8 @@ export interface EditImageRequest {
   /** Legacy / fallback data URL */
   imageDataUrl?: string
   imageUrl?: string
+  /** Extra reference images, sent in order as images[].image_url */
+  references?: EditImageReference[]
 }
 
 export interface GenerateImageResult {
@@ -48,13 +56,6 @@ function guessMimeFromB64(b64: string): string {
   if (b64.startsWith('UklGR')) return 'image/webp'
   if (b64.startsWith('R0lGOD')) return 'image/gif'
   return 'image/png'
-}
-
-function guessExt(mimeType: string): string {
-  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return 'jpg'
-  if (mimeType.includes('webp')) return 'webp'
-  if (mimeType.includes('gif')) return 'gif'
-  return 'png'
 }
 
 function toEditsUrl(generationsUrl: string): string {
@@ -102,7 +103,7 @@ async function fetchWithTimeout(
 
 async function resolveSourceImage(
   request: EditImageRequest
-): Promise<{ mimeType: string; buffer: Buffer } | null> {
+): Promise<{ mimeType: string; buffer: Buffer; sourceUrl?: string } | null> {
   if (request.fileName?.trim()) {
     const fromDisk = await readHistoryImageBuffer(request.fileName.trim())
     if (fromDisk) return fromDisk
@@ -165,17 +166,21 @@ function parseImageApiPayload(
     return { ok: false, message: `${failLabel}接口未返回图片数据。` }
   }
 
+  if (item.url?.trim()) {
+    return { ok: true, remoteUrl: item.url.trim() }
+  }
+
   if (item.b64_json?.trim()) {
     const b64 = item.b64_json.trim()
     const mimeType = guessMimeFromB64(b64)
     return { ok: true, buffer: Buffer.from(b64, 'base64'), mimeType }
   }
 
-  if (item.url?.trim()) {
-    return { ok: true, remoteUrl: item.url.trim() }
-  }
-
   return { ok: false, message: `${failLabel}接口未返回 b64_json 或 url。` }
+}
+
+function isHttpUrl(value: string | undefined): value is string {
+  return Boolean(value && /^https?:\/\//i.test(value.trim()))
 }
 
 async function persistAndBuildResult(input: {
@@ -184,13 +189,15 @@ async function persistAndBuildResult(input: {
   model: string
   buffer: Buffer
   mimeType: string
+  sourceUrl?: string
 }): Promise<GenerateImageResult> {
   const saved = await saveImageHistoryFromBuffer({
     prompt: input.prompt,
     size: input.size,
     model: input.model,
     mimeType: input.mimeType,
-    buffer: input.buffer
+    buffer: input.buffer,
+    sourceUrl: input.sourceUrl
   })
 
   return {
@@ -239,7 +246,7 @@ export async function generateImage(request: GenerateImageRequest = {}): Promise
   }
 
   const size = (request.size ?? imageGen.size).trim() || '1024x1024'
-  const model = (request.model ?? imageGen.model).trim() || 'gpt-image-2'
+  const model = (request.model ?? imageGen.model).trim() || 'gpt-image-2.5'
 
   try {
     const response = await fetchWithTimeout(imageGen.apiUrl, {
@@ -252,7 +259,7 @@ export async function generateImage(request: GenerateImageRequest = {}): Promise
         model,
         prompt,
         size,
-        response_format: 'b64_json'
+        response_format: 'url'
       })
     })
 
@@ -270,7 +277,8 @@ export async function generateImage(request: GenerateImageRequest = {}): Promise
         size,
         model,
         buffer: downloaded.buffer,
-        mimeType: downloaded.mimeType
+        mimeType: downloaded.mimeType,
+        sourceUrl: parsed.remoteUrl
       })
     }
 
@@ -287,8 +295,25 @@ export async function generateImage(request: GenerateImageRequest = {}): Promise
   }
 }
 
+const MAX_REFERENCE_IMAGES = 8
+
+async function resolveReferenceImageUrl(reference: EditImageReference): Promise<string | null> {
+  if (isHttpUrl(reference.imageUrl)) return reference.imageUrl.trim()
+
+  const source = await resolveSourceImage({
+    prompt: '',
+    fileName: reference.fileName,
+    imageDataUrl: reference.imageDataUrl,
+    imageUrl: reference.imageUrl
+  })
+  if (isHttpUrl(source?.sourceUrl)) return source.sourceUrl.trim()
+  if (!source) return null
+  return `data:${source.mimeType};base64,${source.buffer.toString('base64')}`
+}
+
 /**
- * Image-to-image edit via OpenAI-compatible /v1/images/edits (multipart).
+ * Image-to-image via /v1/images/edits.
+ * JSON body with images[].image_url, separate from text-to-image /images/generations.
  */
 export async function editImage(request: EditImageRequest): Promise<GenerateImageResult> {
   const config = await loadConfig()
@@ -307,33 +332,48 @@ export async function editImage(request: EditImageRequest): Promise<GenerateImag
     return { ok: false, message: '请输入编辑提示词。' }
   }
 
-  const source = await resolveSourceImage(request)
-  if (!source) {
+  const listedReferences = (request.references ?? []).filter(
+    (item) => item.fileName?.trim() || item.imageDataUrl?.trim() || item.imageUrl?.trim()
+  )
+  const referenceInputs =
+    listedReferences.length > 0
+      ? listedReferences.slice(0, MAX_REFERENCE_IMAGES)
+      : [
+          {
+            fileName: request.fileName,
+            imageDataUrl: request.imageDataUrl,
+            imageUrl: request.imageUrl
+          }
+        ]
+
+  const imageUrls: string[] = []
+  for (const reference of referenceInputs) {
+    const imageUrl = await resolveReferenceImageUrl(reference)
+    if (imageUrl) imageUrls.push(imageUrl)
+  }
+
+  if (imageUrls.length === 0) {
     return { ok: false, message: '缺少可编辑的预览图数据。' }
   }
 
   const size = (request.size ?? imageGen.size).trim() || '1024x1024'
-  const model = (request.model ?? imageGen.model).trim() || 'gpt-image-2'
+  const model = (request.model ?? imageGen.model).trim() || 'gpt-image-2.5'
   const editsUrl = toEditsUrl(imageGen.apiUrl)
 
   try {
-    const form = new FormData()
-    form.append('model', model)
-    form.append('prompt', prompt)
-    form.append('size', size)
-    form.append('response_format', 'b64_json')
-    form.append(
-      'image',
-      new Blob([new Uint8Array(source.buffer)], { type: source.mimeType }),
-      `source.${guessExt(source.mimeType)}`
-    )
-
     const response = await fetchWithTimeout(editsUrl, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${imageGen.apiKey}`
+        Authorization: `Bearer ${imageGen.apiKey}`,
+        'Content-Type': 'application/json'
       },
-      body: form
+      body: JSON.stringify({
+        model,
+        prompt,
+        images: imageUrls.map((image_url) => ({ image_url })),
+        size,
+        response_format: 'url'
+      })
     })
 
     const text = await response.text()
@@ -350,7 +390,8 @@ export async function editImage(request: EditImageRequest): Promise<GenerateImag
         size,
         model,
         buffer: downloaded.buffer,
-        mimeType: downloaded.mimeType
+        mimeType: downloaded.mimeType,
+        sourceUrl: parsed.remoteUrl
       })
     }
 

@@ -48,9 +48,60 @@ export interface LlmCallOptions {
   label?: string
   /** OpenAI-compatible JSON mode — use for tiny structured outputs (e.g. SEO meta). */
   jsonObject?: boolean
+  /**
+   * Do not substitute reasoning/thinking text when `content` is empty.
+   * Needed for edits where an empty reply means "delete this".
+   */
+  visibleContentOnly?: boolean
+  /**
+   * Mark the first system message for prompt caching (Anthropic / OpenRouter).
+   * DeepSeek / Gemini / OpenAI still benefit when that system prefix is byte-identical across calls.
+   */
+  cacheSystemPrefix?: boolean
   onRetry?: (info: LlmRetryInfo) => void
   /** @deprecated Prefer onRetry — still invoked for retries (incl. non-429). */
   onRateLimitRetry?: (info: LlmRetryInfo) => void
+}
+
+type ApiChatMessage =
+  | ChatMessage
+  | {
+      role: ChatMessage['role']
+      content: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }>
+    }
+
+function shouldMarkSystemCache(baseUrl: string): boolean {
+  const url = baseUrl.toLowerCase()
+  return url.includes('openrouter.ai') || url.includes('anthropic.com') || url.includes('api.anthropic')
+}
+
+function toApiMessages(
+  messages: ChatMessage[],
+  config: LlmConfig,
+  options?: LlmCallOptions
+): ApiChatMessage[] {
+  const system = messages[0]
+  const enable =
+    options?.cacheSystemPrefix === true &&
+    shouldMarkSystemCache(config.baseUrl) &&
+    system?.role === 'system' &&
+    system.content.length >= 800
+
+  if (!enable) return messages
+
+  return [
+    {
+      role: 'system',
+      content: [
+        {
+          type: 'text',
+          text: system.content,
+          cache_control: { type: 'ephemeral' }
+        }
+      ]
+    },
+    ...messages.slice(1)
+  ]
 }
 
 export interface LlmRetryInfo {
@@ -107,7 +158,7 @@ function buildChatCompletionBody(
 ): string {
   return JSON.stringify({
     model: config.model,
-    messages,
+    messages: toApiMessages(messages, config, options),
     temperature: options?.temperature ?? config.temperature,
     ...(maxTokens != null ? { max_tokens: maxTokens } : {}),
     ...(options?.jsonObject ? { response_format: { type: 'json_object' } } : {}),
@@ -140,7 +191,12 @@ export async function chatCompletion(
 
       if (response.ok) {
         const data = (await response.json()) as CompletionResponse
-        const content = extractAssistantText(data.choices?.[0]?.message)
+        const message = data.choices?.[0]?.message
+        const content = options?.visibleContentOnly
+          ? typeof message?.content === 'string'
+            ? message.content.trim()
+            : ''
+          : extractAssistantText(message)
         const finishReason = data.choices?.[0]?.finish_reason
 
         await recordLlmTokenUsage({

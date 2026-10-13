@@ -1,3 +1,5 @@
+import { headingAnchorId, isSeoMetaHeading } from './inPageNav'
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -21,8 +23,10 @@ function inlineMarkdown(text: string): string {
   )
   out = out.replace(
     /\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g,
-    (_, label: string, href: string) =>
-      stash(`<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`)
+    (_, label: string, href: string) => {
+      const linkAttrs = href.startsWith('#') ? '' : ' target="_blank" rel="noopener noreferrer"'
+      return stash(`<a href="${escapeHtml(href)}"${linkAttrs}>${escapeHtml(label)}</a>`)
+    }
   )
 
   out = escapeHtml(out)
@@ -60,9 +64,10 @@ function closeList(kind: 'ul' | 'ol' | null): string {
   return ''
 }
 
-export function markdownToHtml(markdown: string): string {
+export function markdownToHtml(markdown: string, assignHeadingIds = true): string {
   const source = markdown.replace(/\r\n/g, '\n').trim()
   if (!source) return ''
+  const headingIds = new Set<string>()
 
   const fences: string[] = []
   const unfenced = source.replace(/```[\w-]*\n([\s\S]*?)```/g, (_, code: string) => {
@@ -86,7 +91,7 @@ export function markdownToHtml(markdown: string): string {
 
   const flushQuote = (): void => {
     if (quoteLines.length === 0) return
-    html.push(`<blockquote>${markdownToHtml(quoteLines.join('\n'))}</blockquote>`)
+    html.push(`<blockquote>${markdownToHtml(quoteLines.join('\n'), false)}</blockquote>`)
     quoteLines = []
   }
 
@@ -143,7 +148,13 @@ export function markdownToHtml(markdown: string): string {
       flushList()
       flushTable()
       const level = heading[1].length
-      html.push(`<h${level}>${inlineMarkdown(heading[2].trim())}</h${level}>`)
+      const title = heading[2].trim()
+      if (assignHeadingIds && level === 2 && !isSeoMetaHeading(title)) {
+        const id = headingAnchorId(title, headingIds)
+        html.push(`<h2 id="${escapeHtml(id)}">${inlineMarkdown(title)}</h2>`)
+      } else {
+        html.push(`<h${level}>${inlineMarkdown(title)}</h${level}>`)
+      }
       continue
     }
 

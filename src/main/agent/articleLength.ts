@@ -1,5 +1,6 @@
 import { maxTokensForSectionDraft, type SectionDraftTier } from '../config/llmTokenLimits'
-import { stripOuterCodeFence } from '../../shared/normalizeArticleMarkdown'
+import type { ArticleType } from '../../shared/domainPacks'
+import { sanitizeHeadingTitle, stripOuterCodeFence } from '../../shared/normalizeArticleMarkdown'
 
 export const MIN_ARTICLE_WORDS = 1000
 export const MAX_ARTICLE_WORDS = 1800
@@ -32,9 +33,10 @@ export interface ArticleLengthBounds {
 
 export function getArticleLengthBounds(
   skillsText?: string,
-  enabledSkillIds?: string[]
+  enabledSkillIds?: string[],
+  format?: ArticleType
 ): ArticleLengthBounds {
-  if (isTopListArticle(skillsText, enabledSkillIds)) {
+  if (format === 'top-rank' || (!format && isTopListArticle(skillsText, enabledSkillIds))) {
     return {
       min: TOP_LIST_MIN_ARTICLE_WORDS,
       max: TOP_LIST_MAX_ARTICLE_WORDS,
@@ -99,8 +101,12 @@ export const CONTENT_READABILITY_GUIDANCE = `
 - **Anti-promo rule:** when a product name is specified, do **not** name it in Quick Answer (use vague phrasing there); mention the full name in designated later sections (product Part, comparison, top-list entry, conclusion) and in generic Parts only when content naturally links; do not repeat the name in every paragraph or FAQ answer.
 `.trim()
 
-export function getArticleLengthPromptBlock(skillsText?: string, enabledSkillIds?: string[]): string {
-  const bounds = getArticleLengthBounds(skillsText, enabledSkillIds)
+export function getArticleLengthPromptBlock(
+  skillsText?: string,
+  enabledSkillIds?: string[],
+  format?: ArticleType
+): string {
+  const bounds = getArticleLengthBounds(skillsText, enabledSkillIds, format)
   return `${buildArticleLengthGuidance(bounds)}\n\n${CONTENT_READABILITY_GUIDANCE}`
 }
 
@@ -108,19 +114,9 @@ export function isIntroductionSection(title: string): boolean {
   return /^introduction$/i.test(normalizeHeadingTitle(title))
 }
 
-/** Strip wrapping emphasis/code markers often left on ## titles by models. */
+/** Strip list markers, nested hashes, and stray backticks left on ## titles. */
 export function normalizeHeadingTitle(title: string): string {
-  let t = title.trim()
-  for (let i = 0; i < 4; i += 1) {
-    const next = t
-      .replace(/^\*{1,3}\s*([\s\S]*?)\s*\*{1,3}$/, '$1')
-      .replace(/^_{1,3}\s*([\s\S]*?)\s*_{1,3}$/, '$1')
-      .replace(/^`+\s*([\s\S]*?)\s*`+$/, '$1')
-      .trim()
-    if (next === t) break
-    t = next
-  }
-  return t.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '').trim()
+  return sanitizeHeadingTitle(title)
 }
 
 export function isConclusionSection(title: string): boolean {

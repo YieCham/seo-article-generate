@@ -1,3 +1,5 @@
+import { stripCommentRegionTail } from '../../shared/commentRegion'
+
 interface FirecrawlScrapeResponse {
   success?: boolean
   data?: {
@@ -22,29 +24,7 @@ export const OPTIMIZE_MAX_MARKDOWN_CHARS = 28000
 
 /** Remove WordPress comment blocks and other CMS footer noise before section parsing. */
 export function stripScrapedMarkdownJunk(markdown: string): string {
-  let text = markdown.trim()
-  if (!text) return text
-
-  const cutPatterns = [
-    /(?:^|\n)#{1,2}\s+Leave a Reply\b/im,
-    /(?:^|\n)#{1,2}\s+Related Posts?\b/im,
-    /(?:^|\n)#{1,2}\s+You May Also Like\b/im,
-    /(?:^|\n)#{1,2}\s+Comments?\s*$/im
-  ]
-
-  let cutAt = -1
-  for (const pattern of cutPatterns) {
-    const match = pattern.exec(text)
-    if (match && match.index >= 0) {
-      if (cutAt < 0 || match.index < cutAt) cutAt = match.index
-    }
-  }
-
-  if (cutAt >= 0 && cutAt > text.length * 0.25) {
-    text = text.slice(0, cutAt).trimEnd()
-  }
-
-  return text
+  return stripCommentRegionTail(markdown)
 }
 
 function truncateMarkdown(text: string, maxChars: number): string {

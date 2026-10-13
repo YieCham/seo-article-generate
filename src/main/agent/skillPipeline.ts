@@ -15,6 +15,7 @@ import {
   pickSkillFragmentForSection,
   truncateSkillText
 } from './skillSummary'
+import type { ArticleType } from '../../shared/domainPacks'
 import type { DraftSectionProductKind } from './productMention'
 import { sectionOutlineIsMultiMethod } from './outlineSkeleton'
 
@@ -33,6 +34,7 @@ export interface SkillPipelineContext {
   sectionTitle?: string
   sectionProductKind?: DraftSectionProductKind
   sectionOutlineBody?: string
+  format?: ArticleType
 }
 
 const STREAMING_SKILL_IDS = new Set([
@@ -208,8 +210,21 @@ export async function getForcedHumanizerPolishText(): Promise<string> {
   return [HUMANIZER_POLISH_ADAPTER, formatBundle(bundle)].join('\n\n')
 }
 
+function reviewPathText(bundles: EnabledSkillBundle[]): string {
+  const review = reviewSkillText(bundles)
+  const compliance = bundleContent(bundles, STREAMING_COMPLIANCE_SKILL_ID)
+  return [review, compliance].filter(Boolean).join('\n\n---\n\n')
+}
+
 function getSkillsTextForStepCore(step: PipelineSkillStep, ctx: SkillPipelineContext): string {
-  const { bundles, structureBlock = '', sectionTitle, sectionProductKind, sectionOutlineBody } = ctx
+  const {
+    bundles,
+    structureBlock = '',
+    sectionTitle,
+    sectionProductKind,
+    sectionOutlineBody,
+    format
+  } = ctx
   if (bundles.length === 0) return ''
 
   if (step === 'outline' || step === 'length') return ''
@@ -226,7 +241,35 @@ function getSkillsTextForStepCore(step: PipelineSkillStep, ctx: SkillPipelineCon
     return truncateSkillText(optimizer, 600)
   }
 
-  if (isStreamingPack(bundles)) {
+  const useReviewPath =
+    format === 'review' || (!format && (isReviewPack(bundles) || Boolean(reviewSkillText(bundles))))
+  const useStreamingPath =
+    format !== 'review' && isStreamingPack(bundles) && (format === 'how-to' || format === 'top-rank' || !format)
+  const topList = format === 'top-rank' || (!format && isTopListMode(bundles))
+
+  if (useReviewPath && reviewSkillText(bundles)) {
+    const review = reviewPathText(bundles)
+    switch (step) {
+      case 'extract':
+        return truncateSkillText(review, 700, { preferSection: /原则|角度|E-E-A-T|合规|敏感词/i })
+      case 'plan':
+        return truncateSkillText(review, 900, { preferSection: /规划|角度|禁止|标题|H2|合规/i })
+      case 'draft': {
+        const base = pickSkillFragmentForSection(sectionTitle ?? '', review)
+        return buildSkillSummaryForDraft(
+          base,
+          draftStructureBlock(structureBlock, sectionProductKind, sectionTitle, sectionOutlineBody),
+          'draft'
+        )
+      }
+      case 'optimize':
+        return truncateSkillText(review, 700)
+      default:
+        return ''
+    }
+  }
+
+  if (useStreamingPath) {
     const domain = streamingDomainText(bundles)
     const compliance = bundleContent(bundles, STREAMING_COMPLIANCE_SKILL_ID)
     const top = bundleContent(bundles, STREAMING_TOP_SKILL_ID)
@@ -236,13 +279,13 @@ function getSkillsTextForStepCore(step: PipelineSkillStep, ctx: SkillPipelineCon
         const parts = [
           compliance ? truncateSkillText(compliance, 450, { preferSection: /合规|敏感词|禁止/i }) : '',
           domain ? truncateSkillText(domain, 650, { preferSection: /E-E-A-T|竞品|关键词/i }) : '',
-          top ? truncateSkillText(top, 400) : ''
+          topList && top ? truncateSkillText(top, 400) : ''
         ].filter(Boolean)
         return parts.join('\n\n')
       }
       case 'plan':
         return truncateSkillText(
-          isTopListMode(bundles) && top
+          topList && top
             ? [top, domain].filter(Boolean).join('\n\n')
             : [domain, top].filter(Boolean).join('\n\n'),
           1000,
@@ -251,7 +294,7 @@ function getSkillsTextForStepCore(step: PipelineSkillStep, ctx: SkillPipelineCon
       case 'draft': {
         const base = pickSkillFragmentForSection(
           sectionTitle ?? '',
-          isTopListMode(bundles) && top
+          topList && top
             ? [top, domain, compliance].filter(Boolean).join('\n\n---\n\n')
             : streamingDraftBase(bundles)
         )
@@ -263,28 +306,6 @@ function getSkillsTextForStepCore(step: PipelineSkillStep, ctx: SkillPipelineCon
       }
       case 'optimize':
         return truncateSkillText(streamingDraftBase(bundles), 800)
-      default:
-        return ''
-    }
-  }
-
-  if (isReviewPack(bundles)) {
-    const review = reviewSkillText(bundles)
-    switch (step) {
-      case 'extract':
-        return truncateSkillText(review, 500, { preferSection: /原则|角度|E-E-A-T/i })
-      case 'plan':
-        return truncateSkillText(review, 800, { preferSection: /规划|角度|禁止|标题|H2/i })
-      case 'draft': {
-        const base = pickSkillFragmentForSection(sectionTitle ?? '', review)
-        return buildSkillSummaryForDraft(
-          base,
-          draftStructureBlock(structureBlock, sectionProductKind, sectionTitle, sectionOutlineBody),
-          'draft'
-        )
-      }
-      case 'optimize':
-        return truncateSkillText(review, 700)
       default:
         return ''
     }

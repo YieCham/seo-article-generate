@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { QuickPicksConfig } from '../../env.d'
 import { ARTICLE_TYPE_OPTIONS, type ArticleType } from '../../constants/articleTypes'
+import { lookupDomainPack, type DomainPack, type DomainPackId } from '../../../../shared/domainPacks'
 import type { BatchDialogMode } from '../../constants/writeMode'
 import { OUTPUT_LANGUAGE_OPTIONS, type OutputLanguageCode } from '../../constants/outputLanguage'
 import { parseBatchTopics } from '../../utils/parseBatchTopics'
@@ -12,6 +13,8 @@ interface BatchWriteDialogProps {
   quickPicks: QuickPicksConfig
   selectedProductId: string
   outputLanguage: OutputLanguageCode
+  domainPackId: DomainPackId
+  domainPacks: DomainPack[]
   articleType: ArticleType
   draftExtra: string
   onClose: () => void
@@ -58,6 +61,8 @@ export default function BatchWriteDialog({
   quickPicks,
   selectedProductId,
   outputLanguage,
+  domainPackId,
+  domainPacks,
   articleType,
   draftExtra,
   onClose,
@@ -98,6 +103,7 @@ export default function BatchWriteDialog({
     quickPicks.products.find((item) => item.id === selectedProductId)?.label ?? '未选择'
   const articleTypeLabel =
     ARTICLE_TYPE_OPTIONS.find((item) => item.value === articleType)?.label ?? articleType
+  const domainPackLabel = lookupDomainPack(domainPackId, domainPacks).name
   const languageLabel =
     OUTPUT_LANGUAGE_OPTIONS.find((item) => item.value === outputLanguage)?.label ?? outputLanguage
   const panelDisabled = disabled
@@ -132,6 +138,7 @@ export default function BatchWriteDialog({
         <div className="batch-create-options">
           <span>产品：{productLabel}</span>
           <span>语言：{languageLabel}</span>
+          {mode === 'create' ? <span>领域：{domainPackLabel}</span> : null}
           {mode === 'create' ? <span>类型：{articleTypeLabel}</span> : null}
         </div>
 

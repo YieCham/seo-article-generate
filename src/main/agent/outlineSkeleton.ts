@@ -1,3 +1,4 @@
+import type { ArticleType } from '../../shared/domainPacks'
 import { parseTopListCount, shouldApplyTopListStructure } from './topListStructure'
 import { shouldApplyReviewStructure } from './reviewStructure'
 import type { ArticleLengthBounds } from './articleLength'
@@ -162,12 +163,15 @@ export function compactInternalPlan(plan: string, maxChars = 2400): string {
 export function estimateOutlineSectionCount(
   topic: string,
   skillsText: string,
-  enabledSkillIds?: string[]
+  enabledSkillIds?: string[],
+  format?: ArticleType
 ): number {
-  if (shouldApplyTopListStructure(skillsText, enabledSkillIds)) {
+  if (format === 'top-rank' || (!format && shouldApplyTopListStructure(skillsText, enabledSkillIds))) {
     return Math.min(12, parseTopListCount(topic) + 5)
   }
-  if (shouldApplyReviewStructure(skillsText, enabledSkillIds)) return 10
+  if (format === 'review' || (!format && shouldApplyReviewStructure(skillsText, enabledSkillIds))) {
+    return 10
+  }
   return 6
 }
 

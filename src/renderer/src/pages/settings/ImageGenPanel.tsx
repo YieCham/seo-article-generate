@@ -16,9 +16,9 @@ export default function ImageGenPanel({
   onSave
 }: ImageGenPanelProps) {
   const imageGen: ImageGenConfig = config.imageGen ?? {
-    apiUrl: 'https://uuapi.shop/v1/images/generations',
+    apiUrl: 'https://uuapi.net/v1/images/generations',
     apiKey: '',
-    model: 'gpt-image-2',
+    model: 'gpt-image-2.5',
     size: '1024x1024',
     defaultPrompt: ''
   }
@@ -33,16 +33,17 @@ export default function ImageGenPanel({
   return (
     <>
       <p className="field-hint" style={{ marginTop: 0 }}>
-        配置 OpenAI 兼容的图片生成接口。左侧栏「绘图」会使用此处的地址、密钥、模型与默认尺寸。
+        文生图使用下方地址（/v1/images/generations）。图生图、编辑和「保持风格」会自动改用同主机的
+        /v1/images/edits。
       </p>
 
       <label>
-        API 地址（完整 URL）
+        文生图 API 地址（完整 URL）
         <input
           type="text"
           value={imageGen.apiUrl}
           onChange={(event) => patch({ apiUrl: event.target.value })}
-          placeholder="https://uuapi.shop/v1/images/generations"
+          placeholder="https://uuapi.net/v1/images/generations"
           autoComplete="off"
         />
       </label>
@@ -65,7 +66,7 @@ export default function ImageGenPanel({
             type="text"
             value={imageGen.model}
             onChange={(event) => patch({ model: event.target.value })}
-            placeholder="gpt-image-2"
+            placeholder="gpt-image-2.5"
             autoComplete="off"
           />
         </label>

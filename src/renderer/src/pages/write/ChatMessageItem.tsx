@@ -6,7 +6,7 @@ import { formatPlanningMarkdown } from './planningContent'
 import { getMarkdownRangeFromDomSelection } from '../../utils/markdownSourceMap'
 import { projectRenderedRangeToSource } from '../../utils/markdownSelection'
 import { getArticleCopyMarkdown } from '../../utils/articleCopy'
-import { normalizeArticleMarkdown } from '../../../../shared/normalizeArticleMarkdown'
+import { finalizeArticleMarkdown } from '../../../../shared/normalizeArticleMarkdown'
 import { IconCopyArticle, IconIllustration, IconMessage, IconWordPress } from '../../components/Icons'
 import type { WordPressDraftBinding } from '../../../../shared/wordpress'
 
@@ -46,7 +46,7 @@ export default function ChatMessageItem({
     const root = markdownRef.current
     if (!root || !onReviseSelectionChange) return false
 
-    const mappingSource = normalizeArticleMarkdown(message.content)
+    const mappingSource = finalizeArticleMarkdown(message.content, { preserveStructure: true })
     const range = getMarkdownRangeFromDomSelection(root, mappingSource)
     if (!range) {
       return false
@@ -61,67 +61,69 @@ export default function ChatMessageItem({
       text: projected.text,
       displayText: range.displayText
     }
+    const previous = lastSelectionRef.current
+    if (
+      previous &&
+      previous.start === next.start &&
+      previous.end === next.end &&
+      previous.displayText === next.displayText
+    ) {
+      return true
+    }
     lastSelectionRef.current = next
     onReviseSelectionChange(next)
     return true
   }, [message.content, onReviseSelectionChange])
 
-  const restoreLastSelection = useCallback((): void => {
-    if (lastSelectionRef.current) {
-      onReviseSelectionChange?.(lastSelectionRef.current)
-    }
-  }, [onReviseSelectionChange])
+  const draggingRef = useRef(false)
 
   useEffect(() => {
     if (!reviseSelectionEnabled) {
       lastSelectionRef.current = null
+      draggingRef.current = false
       return
     }
 
+    const handlePointerDown = (event: PointerEvent): void => {
+      const root = markdownRef.current
+      draggingRef.current = Boolean(root && event.target instanceof Node && root.contains(event.target))
+    }
+
     const handleSelectionChange = (): void => {
+      // Dragging updates the DOM range continuously. Committing on each
+      // selectionchange re-renders the article and collapses the highlight.
+      if (draggingRef.current) return
       applyDomSelection()
     }
 
-    const handlePointerUp = (event: globalThis.MouseEvent): void => {
-      window.requestAnimationFrame(() => {
-        if (!markdownRef.current || !onReviseSelectionChange) return
+    const handlePointerUp = (event: PointerEvent): void => {
+      const wasDragging = draggingRef.current
+      draggingRef.current = false
+      if (!markdownRef.current || !onReviseSelectionChange) return
 
-        if (applyDomSelection()) return
+      if (applyDomSelection()) return
 
-        const target = event.target
-        const inArticle = target instanceof Node && markdownRef.current.contains(target)
-        const selection = window.getSelection()
-        const visibleText = selection?.toString().trim() ?? ''
-        const hasVisibleSelection = Boolean(selection && !selection.isCollapsed && visibleText)
+      const inArticle = event.target instanceof Node && markdownRef.current.contains(event.target)
+      if (!wasDragging && !inArticle) return
 
-        if (inArticle) {
-          if (hasVisibleSelection || lastSelectionRef.current) {
-            if (
-              !hasVisibleSelection ||
-              visibleText.length <= (lastSelectionRef.current?.displayText.length ?? 0) + 2
-            ) {
-              restoreLastSelection()
-            }
-            return
-          }
-
-          lastSelectionRef.current = null
-          onReviseSelectionChange(null)
-          return
-        }
-
-        restoreLastSelection()
-      })
+      const selection = window.getSelection()
+      const visible = Boolean(selection && !selection.isCollapsed && selection.toString().trim())
+      if (!visible) {
+        lastSelectionRef.current = null
+        onReviseSelectionChange(null)
+      }
     }
 
+    document.addEventListener('pointerdown', handlePointerDown)
     document.addEventListener('selectionchange', handleSelectionChange)
-    document.addEventListener('mouseup', handlePointerUp)
+    document.addEventListener('pointerup', handlePointerUp)
 
     return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('selectionchange', handleSelectionChange)
-      document.removeEventListener('mouseup', handlePointerUp)
+      document.removeEventListener('pointerup', handlePointerUp)
     }
-  }, [applyDomSelection, onReviseSelectionChange, restoreLastSelection, reviseSelectionEnabled])
+  }, [applyDomSelection, onReviseSelectionChange, reviseSelectionEnabled])
 
   useEffect(() => {
     if (!reviseSelectionEnabled) return

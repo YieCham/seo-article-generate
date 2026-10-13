@@ -18,6 +18,8 @@ export interface ImageHistoryItem {
   createdAt: number
   fileName: string
   mimeType: string
+  /** Public URL returned by the image API, reused as image-to-image reference */
+  sourceUrl?: string
 }
 
 export interface ImageHistoryItemView extends ImageHistoryItem {
@@ -35,6 +37,7 @@ export interface SaveImageHistoryBufferInput {
   model: string
   mimeType: string
   buffer: Buffer
+  sourceUrl?: string
 }
 
 const EMPTY_STORE: ImageHistoryStoreData = { items: [] }
@@ -160,7 +163,7 @@ async function saveIndex(data: ImageHistoryStoreData): Promise<void> {
 }
 
 export async function saveImageHistoryFromBuffer(
-  input: SaveImageHistoryBufferInput
+  input: SaveImageHistoryBufferInput & { recordInHistory?: boolean }
 ): Promise<ImageHistoryItem> {
   const id = randomUUID()
   const fileName = `${id}.${guessExt(input.mimeType)}`
@@ -168,6 +171,7 @@ export async function saveImageHistoryFromBuffer(
   await mkdir(dir, { recursive: true })
   await writeFile(join(dir, fileName), input.buffer)
 
+  const sourceUrl = input.sourceUrl?.trim()
   const item: ImageHistoryItem = {
     id,
     prompt: input.prompt.trim(),
@@ -175,10 +179,13 @@ export async function saveImageHistoryFromBuffer(
     model: input.model.trim(),
     createdAt: Date.now(),
     fileName,
-    mimeType: input.mimeType
+    mimeType: input.mimeType,
+    ...(sourceUrl && /^https?:\/\//i.test(sourceUrl) ? { sourceUrl } : {})
   }
 
   const store = await loadIndex()
+  if (input.recordInHistory === false) return item
+
   const nextItems = [item, ...store.items]
   const overflow = nextItems.slice(MAX_HISTORY_ITEMS)
   const kept = nextItems.slice(0, MAX_HISTORY_ITEMS)
@@ -200,7 +207,10 @@ function mimeFromPath(filePath: string): string | null {
   return null
 }
 
-export async function importLocalImage(filePath: string): Promise<ImageHistoryItemView> {
+export async function importLocalImage(
+  filePath: string,
+  options?: { recordInHistory?: boolean }
+): Promise<ImageHistoryItemView> {
   const mimeType = mimeFromPath(filePath)
   if (!mimeType) {
     throw new Error('仅支持 PNG、JPG、WebP、GIF 图片')
@@ -212,11 +222,12 @@ export async function importLocalImage(filePath: string): Promise<ImageHistoryIt
   }
 
   const item = await saveImageHistoryFromBuffer({
-    prompt: '上传图片',
+    prompt: options?.recordInHistory === false ? '参考图' : '上传图片',
     size: '1024x1024',
     model: '',
     mimeType,
-    buffer
+    buffer,
+    recordInHistory: options?.recordInHistory
   })
 
   return {
@@ -227,15 +238,16 @@ export async function importLocalImage(filePath: string): Promise<ImageHistoryIt
 
 export async function readHistoryImageBuffer(
   fileName: string
-): Promise<{ mimeType: string; buffer: Buffer } | null> {
+): Promise<{ mimeType: string; buffer: Buffer; sourceUrl?: string } | null> {
   if (!isSafeHistoryFileName(fileName)) return null
   const store = await loadIndex()
   const item = store.items.find((entry) => entry.fileName === fileName)
   try {
     const buffer = await readFile(join(getHistoryDir(), fileName))
     return {
-      mimeType: item?.mimeType || 'image/png',
-      buffer
+      mimeType: item?.mimeType || mimeFromFileName(fileName),
+      buffer,
+      sourceUrl: item?.sourceUrl
     }
   } catch {
     return null

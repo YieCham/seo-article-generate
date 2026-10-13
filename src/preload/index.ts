@@ -20,6 +20,9 @@ export interface GenerateArticleRequest {
   llmPresetId?: string
   llmModel?: string
   writingStyleSkillId?: string
+  domainPackId?: string
+  articleType?: string
+  productId?: string
   reuseResearch?: CreateResearchPack
 }
 
@@ -106,6 +109,7 @@ export interface InsertIllustrationsRequest {
 export interface GenerateArticleResult {
   ok: boolean
   message?: string
+  article?: string
 }
 
 export interface LlmConfig {
@@ -199,6 +203,12 @@ export interface GenerateImageRequest {
   model?: string
 }
 
+export interface EditImageReference {
+  fileName?: string
+  imageDataUrl?: string
+  imageUrl?: string
+}
+
 export interface EditImageRequest {
   prompt: string
   size?: string
@@ -206,6 +216,7 @@ export interface EditImageRequest {
   fileName?: string
   imageDataUrl?: string
   imageUrl?: string
+  references?: EditImageReference[]
 }
 
 export interface GenerateImageResult {
@@ -235,6 +246,7 @@ export interface ImportImageResult {
   canceled?: boolean
   message?: string
   item?: ImageHistoryItem
+  items?: ImageHistoryItem[]
 }
 
 export interface SkillItem {
@@ -245,6 +257,7 @@ export interface SkillItem {
   enabled: boolean
   bundled?: boolean
   forced?: boolean
+  packLocked?: boolean
 }
 
 export interface KnowledgeDoc {
@@ -396,6 +409,8 @@ const api = {
   editImage: (request: EditImageRequest): Promise<GenerateImageResult> =>
     ipcRenderer.invoke('image:edit', request),
   importImage: (): Promise<ImportImageResult> => ipcRenderer.invoke('image:import'),
+  importReferenceImages: (): Promise<ImportImageResult> =>
+    ipcRenderer.invoke('image:importReferences'),
   listImageHistory: (): Promise<ImageHistoryItem[]> => ipcRenderer.invoke('image:history:list'),
   deleteImageHistoryItem: (id: string): Promise<{ ok: true }> =>
     ipcRenderer.invoke('image:history:delete', id),
@@ -414,8 +429,14 @@ const api = {
   deleteSkill: (id: string): Promise<void> => ipcRenderer.invoke('skills:delete', id),
   setSkillEnabled: (id: string, enabled: boolean, mode?: SkillListMode): Promise<void> =>
     ipcRenderer.invoke('skills:setEnabled', id, enabled, mode),
-  syncArticleTypeSkills: (articleType: 'how-to' | 'review' | 'top-rank'): Promise<void> =>
-    ipcRenderer.invoke('skills:syncArticleType', articleType),
+  listDomainPacks: (): Promise<import('../shared/domainPacks').DomainPack[]> =>
+    ipcRenderer.invoke('domainPack:list'),
+  saveDomainPack: (
+    input: import('../shared/domainPacks').SaveDomainPackInput
+  ): Promise<import('../shared/domainPacks').DomainPack> => ipcRenderer.invoke('domainPack:save', input),
+  deleteDomainPack: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('domainPack:delete', id),
+  restoreDomainPack: (id: string): Promise<import('../shared/domainPacks').DomainPack> =>
+    ipcRenderer.invoke('domainPack:restore', id),
   listKnowledgeDocs: (): Promise<KnowledgeDoc[]> => ipcRenderer.invoke('knowledge:list'),
   saveKnowledgeDoc: (input: SaveKnowledgeDocInput): Promise<KnowledgeDoc> =>
     ipcRenderer.invoke('knowledge:save', input),
@@ -457,6 +478,19 @@ const api = {
   getWordPressPublishLog: (): Promise<{ records: WordPressPublishLogRecord[] }> =>
     ipcRenderer.invoke('wordpress:log:list'),
   clearWordPressPublishLog: (): Promise<{ ok: true }> => ipcRenderer.invoke('wordpress:log:clear'),
+  listInternalLinks: (
+    productId?: string
+  ): Promise<import('../shared/internalLinks').InternalLinkCatalogSummary | null> =>
+    ipcRenderer.invoke('internalLinks:list', productId),
+  importInternalLinks: (input: {
+    productId: string
+    productName?: string
+    siteUrl: string
+    sitemapUrl?: string
+    includePatterns?: string[] | string
+    excludePatterns?: string[] | string
+  }): Promise<import('../shared/internalLinks').InternalLinkCatalogSummary & { ok: true; message?: string }> =>
+    ipcRenderer.invoke('internalLinks:import', input),
   loadChatStore: (): Promise<ChatStoreData> => ipcRenderer.invoke('chat:load'),
   saveChatStore: (data: ChatStoreData): Promise<{ ok: true }> => ipcRenderer.invoke('chat:save', data),
   platform: process.platform,

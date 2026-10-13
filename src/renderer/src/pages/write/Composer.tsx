@@ -2,6 +2,12 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { QuickPicksConfig } from '../../env.d'
 import { ARTICLE_TYPE_OPTIONS, type ArticleType } from '../../constants/articleTypes'
 import {
+  domainPackOptions,
+  lookupDomainPack,
+  type DomainPack,
+  type DomainPackId
+} from '../../../../shared/domainPacks'
+import {
   WRITING_STYLE_OPTIONS,
   type WritingStyleId
 } from '../../constants/writingStyles'
@@ -27,6 +33,8 @@ interface ComposerProps {
   quickPicks: QuickPicksConfig
   selectedProductId: string
   outputLanguage: OutputLanguageCode
+  domainPackId: DomainPackId
+  domainPacks: DomainPack[]
   articleType: ArticleType
   writingStyleId: WritingStyleId
   llmModels: LlmModelOption[]
@@ -35,6 +43,7 @@ interface ComposerProps {
   llmRoleRoutingHint?: string
   onProductChange: (id: string) => void
   onOutputLanguageChange: (code: OutputLanguageCode) => void
+  onDomainPackChange: (id: DomainPackId) => void
   onArticleTypeChange: (type: ArticleType) => void
   onWritingStyleChange: (id: WritingStyleId) => void
   onLlmModelChange: (optionId: string) => void
@@ -61,6 +70,8 @@ export default function Composer({
   quickPicks,
   selectedProductId,
   outputLanguage,
+  domainPackId,
+  domainPacks,
   articleType,
   writingStyleId,
   llmModels,
@@ -69,6 +80,7 @@ export default function Composer({
   llmRoleRoutingHint = '',
   onProductChange,
   onOutputLanguageChange,
+  onDomainPackChange,
   onArticleTypeChange,
   onWritingStyleChange,
   onLlmModelChange,
@@ -90,6 +102,9 @@ export default function Composer({
   const isBatchOptimize = writeMode === 'batch-optimize'
   const isUrlMode = isOptimize || isBatchOptimize
   const isFollowUp = !showOptions
+  const pack = lookupDomainPack(domainPackId, domainPacks)
+  const packOptions = domainPackOptions(domainPacks)
+  const formatOptions = ARTICLE_TYPE_OPTIONS.filter((item) => pack.formats.includes(item.value))
   const activeModel = llmModels.find((item) => item.id === selectedLlmModelId) ?? llmModels[0] ?? null
   const placeholder = isFollowUp
     ? reviseSelectionPreview
@@ -211,12 +226,30 @@ export default function Composer({
                 <label className="composer-option">
                   <select
                     className="composer-control"
+                    value={domainPackId}
+                    onChange={(e) => onDomainPackChange(e.target.value as DomainPackId)}
+                    disabled={panelDisabled}
+                    aria-label="领域"
+                  >
+                    {packOptions.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {!isUrlMode ? (
+                <label className="composer-option">
+                  <select
+                    className="composer-control"
                     value={articleType}
                     onChange={(e) => onArticleTypeChange(e.target.value as ArticleType)}
                     disabled={panelDisabled}
                     aria-label="文章类型"
                   >
-                    {ARTICLE_TYPE_OPTIONS.map((item) => (
+                    {formatOptions.map((item) => (
                       <option key={item.value} value={item.value}>
                         {item.label}
                       </option>

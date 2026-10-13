@@ -1,5 +1,5 @@
 import { markdownToHtml } from './markdownToHtml'
-import { normalizeArticleMarkdown } from './normalizeArticleMarkdown'
+import { finalizeArticleMarkdown, normalizeArticleMarkdown } from './normalizeArticleMarkdown'
 
 export type WordPressSeoPlugin = 'none' | 'yoast' | 'rankmath'
 
@@ -242,7 +242,9 @@ export function parseArticleForWordPress(markdown: string): ParsedWordPressArtic
   const seo = parseSeoMetaFromMarkdown(source)
   const withoutMeta = stripSeoMetaBlock(source)
   const title = extractMarkdownH1(withoutMeta) || 'Untitled'
-  const bodyMarkdown = stripLeadingH1(withoutMeta).trim()
+  const bodyMarkdown = finalizeArticleMarkdown(stripLeadingH1(withoutMeta).trim(), {
+    preserveStructure: true
+  })
   const metaTitle = seo?.metaTitle || title
   const metaDescription = seo?.metaDescription || ''
   return {

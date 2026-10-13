@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 import { loadConfig, saveConfig } from '../config/configStore'
 import type { AppConfig, SkillItem, SkillListMode } from '../config/types'
-import { deleteSkillItem, listSkills, saveSkillItem, setSkillEnabled, syncCreateSkillsForArticleType } from '../agent/skillManager'
+import { deleteSkillItem, listSkills, saveSkillItem, setSkillEnabled } from '../agent/skillManager'
 import { testLlmConnection } from '../agent/articleAgent'
 import { listLlmModelsForPreset } from '../agent/llmModelCatalog'
 import { testFirecrawlConnection } from '../research/firecrawl'
@@ -55,13 +55,6 @@ export function registerConfigIpc(): void {
     'skills:setEnabled',
     async (_event, id: string, enabled: boolean, mode?: SkillListMode) => {
       await setSkillEnabled(id, enabled, mode ?? 'create')
-    }
-  )
-
-  ipcMain.handle(
-    'skills:syncArticleType',
-    async (_event, articleType: 'how-to' | 'review' | 'top-rank') => {
-      await syncCreateSkillsForArticleType(articleType)
     }
   )
 }

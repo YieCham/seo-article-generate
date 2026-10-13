@@ -271,7 +271,7 @@ export function normalizeWindowClose(partial?: Partial<WindowCloseBehavior>): Wi
 }
 
 export interface ImageGenConfig {
-  /** Full generations endpoint, e.g. https://uuapi.shop/v1/images/generations */
+  /** Text-to-image endpoint, e.g. https://uuapi.net/v1/images/generations. Edits use /images/edits. */
   apiUrl: string
   apiKey: string
   model: string
@@ -280,18 +280,23 @@ export interface ImageGenConfig {
 }
 
 export const DEFAULT_IMAGE_GEN: ImageGenConfig = {
-  apiUrl: 'https://uuapi.shop/v1/images/generations',
+  apiUrl: 'https://uuapi.net/v1/images/generations',
   apiKey: '',
-  model: 'gpt-image-2',
+  model: 'gpt-image-2.5',
   size: '1024x1024',
   defaultPrompt: ''
 }
 
+const LEGACY_IMAGE_GEN_URL = 'https://uuapi.shop/v1/images/generations'
+const LEGACY_IMAGE_GEN_MODEL = 'gpt-image-2'
+
 export function normalizeImageGenConfig(partial?: Partial<ImageGenConfig> | null): ImageGenConfig {
+  const rawUrl = partial?.apiUrl?.trim() || ''
+  const rawModel = partial?.model?.trim() || ''
   return {
-    apiUrl: partial?.apiUrl?.trim() || DEFAULT_IMAGE_GEN.apiUrl,
+    apiUrl: !rawUrl || rawUrl === LEGACY_IMAGE_GEN_URL ? DEFAULT_IMAGE_GEN.apiUrl : rawUrl,
     apiKey: partial?.apiKey ?? '',
-    model: partial?.model?.trim() || DEFAULT_IMAGE_GEN.model,
+    model: !rawModel || rawModel === LEGACY_IMAGE_GEN_MODEL ? DEFAULT_IMAGE_GEN.model : rawModel,
     size: partial?.size?.trim() || DEFAULT_IMAGE_GEN.size,
     defaultPrompt: partial?.defaultPrompt ?? ''
   }
@@ -392,6 +397,8 @@ export interface SkillItem {
   bundled?: boolean
   /** Always-on for create polish; UI toggle is locked. */
   forced?: boolean
+  /** Domain-pack owned; enablement is chosen on the write page, not here. */
+  packLocked?: boolean
 }
 
 export const DEFAULT_SYSTEM_PROMPT = `你是一位专业内容创作者。请严格遵循以下 Skills 中的写作规范：

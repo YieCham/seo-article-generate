@@ -5,6 +5,7 @@ import {
   MAX_FAQ_SECTION_WORDS,
   MIN_FAQ_QUESTIONS
 } from './articleLength'
+import { formatDomainPackPrompt, type DomainPack } from '../../shared/domainPacks'
 import {
   isGeoSeoSkillEnabled,
   isIosGeoSkillEnabled,
@@ -104,7 +105,17 @@ Length: **${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS} English words** (programma
 Do NOT mention AI identity or "As an expert…" in the final article.
 `.trim()
 
-export function getGeoSeoPromptBlock(skillsText: string, enabledSkillIds?: string[]): string {
+/** How-to GEO skeleton plus optional domain-pack style / banned-term extras. */
+export function getGeoSeoPromptBlock(pack?: DomainPack | null): string {
+  const extras = formatDomainPackPrompt(pack)
+  return extras ? `${GEO_ARTICLE_STRUCTURE}\n\n${extras}` : GEO_ARTICLE_STRUCTURE
+}
+
+/** @deprecated Prefer getGeoSeoPromptBlock(pack) on the create path. */
+export function getGeoSeoPromptBlockFromSkills(
+  skillsText: string,
+  enabledSkillIds?: string[]
+): string {
   if (!shouldApplyGeoSeoStructure(skillsText, enabledSkillIds)) return ''
 
   const extras: string[] = []

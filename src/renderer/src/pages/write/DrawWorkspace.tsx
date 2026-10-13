@@ -1,11 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ImageGenConfig, ImageHistoryItem } from '../../env.d'
+import type { EditImageReference, ImageGenConfig, ImageHistoryItem } from '../../env.d'
 import { IconDelete, IconHistory, IconUpload } from '../../components/Icons'
 
 const SIZE_PRESETS = ['1024x1024', '1024x1536', '1536x1024', '512x512']
 
 const KEEP_STYLE_PREFIX =
   '保持参考图的整体视觉风格、色调、光影与画质，仅按下列指令调整内容：\n'
+
+const MAX_REFERENCE_IMAGES = 6
+
+function buildReferencePrompt(
+  userPrompt: string,
+  referenceCount: number,
+  includesPrevious: boolean
+): string {
+  const labels = Array.from({ length: referenceCount }, (_, index) => `图${index + 1}`).join('、')
+  const styleNote = includesPrevious
+    ? `最后一张（图${referenceCount}）是上一张成图，请同时保持它的整体画面风格。`
+    : ''
+  return `请参考${labels}中的人物形象、五官、发型与服装，并保持这些特征。${styleNote}在此基础上按下列指令绘制：\n${userPrompt}`
+}
 
 function snapOutputSize(width: number, height: number): string {
   if (!width || !height) return '1024x1024'
@@ -55,6 +69,7 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
   const [editError, setEditError] = useState('')
   const [editing, setEditing] = useState(false)
   const [keepStyle, setKeepStyle] = useState(false)
+  const [referenceImages, setReferenceImages] = useState<ImageHistoryItem[]>([])
   const [previewZoomOpen, setPreviewZoomOpen] = useState(false)
   const editPromptRef = useRef<HTMLTextAreaElement>(null)
 
@@ -63,9 +78,9 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
     void window.app.getConfig().then((config) => {
       if (cancelled) return
       const next = config.imageGen ?? {
-        apiUrl: 'https://uuapi.shop/v1/images/generations',
+        apiUrl: 'https://uuapi.net/v1/images/generations',
         apiKey: '',
-        model: 'gpt-image-2',
+        model: 'gpt-image-2.5',
         size: '1024x1024',
         defaultPrompt: ''
       }
@@ -174,6 +189,50 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
     if (options?.prompt?.trim()) setPrompt(options.prompt.trim())
   }
 
+  async function handleAddReferences(): Promise<void> {
+    if (generating || editing) return
+    if (referenceImages.length >= MAX_REFERENCE_IMAGES) {
+      setError(`最多添加 ${MAX_REFERENCE_IMAGES} 张参考图`)
+      return
+    }
+
+    setError('')
+    try {
+      const result = await window.app.importReferenceImages()
+      if (!result.ok) {
+        setError(result.message ?? '添加参考图失败')
+        return
+      }
+      if (result.canceled) return
+
+      const incoming = result.items ?? []
+      const seen = new Set(referenceImages.map((item) => item.fileName))
+      const next = [...referenceImages]
+      let skipped = 0
+      for (const item of incoming) {
+        if (seen.has(item.fileName)) continue
+        if (next.length >= MAX_REFERENCE_IMAGES) {
+          skipped += 1
+          continue
+        }
+        seen.add(item.fileName)
+        next.push(item)
+      }
+      setReferenceImages(next)
+      if (skipped > 0) {
+        setError(`最多 ${MAX_REFERENCE_IMAGES} 张参考图，已忽略多余图片`)
+      } else if (result.message) {
+        setError(result.message)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '添加参考图失败')
+    }
+  }
+
+  function handleRemoveReference(fileName: string): void {
+    setReferenceImages((current) => current.filter((item) => item.fileName !== fileName))
+  }
+
   async function handleGenerate(): Promise<void> {
     if (generating || editing) return
     const userPrompt = prompt.trim()
@@ -182,23 +241,33 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
     setError('')
     setGenerating(true)
     try {
-      const useStyleLock = keepStyle && Boolean(previewFileName || imageSrc)
-      const result = useStyleLock
-        ? await window.app.editImage({
-            prompt: `${KEEP_STYLE_PREFIX}${userPrompt}`,
-            size: size.trim() || undefined,
-            fileName: previewFileName || undefined,
-            imageDataUrl:
-              !previewFileName && imageSrc?.startsWith('data:') ? imageSrc : undefined,
-            imageUrl:
-              !previewFileName && imageSrc && !imageSrc.startsWith('data:')
-                ? imageSrc
-                : undefined
-          })
-        : await window.app.generateImage({
-            prompt: userPrompt,
-            size: size.trim() || undefined
-          })
+      const styleLock = keepStyle && Boolean(previewFileName || imageSrc)
+      const listed = referenceImages.slice(0, MAX_REFERENCE_IMAGES)
+      const references: EditImageReference[] = listed.map((item) => ({ fileName: item.fileName }))
+      if (styleLock) {
+        references.push({
+          fileName: previewFileName || undefined,
+          imageDataUrl:
+            !previewFileName && imageSrc?.startsWith('data:') ? imageSrc : undefined,
+          imageUrl:
+            !previewFileName && imageSrc && !imageSrc.startsWith('data:') ? imageSrc : undefined
+        })
+      }
+
+      const result =
+        references.length > 0
+          ? await window.app.editImage({
+              prompt:
+                listed.length > 0
+                  ? buildReferencePrompt(userPrompt, references.length, styleLock)
+                  : `${KEEP_STYLE_PREFIX}${userPrompt}`,
+              size: size.trim() || undefined,
+              references
+            })
+          : await window.app.generateImage({
+              prompt: userPrompt,
+              size: size.trim() || undefined
+            })
       if (!result.ok) {
         setError(result.message ?? '绘图失败')
         return
@@ -309,6 +378,7 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
   }
 
   async function handleDeleteHistoryItem(id: string): Promise<void> {
+    if (!window.confirm('确定删除这张图片？删除后无法恢复。')) return
     try {
       await window.app.deleteImageHistoryItem(id)
       setHistoryItems((prev) => prev.filter((item) => item.id !== id))
@@ -319,6 +389,7 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
 
   async function handleClearHistory(): Promise<void> {
     if (historyItems.length === 0) return
+    if (!window.confirm('确定清空全部生成历史？此操作不可恢复。')) return
     try {
       await window.app.clearImageHistory()
       setHistoryItems([])
@@ -453,6 +524,44 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
             <span className="toggle-switch" aria-hidden="true" />
             <span className="toggle-label">保持风格</span>
           </label>
+
+          <div className="draw-references">
+            <div className="draw-references-head">
+              <span>参考图</span>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy || referenceImages.length >= MAX_REFERENCE_IMAGES}
+                onClick={() => void handleAddReferences()}
+              >
+                <IconUpload size={15} />
+                添加参考图
+              </button>
+            </div>
+            {referenceImages.length === 0 ? (
+              <p className="draw-references-hint">
+                添加人物或服装图片后，生成会按图1、图2的顺序参考形象和服装。
+              </p>
+            ) : (
+              <ul className="draw-reference-list">
+                {referenceImages.map((item, index) => (
+                  <li key={item.fileName} className="draw-reference-card">
+                    <img src={item.imageSrc} alt={`参考图 ${index + 1}`} />
+                    <span>图{index + 1}</span>
+                    <button
+                      type="button"
+                      className="draw-reference-remove"
+                      aria-label={`移除图${index + 1}`}
+                      disabled={busy}
+                      onClick={() => handleRemoveReference(item.fileName)}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
           {error ? (
             <p className="draw-error" role="alert">
@@ -678,25 +787,23 @@ export default function DrawWorkspace({ configRevision = 0 }: { configRevision?:
                         }}
                       />
                     </button>
+                    <button
+                      type="button"
+                      className="draw-history-delete"
+                      title="删除"
+                      aria-label="删除"
+                      onClick={() => void handleDeleteHistoryItem(item.id)}
+                    >
+                      <IconDelete size={14} />
+                    </button>
                     <div className="draw-history-meta">
                       <p className="draw-history-prompt" title={item.prompt}>
                         {item.prompt || '（无提示词）'}
                       </p>
-                      <div className="draw-history-footer">
-                        <span>
-                          {formatHistoryTime(item.createdAt)}
-                          {item.size ? ` · ${item.size}` : ''}
-                        </span>
-                        <button
-                          type="button"
-                          className="draw-history-delete"
-                          title="删除"
-                          aria-label="删除"
-                          onClick={() => void handleDeleteHistoryItem(item.id)}
-                        >
-                          <IconDelete size={14} />
-                        </button>
-                      </div>
+                      <p className="draw-history-footer">
+                        {formatHistoryTime(item.createdAt)}
+                        {item.size ? ` · ${item.size}` : ''}
+                      </p>
                     </div>
                   </article>
                 ))}

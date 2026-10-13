@@ -186,14 +186,20 @@ export async function getKnowledgePromptBlock(query: KnowledgeQuery = {}): Promi
 
 /** Body-draft helper: only inject docs that match the selected product name. */
 export async function retrieveProductIntroKnowledge(
-  productName: string
+  productName: string,
+  options?: { tags?: string[] }
 ): Promise<ProductIntroKnowledge> {
   const name = productName.trim()
   if (!name) {
     return { promptBlock: '', documentCount: 0 }
   }
 
-  const matched = await retrieveKnowledge({ query: name, enabledOnly: true })
+  const tags = (options?.tags ?? []).map((tag) => tag.trim()).filter(Boolean)
+  const matched = await retrieveKnowledge({
+    query: name,
+    enabledOnly: true,
+    ...(tags.length > 0 ? { tags } : {})
+  })
   return {
     promptBlock: wrapProductIntroKnowledge(name, matched.promptBlock),
     documentCount: matched.documents.length

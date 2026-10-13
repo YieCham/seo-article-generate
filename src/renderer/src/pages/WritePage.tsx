@@ -3,9 +3,17 @@ import { useEffect, useRef, useState } from 'react'
 import type { GenerateProgressEvent, LlmPreset, QuickPicksConfig } from '../env.d'
 import {
   ARTICLE_TYPE_STORAGE_KEY,
-  isArticleType,
   type ArticleType
 } from '../constants/articleTypes'
+import {
+  BUILTIN_DOMAIN_PACKS,
+  DEFAULT_DOMAIN_PACK_ID,
+  DOMAIN_PACK_STORAGE_KEY,
+  clampFormatForPack,
+  lookupDomainPack,
+  type DomainPack,
+  type DomainPackId
+} from '../../../shared/domainPacks'
 import {
   DEFAULT_WRITING_STYLE_ID,
   type WritingStyleId
@@ -17,7 +25,6 @@ import {
   isOutputLanguageCode,
   type OutputLanguageCode
 } from '../constants/outputLanguage'
-import { syncSkillsForArticleType } from '../utils/writeModeSkills'
 import {
   buildExtraInstructions,
   formatBatchOptimizeUserMessageContent,
@@ -28,7 +35,8 @@ import {
   resolveProductNameFromUserMessages,
   formatUserMessageContent,
   parseCreateUserMessage,
-  parseOptimizeUserMessage
+  parseOptimizeUserMessage,
+  extractProductNameFromInstructions
 } from '../utils/extraInstructions'
 import { parseBatchTopics } from '../utils/parseBatchTopics'
 import {
@@ -115,6 +123,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   })
   const [selectedProductId, setSelectedProductId] = useState('')
   const [outputLanguage, setOutputLanguage] = useState<OutputLanguageCode>(DEFAULT_OUTPUT_LANGUAGE)
+  const [domainPackId, setDomainPackId] = useState<DomainPackId>(DEFAULT_DOMAIN_PACK_ID)
+  const [domainPacks, setDomainPacks] = useState<DomainPack[]>(BUILTIN_DOMAIN_PACKS)
   const [articleType, setArticleType] = useState<ArticleType>('how-to')
   const [writingStyleId, setWritingStyleId] = useState<WritingStyleId>(DEFAULT_WRITING_STYLE_ID)
   const [llmPresets, setLlmPresets] = useState<LlmPreset[]>([])
@@ -287,7 +297,10 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   useEffect(() => {
     if (!hydrated) return
-    void window.app.getConfig().then((config) => {
+    void Promise.all([
+      window.app.getConfig(),
+      window.app.listDomainPacks().catch(() => BUILTIN_DOMAIN_PACKS)
+    ]).then(([config, packs]) => {
       const picks = config.quickPicks ?? { products: [], defaultOutputLanguage: DEFAULT_OUTPUT_LANGUAGE }
       setQuickPicks(picks)
       setSelectedProductId((prev) => (picks.products.some((item) => item.id === prev) ? prev : ''))
@@ -312,19 +325,16 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         if (prev && models.some((item) => item.id === prev)) return prev
         return pickDefaultLlmModelOptionId(presets, storedModel)
       })
+
+      const catalog = packs.length > 0 ? packs : BUILTIN_DOMAIN_PACKS
+      setDomainPacks(catalog)
+      const storedPack = localStorage.getItem(DOMAIN_PACK_STORAGE_KEY)
+      const pack = lookupDomainPack(storedPack, catalog)
+      setDomainPackId(pack.id)
+      const storedType = localStorage.getItem(ARTICLE_TYPE_STORAGE_KEY)
+      setArticleType(clampFormatForPack(pack, storedType))
     })
   }, [hydrated, configRevision])
-
-  useEffect(() => {
-    if (!hydrated) return
-    const storedType = localStorage.getItem(ARTICLE_TYPE_STORAGE_KEY)
-    setArticleType(isArticleType(storedType) ? storedType : 'how-to')
-  }, [hydrated])
-
-  useEffect(() => {
-    if (!hydrated || activeWriteMode !== 'create') return
-    void syncSkillsForArticleType(articleType)
-  }, [hydrated, activeWriteMode, articleType])
 
   useEffect(() => {
 
@@ -388,7 +398,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   useEffect(() => {
 
     const unsubscribe = window.app.onProgress((event: GenerateProgressEvent) => {
-      const targetSessionId = generatingSessionIdRef.current
+      const isTerminalEvent =
+        event.type === 'done' || event.type === 'cancelled' || event.type === 'error'
+      // Invoke may resolve (and clear generatingSessionIdRef) before this event is
+      // delivered. Terminal events must still clear the running UI.
+      const targetSessionId =
+        generatingSessionIdRef.current || (isTerminalEvent ? activeSessionIdRef.current : '')
       if (!targetSessionId) return
 
       const isStaleGenerationEvent =
@@ -427,16 +442,19 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         upsertPlanningMessage(event.planningSummary, targetSessionId)
       }
 
-      if (event.type === 'reset') {
-        resetAssistantContent(targetSessionId)
-      }
-
       if (event.type === 'prepend' && event.text) {
         prependAssistantContent(event.text, targetSessionId)
       }
 
+      const fullArticleRewrite =
+        event.step === 'polish' || event.step === 'length' || event.step === 'meta'
+
       if (event.type === 'chunk' && event.text) {
-        appendAssistantChunk(event.text, targetSessionId)
+        if (fullArticleRewrite) {
+          replaceAssistantContent(event.text, targetSessionId)
+        } else {
+          appendAssistantChunk(event.text, targetSessionId)
+        }
       }
 
       if (event.type === 'replace' && event.text) {
@@ -478,11 +496,14 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
       if (event.type === 'done') {
         if (batchActiveRef.current) return
-        clearSessionCheckpoint(targetSessionId)
-        if (revisionBaselineRef.current) {
-          finalizePendingRevision(targetSessionId)
-        } else {
-          finalizeAssistantMessage(targetSessionId)
+        // Invoke path may already have finalized via finishGenerationRun.
+        if (!finishedGenerationSessionsRef.current.has(targetSessionId)) {
+          restoreAssistantFromCheckpointIfEmpty(targetSessionId)
+          if (revisionBaselineRef.current) {
+            finalizePendingRevision(targetSessionId)
+          } else {
+            finalizeAssistantMessage(targetSessionId)
+          }
         }
         setIsRunning(false)
         generatingSessionIdRef.current = ''
@@ -601,87 +622,87 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
 
 
-  function resetAssistantContent(sessionId = getTargetSessionId()): void {
-
-    updateSession(sessionId, (session) => ({
-
-      ...session,
-
-      messages: session.messages
-
-        .filter((item) => item.role !== 'status')
-
-        .map((item) =>
-
-          item.role === 'assistant' && item.status === 'streaming' ? { ...item, content: '' } : item
-
-        ),
-
-      updatedAt: Date.now()
-
-    }))
-
-  }
-
-
-
-  function appendAssistantChunk(text: string, sessionId = getTargetSessionId()): void {
-
-    updateSession(sessionId, (session) => {
-
-      const filtered = session.messages.filter((item) => item.role !== 'status')
-
-      const index = filtered.findIndex(
-        (item) => item.role === 'assistant' && item.status === 'streaming'
-      )
-
-      if (index >= 0) {
-        const current = filtered[index]
-        filtered[index] = { ...current, content: current.content + text }
-      } else {
-        for (let i = filtered.length - 1; i >= 0; i -= 1) {
-          const message = filtered[i]
-          if (message.role !== 'assistant') continue
-          if (message.status === 'done' || message.status === 'error') break
-          filtered[i] = {
-            ...message,
-            content: message.content + text,
-            status: 'streaming' as const
-          }
+  function patchLiveAssistant(
+    session: ChatSession,
+    mapper: (message: ChatSession['messages'][number]) => ChatSession['messages'][number],
+    allowCompleted = false
+  ): ChatSession {
+    const filtered = session.messages.filter((item) => item.role !== 'status')
+    let index = -1
+    for (let i = filtered.length - 1; i >= 0; i -= 1) {
+      const item = filtered[i]
+      if (item.role !== 'assistant') continue
+      if (item.status === 'streaming' || item.status === 'revising') {
+        index = i
+        break
+      }
+    }
+    if (index < 0 && allowCompleted) {
+      for (let i = filtered.length - 1; i >= 0; i -= 1) {
+        if (filtered[i].role === 'assistant') {
+          index = i
           break
         }
       }
+    }
+    if (index >= 0) {
+      filtered[index] = mapper(filtered[index])
+    }
+    return { ...session, messages: filtered, updatedAt: Date.now() }
+  }
 
+  function restoreAssistantFromCheckpointIfEmpty(sessionId: string): void {
+    const checkpoint = pipelineCheckpointRef.current.get(sessionId)
+    const fallback = (checkpoint?.workText || checkpoint?.partialDraft || '').trim()
+    if (!fallback) return
+
+    updateSession(sessionId, (session) => {
+      const filtered = session.messages.filter((item) => item.role !== 'status')
+      for (let i = filtered.length - 1; i >= 0; i -= 1) {
+        const message = filtered[i]
+        if (message.role !== 'assistant') continue
+        if (message.content.trim()) break
+        filtered[i] = { ...message, content: fallback }
+        break
+      }
       return { ...session, messages: filtered, updatedAt: Date.now() }
-
     })
+  }
 
+  function applyFinalArticle(text: string, sessionId: string): void {
+    const article = text.trim()
+    if (!article) return
+
+    updateSession(sessionId, (session) => {
+      const filtered = session.messages.filter((item) => item.role !== 'status')
+      let found = false
+      for (let i = filtered.length - 1; i >= 0; i -= 1) {
+        if (filtered[i].role !== 'assistant') continue
+        filtered[i] = { ...filtered[i], content: article, status: 'done' }
+        found = true
+        break
+      }
+      if (!found) {
+        filtered.push({ ...createMessage('assistant', article), status: 'done' })
+      }
+      return { ...session, messages: filtered, updatedAt: Date.now() }
+    })
+  }
+
+  function appendAssistantChunk(text: string, sessionId = getTargetSessionId()): void {
+    updateSession(sessionId, (session) =>
+      patchLiveAssistant(session, (current) => ({
+        ...current,
+        content: current.content + text,
+        status: current.status === 'revising' ? current.status : ('streaming' as const)
+      }))
+    )
   }
 
   function replaceAssistantContent(text: string, sessionId = getTargetSessionId()): void {
-
-    updateSession(sessionId, (session) => ({
-
-      ...session,
-
-      messages: session.messages
-
-        .filter((item) => item.role !== 'status')
-
-        .map((item) =>
-
-          item.role === 'assistant' && (item.status === 'revising' || item.status === 'streaming')
-
-            ? { ...item, content: text }
-
-            : item
-
-        ),
-
-      updatedAt: Date.now()
-
-    }))
-
+    updateSession(sessionId, (session) =>
+      patchLiveAssistant(session, (item) => ({ ...item, content: text }), true)
+    )
   }
 
   function removeMessageById(messageId: string, sessionId = getTargetSessionId()): void {
@@ -807,24 +828,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   }
 
   function prependAssistantContent(text: string, sessionId = getTargetSessionId()): void {
-
-    updateSession(sessionId, (session) => {
-
-      const filtered = session.messages.filter((item) => item.role !== 'status')
-
-      const index = filtered.findIndex(
-        (item) => item.role === 'assistant' && item.status === 'streaming'
-      )
-
-      if (index >= 0) {
-        const current = filtered[index]
-        filtered[index] = { ...current, content: text + current.content }
-      }
-
-      return { ...session, messages: filtered, updatedAt: Date.now() }
-
-    })
-
+    updateSession(sessionId, (session) =>
+      patchLiveAssistant(session, (current) => ({
+        ...current,
+        content: text + current.content
+      }))
+    )
   }
 
 
@@ -956,31 +965,47 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
-  function finishGenerationRun(
+  async function finishGenerationRun(
     sessionId: string,
-    result: { ok: boolean; message?: string },
+    result: { ok: boolean; message?: string; article?: string },
     errorLabel: string
-  ): { ok: boolean; aborted: boolean; message?: string } {
+  ): Promise<{ ok: boolean; aborted: boolean; message?: string }> {
     const aborted = !result.ok && result.message === '已中止生成'
+
+    const clearRunningUi = (): void => {
+      if (batchActiveRef.current) return
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+    }
 
     if (aborted) {
       finalizeOrInterruptAssistant(sessionId)
+      // Do not rely solely on the late `cancelled` progress event — invoke may
+      // resolve after the AbortController is already gone.
+      clearRunningUi()
       return { ok: false, aborted: true, message: result.message }
     }
 
     if (!result.ok) {
       markAssistantError(result.message ?? errorLabel, sessionId)
-      if (!batchActiveRef.current) {
-        setIsRunning(false)
-        generatingSessionIdRef.current = ''
-        setRunningSessionId('')
-      }
+      clearRunningUi()
       return { ok: false, aborted: false, message: result.message }
     }
 
+    finishedGenerationSessionsRef.current.add(sessionId)
+    const article = result.article?.trim() ?? ''
+    if (article) {
+      applyFinalArticle(article, sessionId)
+    } else {
+      restoreAssistantFromCheckpointIfEmpty(sessionId)
+    }
     clearSessionCheckpoint(sessionId)
     finalizeAssistantMessage(sessionId)
-    finishedGenerationSessionsRef.current.add(sessionId)
+    // Clear running UI here. If `done` progress arrives after invoke resolves,
+    // generatingSessionIdRef may already be empty and the progress handler
+    // would skip setIsRunning(false) — leaving the UI stuck on 正在修订文章.
+    clearRunningUi()
     return { ok: true, aborted: false, message: result.message }
   }
 
@@ -1009,7 +1034,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     const session = createSession(mode)
     const userContent =
       mode === 'create'
-        ? formatUserMessageContent(item, extraInstructions, articleType)
+        ? formatUserMessageContent(item, extraInstructions, articleType, domainPackId, domainPacks)
         : formatOptimizeUserMessageContent(item, extraInstructions)
     const userMessage = createMessage('user', userContent)
     const assistantMessage = createMessage('assistant', '')
@@ -1263,12 +1288,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         outputLanguage
       })
 
-      if (!result.ok && result.message !== '已中止生成') {
-        markAssistantError(result.message ?? '页面批量优化失败')
-        setIsRunning(false)
-        generatingSessionIdRef.current = ''
-        setRunningSessionId('')
-      }
+      await finishGenerationRun(id, result, '页面批量优化失败')
       return
     }
 
@@ -1298,16 +1318,11 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         reuseResearch
       })
 
-      if (!result.ok && result.message !== '已中止生成') {
-        markAssistantError(result.message ?? '优化失败')
-        setIsRunning(false)
-        generatingSessionIdRef.current = ''
-        setRunningSessionId('')
-      }
+      await finishGenerationRun(id, result, '优化失败')
       return
     }
 
-    const parsed = parseCreateUserMessage(firstUser.content)
+    const parsed = parseCreateUserMessage(firstUser.content, domainPacks)
     if (!parsed) {
       markAssistantError('无法解析创作请求')
       setIsRunning(false)
@@ -1315,8 +1330,6 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       setRunningSessionId('')
       return
     }
-
-    await syncSkillsForArticleType(parsed.articleType)
 
     const reuseResearch =
       !forceRefreshResearch &&
@@ -1332,15 +1345,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       llmPresetId: session.llmPresetId,
       llmModel: session.llmModel,
       writingStyleSkillId: session.writingStyleSkillId || undefined,
+      domainPackId: parsed.domainPackId,
+      articleType: parsed.articleType,
+      productId: resolveCreateProductId(parsed.extraInstructions),
       reuseResearch
     })
 
-    if (!result.ok && result.message !== '已中止生成') {
-      markAssistantError(result.message ?? '生成失败')
-      setIsRunning(false)
-      generatingSessionIdRef.current = ''
-      setRunningSessionId('')
-    }
+    await finishGenerationRun(id, result, '生成失败')
   }
 
   function handleDeleteSession(id: string): void {
@@ -1367,11 +1378,20 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     })
   }
 
-  async function handleArticleTypeChange(type: ArticleType): Promise<void> {
-    setArticleType(type)
-    localStorage.setItem(ARTICLE_TYPE_STORAGE_KEY, type)
-    if (activeWriteMode === 'create') {
-      await syncSkillsForArticleType(type)
+  function handleArticleTypeChange(type: ArticleType): void {
+    const next = clampFormatForPack(lookupDomainPack(domainPackId, domainPacks), type)
+    setArticleType(next)
+    localStorage.setItem(ARTICLE_TYPE_STORAGE_KEY, next)
+  }
+
+  function handleDomainPackChange(id: DomainPackId): void {
+    const pack = lookupDomainPack(id, domainPacks)
+    setDomainPackId(pack.id)
+    localStorage.setItem(DOMAIN_PACK_STORAGE_KEY, pack.id)
+    const nextType = clampFormatForPack(pack, articleType)
+    if (nextType !== articleType) {
+      setArticleType(nextType)
+      localStorage.setItem(ARTICLE_TYPE_STORAGE_KEY, nextType)
     }
   }
 
@@ -1469,7 +1489,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       ...resolveLlmRequestFields()
     })
 
-    if (!result.ok && result.message !== '已中止生成') {
+    const aborted = !result.ok && result.message === '已中止生成'
+    if (aborted) {
+      if (!abortRevisionAttempt()) {
+        finalizeOrInterruptAssistant(sessionId)
+      }
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+      return
+    }
+
+    if (!result.ok) {
       if (!abortRevisionAttempt()) {
         markAssistantError(result.message ?? '修订失败')
       } else {
@@ -1479,7 +1510,19 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       setIsRunning(false)
       generatingSessionIdRef.current = ''
       setRunningSessionId('')
+      return
     }
+
+    // Success: do not wait for a late `done` progress event to clear running UI.
+    finishedGenerationSessionsRef.current.add(sessionId)
+    if (revisionBaselineRef.current) {
+      finalizePendingRevision(sessionId)
+    } else {
+      finalizeAssistantMessage(sessionId)
+    }
+    setIsRunning(false)
+    generatingSessionIdRef.current = ''
+    setRunningSessionId('')
   }
 
   async function handleInsertIllustrations(messageId: string): Promise<void> {
@@ -1562,7 +1605,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       ...resolveLlmRequestFields()
     })
 
-    if (!result.ok && result.message !== '已中止生成') {
+    const aborted = !result.ok && result.message === '已中止生成'
+    if (aborted) {
+      if (!abortRevisionAttempt()) {
+        finalizeOrInterruptAssistant(sessionId)
+      }
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+      return
+    }
+
+    if (!result.ok) {
       if (!abortRevisionAttempt()) {
         markAssistantError(result.message ?? '插图插入失败')
       } else {
@@ -1572,7 +1626,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       setIsRunning(false)
       generatingSessionIdRef.current = ''
       setRunningSessionId('')
+      return
     }
+
+    if (revisionBaselineRef.current) {
+      finalizePendingRevision(sessionId)
+    } else {
+      finalizeAssistantMessage(sessionId)
+    }
+    finishedGenerationSessionsRef.current.add(sessionId)
+    setIsRunning(false)
+    generatingSessionIdRef.current = ''
+    setRunningSessionId('')
   }
 
   function handleApplyRevision(assistantMessageId: string): void {
@@ -1662,6 +1727,14 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     }))
   }
 
+  function resolveCreateProductId(extraInstructions?: string): string | undefined {
+    if (selectedProductId.trim()) return selectedProductId.trim()
+    const name = extraInstructions ? extractProductNameFromInstructions(extraInstructions) : undefined
+    if (!name) return undefined
+    const lower = name.trim().toLowerCase()
+    return quickPicks.products.find((item) => item.label.trim().toLowerCase() === lower)?.id
+  }
+
   async function executeCreateArticle(
     sessionId: string,
     topic: string,
@@ -1671,7 +1744,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     const llmFields = resolveLlmRequestFields()
 
     if (!options?.skipMessageSetup) {
-      const userContent = formatUserMessageContent(topic, extraInstructions, articleType)
+      const userContent = formatUserMessageContent(topic, extraInstructions, articleType, domainPackId, domainPacks)
       const userMessage = createMessage('user', userContent)
       const assistantMessage = createMessage('assistant', '')
 
@@ -1704,6 +1777,9 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       extraInstructions: extraInstructions || undefined,
       outputLanguage,
       writingStyleSkillId: writingStyleId || undefined,
+      domainPackId,
+      articleType,
+      productId: resolveCreateProductId(extraInstructions),
       ...llmFields
     })
 
@@ -1713,8 +1789,6 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   async function handleSubmit(topic: string, manualExtra: string): Promise<void> {
     if (isRunning || !activeSession) return
     if (!ensureLlmModelSelected()) return
-
-    await syncSkillsForArticleType(articleType)
 
     const product = quickPicks.products.find((item) => item.id === selectedProductId)?.label
     const extraInstructions = buildExtraInstructions({
@@ -1946,10 +2020,6 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         ? buildExtraInstructions({ product, manual: manualExtra, articleType })
         : buildExtraInstructions({ product, manual: manualExtra })
 
-    if (mode === 'create') {
-      await syncSkillsForArticleType(articleType)
-    }
-
     let succeeded = 0
     let failed = 0
     let aborted = false
@@ -2062,7 +2132,22 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     if (batchProgress) {
       batchAbortRef.current = true
     }
-    void window.app.cancelArticle()
+    void window.app.cancelArticle().then((result) => {
+      // Run already ended in main (common after stuck "done" race) — force-clear UI.
+      if (result?.ok) return
+      if (batchActiveRef.current) return
+      const sessionId = generatingSessionIdRef.current || activeSessionIdRef.current
+      if (sessionId) {
+        if (!abortRevisionAttempt(sessionId)) {
+          finalizeOrInterruptAssistant(sessionId)
+        }
+      }
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+      setToast('已中止生成')
+      window.setTimeout(() => setToast(''), 1800)
+    })
   }
 
   function handleDiscardResume(): void {
@@ -2121,12 +2206,24 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     const result = await window.app.resumeArticle(mergedCheckpoint)
 
-    if (!result.ok && result.message !== '已中止生成') {
-      markAssistantInterruptedOrError(result.message ?? '继续生成失败')
+    const aborted = !result.ok && result.message === '已中止生成'
+    if (aborted) {
+      finalizeOrInterruptAssistant(sessionId)
       setIsRunning(false)
       generatingSessionIdRef.current = ''
       setRunningSessionId('')
+      return
     }
+
+    if (!result.ok) {
+      markAssistantInterruptedOrError(result.message ?? '继续生成失败', sessionId)
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+      return
+    }
+
+    await finishGenerationRun(sessionId, result, '继续生成失败')
   }
 
 
@@ -2292,11 +2389,14 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
                 quickPicks={quickPicks}
                 selectedProductId={selectedProductId}
                 outputLanguage={outputLanguage}
+                domainPackId={domainPackId}
+                domainPacks={domainPacks}
                 articleType={articleType}
                 writingStyleId={writingStyleId}
                 onProductChange={setSelectedProductId}
                 onOutputLanguageChange={handleOutputLanguageChange}
-                onArticleTypeChange={(type) => void handleArticleTypeChange(type)}
+                onDomainPackChange={handleDomainPackChange}
+                onArticleTypeChange={handleArticleTypeChange}
                 onWritingStyleChange={setWritingStyleId}
                 llmModels={llmModels}
                 selectedLlmModelId={selectedLlmModelId}
@@ -2364,6 +2464,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
               quickPicks={quickPicks}
               selectedProductId={selectedProductId}
               outputLanguage={outputLanguage}
+              domainPackId={domainPackId}
+              domainPacks={domainPacks}
               articleType={articleType}
               draftExtra={draftExtra}
               onClose={() => setBatchDialogMode(null)}

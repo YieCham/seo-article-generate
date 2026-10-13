@@ -16,7 +16,7 @@ import { chatCompletion } from './llmClient'
 import { normalizeOutputLanguage } from './outputLanguage'
 import { getArticleLanguageLock } from './topicLanguage'
 import { getLanguageLabel } from '../research/localeOptions'
-import { stripOuterCodeFence } from '../../shared/normalizeArticleMarkdown'
+import { finalizeArticleMarkdown, stripOuterCodeFence } from '../../shared/normalizeArticleMarkdown'
 
 export interface ReviseArticleSelection {
   start: number
@@ -51,6 +51,35 @@ function validateSelection(article: string, start: number, end: number): string 
 
 function applySelectionRewrite(article: string, start: number, end: number, fragment: string): string {
   return `${article.slice(0, start)}${fragment}${article.slice(end)}`
+}
+
+function isDeletionInstruction(instruction: string): boolean {
+  return /删除|删掉|删去|去掉|移除|不要了|删了|\b(delete|remove|omit|cut)\b/i.test(instruction)
+}
+
+/** Whole reply is a delete marker, not replacement prose. */
+function isDeletionMarker(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length > 40) return false
+  return /^(?:\[\[DELETE\]\]|\[DELETE\]|（已删除）|\(已删除\)|已删除|已移除|\(deleted\)|\[deleted\]|deleted\.?|removed\.?|none|n\/a|null|无)$/i.test(
+    trimmed
+  )
+}
+
+/**
+ * Empty output is a valid deletion of the selected fragment.
+ * A blank reply used to be rejected as "no content", so delete requests could not apply.
+ */
+function resolveFragmentReplacement(
+  raw: string,
+  instruction: string
+): { ok: true; fragment: string } | { ok: false } {
+  const fragment = stripOuterCodeFence(raw)
+  if (isDeletionMarker(fragment) || (!fragment.trim() && isDeletionInstruction(instruction))) {
+    return { ok: true, fragment: '' }
+  }
+  if (!fragment.trim()) return { ok: false }
+  return { ok: true, fragment }
 }
 
 async function reviseSelectedFragment(
@@ -96,7 +125,9 @@ async function reviseSelectedFragment(
             '你是精确的 Markdown 局部编辑助手。',
             articleLangLock,
             '根据修改说明重写用户选中的片段，保持与前后文语气、结构一致；只输出替换后的 Markdown 片段。',
-            '不要输出 JSON、不要加「以下是…」等说明；若片段含标题/列表，保持合法 Markdown。'
+            '不要输出 JSON、不要加「以下是…」等说明；若片段含标题/列表，保持合法 Markdown。',
+            '若只删除片段中的一部分，输出删除后保留的文字。',
+            '若整段都要删除，只输出一行 [[DELETE]]，不要解释，不要留空。'
           ].join('\n')
         },
         {
@@ -117,7 +148,8 @@ async function reviseSelectedFragment(
             '',
             `修改说明：${instruction}`,
             '',
-            '请输出**替换后的 Markdown 片段**（仅该片段，不要输出整篇文章，不要解释过程）。'
+            '请输出**替换后的 Markdown 片段**（仅该片段，不要输出整篇文章，不要解释过程）。',
+            '整段删除时只输出 [[DELETE]]。'
           ]
             .filter(Boolean)
             .join('\n')
@@ -127,18 +159,22 @@ async function reviseSelectedFragment(
         temperature: 0.35,
         maxTokens: resolveStepMaxTokens('sectionEdit', globalMaxTokens),
         step: 'sectionEdit',
-        label: '选中片段修订'
+        label: '选中片段修订',
+        visibleContentOnly: true
       }
     )
 
     throwIfAborted()
 
-    const fragment = stripOuterCodeFence(raw)
-    if (!fragment.trim()) {
+    const resolved = resolveFragmentReplacement(raw, instruction)
+    if (!resolved.ok) {
       return { ok: false, message: 'AI 未返回有效内容，请调整说明后重试。' }
     }
+    const fragment = resolved.fragment
 
-    const revised = applySelectionRewrite(article, start, end, fragment)
+    const revised = finalizeArticleMarkdown(applySelectionRewrite(article, start, end, fragment), {
+      preserveStructure: true
+    })
     emit({ type: 'replace', text: revised, step: 'draft' })
     emit({ type: 'done' })
     return { ok: true }
@@ -173,48 +209,71 @@ async function reviseFullArticle(
     sender.send('article:progress', event)
   }
 
+  const systemPrompt = [
+    '你是 Markdown 文章编辑助手，在原文基础上按说明修改，不是从零创作。',
+    articleLangLock,
+    '**核心规则（必须遵守）：**',
+    '1. 按「修改说明」执行：可**局部改写**、**补充**缺失内容、**删减**过时/不可用/不符合 E-E-A-T 的段落；未提及部分尽量原文保留。',
+    '2. 禁止整篇重写、禁止润色未被点名的句子、禁止改变未被要求的结构或章节顺序。',
+    '3. 若说明只涉及某一节/段/句，只改那一处；若要求增删模块（如 FAQ、段落），在合适位置执行。',
+    '4. 输出完整 Markdown 全文（含未改动的原文复制），不要 diff、不要解释、不要前言。',
+    '5. 词数可因补充而略增、因删减而略减，以说明与内容质量为准。',
+    '6. 删除段落或章节后，仍必须输出删除后的完整正文；禁止空回复，禁止只回复「已删除」。'
+  ].join('\n')
+
+  const userPrompt = [
+    `输出语言：${articleLangLabel}`,
+    `当前词数（约）：${wordCount} English words`,
+    '',
+    '--- 修改说明 ---',
+    instruction,
+    '',
+    '--- 当前文章（全文，请在此基础上修改）---',
+    article
+  ].join('\n')
+
   try {
     throwIfAborted()
     emit({ type: 'status', step: 'draft', message: '正在按你的说明修订文章…' })
 
-    const raw = await chatCompletion(
+    let raw = await chatCompletion(
       llm,
       [
-        {
-          role: 'system',
-          content: [
-            '你是 Markdown 文章编辑助手，在原文基础上按说明修改，不是从零创作。',
-            articleLangLock,
-            '**核心规则（必须遵守）：**',
-            '1. 按「修改说明」执行：可**局部改写**、**补充**缺失内容、**删减**过时/不可用/不符合 E-E-A-T 的段落；未提及部分尽量原文保留。',
-            '2. 禁止整篇重写、禁止润色未被点名的句子、禁止改变未被要求的结构或章节顺序。',
-            '3. 若说明只涉及某一节/段/句，只改那一处；若要求增删模块（如 FAQ、段落），在合适位置执行。',
-            '4. 输出完整 Markdown 全文（含未改动的原文复制），不要 diff、不要解释、不要前言。',
-            '5. 词数可因补充而略增、因删减而略减，以说明与内容质量为准。'
-          ].join('\n')
-        },
-        {
-          role: 'user',
-          content: [
-            `输出语言：${articleLangLabel}`,
-            `当前词数（约）：${wordCount} English words`,
-            '',
-            '--- 修改说明 ---',
-            instruction,
-            '',
-            '--- 当前文章（全文，请在此基础上修改）---',
-            article
-          ].join('\n')
-        }
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
       ],
-      { temperature: 0.2, maxTokens, step: 'articleRevise', label: '文章修订' }
+      { temperature: 0.2, maxTokens, step: 'articleRevise', label: '文章修订', visibleContentOnly: true }
     )
 
     throwIfAborted()
 
-    const revised = stripOuterCodeFence(raw)
-    if (!revised.trim()) {
-      return { ok: false, message: 'AI 未返回有效内容，请调整说明后重试。' }
+    let revised = finalizeArticleMarkdown(stripOuterCodeFence(raw), { preserveStructure: true })
+    const unusable = !revised.trim() || isDeletionMarker(stripOuterCodeFence(raw))
+    if (unusable) {
+      emit({ type: 'status', step: 'draft', message: '修订结果为空，正在要求输出删除后的全文…' })
+      raw = await chatCompletion(
+        llm,
+        [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+          { role: 'assistant', content: raw.trim() || '[[DELETE]]' },
+          {
+            role: 'user',
+            content:
+              '上次没有返回正文。请直接输出删除指定内容之后的完整 Markdown 全文，保留其余原文，不要解释，不要只回复已删除。'
+          }
+        ],
+        { temperature: 0.2, maxTokens, step: 'articleRevise', label: '文章修订（补全文）', visibleContentOnly: true }
+      )
+      throwIfAborted()
+      revised = finalizeArticleMarkdown(stripOuterCodeFence(raw), { preserveStructure: true })
+    }
+
+    if (!revised.trim() || isDeletionMarker(revised)) {
+      return {
+        ok: false,
+        message: 'AI 未返回修改后的全文。删除内容时也需要输出剩余正文，请重试。'
+      }
     }
 
     emit({ type: 'replace', text: revised, step: 'draft' })

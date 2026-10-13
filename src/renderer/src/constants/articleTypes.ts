@@ -1,4 +1,7 @@
-export type ArticleType = 'how-to' | 'review' | 'top-rank'
+import type { ArticleType } from '../../../shared/domainPacks'
+
+export type { ArticleType } from '../../../shared/domainPacks'
+export { isArticleType } from '../../../shared/domainPacks'
 
 export const REVIEW_SKILL_ID = 'product-review'
 
@@ -9,7 +12,3 @@ export const ARTICLE_TYPE_OPTIONS: Array<{ value: ArticleType; label: string }> 
 ]
 
 export const ARTICLE_TYPE_STORAGE_KEY = 'composer.articleType'
-
-export function isArticleType(value: string | null | undefined): value is ArticleType {
-  return value === 'how-to' || value === 'review' || value === 'top-rank'
-}

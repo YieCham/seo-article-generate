@@ -1,8 +1,8 @@
+import { formatDomainPackPrompt, type DomainPack } from '../../shared/domainPacks'
 import { MIN_ARTICLE_WORDS, MAX_ARTICLE_WORDS, isFaqSection } from './articleLength'
+import { isReviewSkillEnabled } from './skillPipeline'
 
 export const REVIEW_SKILL_ID = 'product-review'
-
-import { isReviewSkillEnabled } from './skillPipeline'
 
 const REVIEW_SKILL_PATTERN =
   /product-review|Review类|测评文章|comparison table|优缺点|product review guide/i
@@ -156,13 +156,10 @@ function buildReviewArticleStructure(productName?: string): string {
   ].join('\n')
 }
 
-export function getReviewPromptBlock(
-  skillsText: string,
-  enabledSkillIds?: string[],
-  productName?: string
-): string {
-  if (!shouldApplyReviewStructure(skillsText, enabledSkillIds)) return ''
-  return buildReviewArticleStructure(productName)
+export function getReviewPromptBlock(productName?: string, pack?: DomainPack | null): string {
+  const extras = formatDomainPackPrompt(pack)
+  const structure = buildReviewArticleStructure(productName)
+  return extras ? `${structure}\n\n${extras}` : structure
 }
 
 export function getReviewOutlineSkeleton(productName?: string): string {

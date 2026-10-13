@@ -36,6 +36,9 @@ export interface CreatePipelineCheckpoint {
     llmPresetId?: string
     llmModel?: string
     writingStyleSkillId?: string
+    domainPackId?: string
+    articleType?: string
+    productId?: string
   }
   statusLabel?: string
   outline?: string

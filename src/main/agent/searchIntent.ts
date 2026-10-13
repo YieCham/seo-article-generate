@@ -21,6 +21,9 @@ export interface ExpandSearchQueriesOptions {
   userContext?: UserWritingContext
   /** 优化模式：原页摘要，帮助对齐搜索意图 */
   sourceContext?: string
+  /** Domain pack style / search hints for query expansion. */
+  domainGuidance?: string
+  excludeQueryTerms?: string[]
 }
 
 export interface SearchIntentResult {
@@ -97,6 +100,25 @@ function sanitizeQueries(queries: string[], topic: string, promoProduct?: string
   return (anchored.length >= 3 ? anchored : cleaned).slice(0, 5)
 }
 
+function filterExcludedDomainTerms(
+  queries: string[],
+  topic: string,
+  excludeQueryTerms?: string[]
+): string[] {
+  if (!excludeQueryTerms || excludeQueryTerms.length === 0) return queries
+  const topicLower = topic.toLowerCase()
+  const blocked = excludeQueryTerms
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length >= 3 && !topicLower.includes(item))
+  if (blocked.length === 0) return queries
+
+  const kept = queries.filter((query) => {
+    const lower = query.toLowerCase()
+    return !blocked.some((term) => lower.includes(term))
+  })
+  return kept.length >= 2 ? kept : queries
+}
+
 function buildUserBriefBlock(options: ExpandSearchQueriesOptions): string {
   const parts: string[] = []
   if (options.userContext?.briefForPrompt) {
@@ -106,6 +128,9 @@ function buildUserBriefBlock(options: ExpandSearchQueriesOptions): string {
   }
   if (options.sourceContext?.trim()) {
     parts.push(`原页面语境（优化模式）：\n${options.sourceContext.trim().slice(0, 1200)}`)
+  }
+  if (options.domainGuidance?.trim()) {
+    parts.push(`领域包约束：\n${options.domainGuidance.trim()}`)
   }
   return parts.join('\n\n')
 }
@@ -156,6 +181,7 @@ export async function analyzeAndExpandSearchQueries(
           '规则：',
           '- 搜索词语言必须与主题语言一致',
           '- 主题中出现的平台/服务/场景名（如 Spotify、Apple Music、World Cup、MP3）应保留，这是用户真实搜索词的一部分',
+          '- 若提供「领域包约束」，扩词必须留在该领域内：searchHints 优先覆盖，excludeQueryTerms 禁止引入（除非主题原文已出现）',
           '- 用户「指定推广产品名」仅用于成文，**不得**出现在搜索词中（避免调研变成自家产品页）',
           '- 搜索词须紧密围绕 primaryKeyword，禁止漂移到相邻但不同的主题（例：主题是世界杯歌曲下载，不要搜成世界杯赛程或球员介绍）',
           '- 每条 query 应像真实用户在 Google 输入的长尾词，可含 how to / guide / tutorial / blog / step by step / best way 等',
@@ -198,17 +224,29 @@ export async function analyzeAndExpandSearchQueries(
   )
 
   const parsed = parseSearchIntentPayload(raw)
-  let queries = sanitizeQueries(parsed?.queries ?? [], topic, promoProduct)
+  let queries = filterExcludedDomainTerms(
+    sanitizeQueries(parsed?.queries ?? [], topic, promoProduct),
+    topic,
+    options.excludeQueryTerms
+  )
 
   if (queries.length < 3) {
-    const fallbackFromArray = sanitizeQueries(parseJsonArray(raw), topic, promoProduct)
+    const fallbackFromArray = filterExcludedDomainTerms(
+      sanitizeQueries(parseJsonArray(raw), topic, promoProduct),
+      topic,
+      options.excludeQueryTerms
+    )
     if (fallbackFromArray.length >= 3) {
       queries = fallbackFromArray
     }
   }
 
   if (queries.length < 3) {
-    queries = sanitizeQueries(fallbackSearchQueries(topic, articleLang.code), topic, promoProduct)
+    queries = filterExcludedDomainTerms(
+      sanitizeQueries(fallbackSearchQueries(topic, articleLang.code), topic, promoProduct),
+      topic,
+      options.excludeQueryTerms
+    )
   }
 
   return {

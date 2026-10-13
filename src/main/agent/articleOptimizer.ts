@@ -1,6 +1,6 @@
 import type { WebContents } from 'electron'
 import { getEffectiveConfig, resolveRoutedLlm } from '../config/configStore'
-import { resolveStepMaxTokens, maxTokensForOptimizeLengthAdjust, maxTokensForOptimizePolish, maxTokensForOptimizeSection } from '../config/llmTokenLimits'
+import { resolveStepMaxTokens, maxTokensForOptimizeLengthAdjust, maxTokensForOptimizeSection } from '../config/llmTokenLimits'
 import {
   createTokenRunContext,
   runWithTokenContext,
@@ -26,7 +26,6 @@ import { getEnabledSkillBundles } from './skillManager'
 import { buildFullSkillsText, getSkillsTextForStep } from './skillPipeline'
 import {
   chatCompletion,
-  createRateLimitRetryStatus,
   parseOutlineSections,
   type LlmConfig
 } from './llmClient'
@@ -42,8 +41,6 @@ import {
   countWords,
   extractSourceH1,
   formatOptimizeSectionActionLabel,
-  getOptimizePolishHint,
-  getOptimizePolishSystemBlocks,
   getOptimizePromptBlocks,
   getOptimizeLengthPromptBlock,
   getOptimizeSectionActionHint,
@@ -58,6 +55,10 @@ import {
   type OptimizeWordRange,
   type OutlineSection
 } from './optimizeStructure'
+import {
+  buildOptimizeDraftSystemPrompt,
+  excerptOptimizeSectionBriefing
+} from './optimizeSectionBriefing'
 import { sanitizeOptimizeSections } from './optimizeSectionSanitize'
 import {
   enforceOutlineH2Contract,
@@ -70,12 +71,17 @@ import {
   countArticleWords
 } from './articleLength'
 import { enforceOptimizeArticleWordCount } from './articleWordEnforcement'
+import {
+  buildSectionPatchSystemPrompt,
+  patchOptionsForAction,
+  resolveOptimizePatch
+} from './optimizePatch'
+import { finalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
 import { formatSeoMetaBlock, generateSeoMeta } from './seoMeta'
 import { getUserContextPromptBlocks, parseUserWritingContext } from './userContext'
 import {
   classifyDraftSectionProductKind,
   getDraftQuickAnswerHint,
-  getPolishProductHint,
   getUserContextPromptBlocksForSection,
   type DraftSectionProductKind
 } from './productMention'
@@ -194,11 +200,16 @@ async function extractCompetitorGapInsights(
           '### 建议保留并增强（KEEP + ENHANCE）',
           '- 原文仍准确、可用、体现经验/专业性的段落（注明章节；可补充哪些竞品要点）',
           '### 建议补充（ADD）',
-          '- 竞品有、原文缺的高价值内容：具体观点/步骤/技巧/FAQ（每条注明**建议插入的原文章节**）',
+          '- 竞品有、原文缺的高价值内容：具体观点/步骤/技巧/FAQ（每条注明**建议插入的原文章节 / H2**）',
           '- 至少 3–8 条可执行要点，写入对应 H2',
           '### 建议删减或替换（REMOVE / REPLACE）',
           '- 仅列出有证据的过时/失效/误导内容（注明章节与原因）；**不要**把仍可用的产品使用步骤整段列入删除',
           '- 空洞堆砌、重复、低信任表述也应列入删减候选',
+          '### 按 H2 索引（必填，供分节摘录）',
+          '对每个相关 ## 输出一块，标题须可与原文/大纲 H2 对应：',
+          '#### H2: {章节标题}',
+          '- KEEP / ADD / REMOVE 短句；新增模块写在自己的 H2 块里，并注明 placement: after/before 「相邻节标题」',
+          '不要把「插在两节中间」的要点写进相邻旧节。',
           '',
           `语言：${articleLang.label}`,
           '',
@@ -260,8 +271,13 @@ async function auditSourcePage(
           '5. 结构与 SEO/GEO 问题（标题层级、关键词、缺失模块如 Quick Answer/FAQ 等）',
           '6. **建议局部改写**的句子（薄弱/难读/SEO 不足，具体到句）',
           '7. **优化动作清单**（KEEP+ENHANCE / ADD / REMOVE / REPLACE / **NEW H2**，按优先级）',
-          '8. 大纲骨架（H2 列表）：按终稿顺序列出**最终采用的 ## 标题**（可对原 Part 改名）；新增模块用 `[新增 H2] 标题` 并注明 insert before/after；该列表将直接驱动分节写作与 H2 契约，勿写「建议」而不写最终标题',
+          '8. 大纲骨架（H2 列表）：按终稿顺序列出**最终采用的 ## 标题**（可对原 Part 改名）；新增模块用 `[新增 H2] 标题`，插入位置写在标题外面（insert before/after 「章节名」）。标题正文里不要出现 `[insert after …]`、`(insert before …)` 或其他插入说明。该列表将直接驱动分节写作与 H2 契约，勿写「建议」而不写最终标题',
           '9. **建议新增章节**（可选）：每条 `- [NEW H2] 标题 | insert before/after 「原文章节名」| 要点摘要`',
+          '10. **按 H2 编辑要点（必填）**：骨架中每个最终 ## 各一块，标题必须与骨架完全一致：',
+          '#### H2: {精确标题}',
+          '- placement: existing | after 「上一节标题」 | before 「下一节标题」',
+          '- KEEP: 1–3 条；ADD: 1–5 条（新节以 ADD 为主）；REMOVE: 0–3 条',
+          '「插在两节中间」只写在新节块的 placement，不要写进相邻旧节的 ADD。',
           '',
           `终稿语言须保持：${articleLang.label}`,
           '',
@@ -485,6 +501,16 @@ async function draftOptimizedSections(
   const editorBlocks = getEditorPromptBlocks(wordRange)
   const sectionTitles = sections.map((section) => section.title)
   const articleTitle = extractSourceH1(sourceMarkdown, title)
+  const draftSystemPrompt = buildOptimizeDraftSystemPrompt({
+    articleTitle,
+    langLock: articleLang.lock,
+    languageLabel: articleLang.label,
+    mentionLock: userContext.mentionLock,
+    briefForPrompt: userContext.briefForPrompt,
+    skillsText,
+    editorBlocks,
+    wordRangeLabel: wordRange.label
+  })
   let fullDraft = resume?.initialDraft ?? `# ${articleTitle}\n\n`
   const startIndex = resume?.startIndex ?? 0
 
@@ -513,70 +539,138 @@ async function draftOptimizedSections(
       userContext.mentionLock,
       sectionProductKind
     )
-
-    const systemRoleByAction =
+    const briefing =
       pairing.action === 'text_polish'
-        ? '你是 SEO/GEO 内容编辑。本节已与原文大纲配对为**文本优化**：保留有效原句与信息结构，仅做语言与可读性改进；若用户指定了产品，须保留并自然使用产品全名。'
-        : pairing.action === 'write_new'
-          ? '你是 SEO/GEO 内容编辑。本节为大纲新增模块：按诊断与竞品缺口**新写**完整正文；若用户指定了产品，在合适位置自然植入。'
-          : '你是 SEO/GEO 内容编辑。本节已与原文大纲配对为**内容增删**：优质原句保留并增量补充，过时/不可用/低 E-E-A-T 内容删减或替换；落实用户指定产品的自然提及。'
+        ? { auditExcerpt: '', competitorExcerpt: '' }
+        : excerptOptimizeSectionBriefing({
+            sectionTitle: section.title,
+            sourceTitle: pairing.sourceTitle,
+            allSectionTitles: sectionTitles,
+            audit,
+            competitorInsights,
+            action: pairing.action
+          })
 
-    const sectionText = await chatCompletion(
-      llm,
-      [
-        {
-          role: 'system',
-          content: [
-            systemRoleByAction,
-            articleLang.lock,
-            sectionUserContextBlocks,
-            skillsText ? `Skills：\n${skillsText}` : '',
-            editorBlocks,
-            '只输出本节 Markdown 正文（不要 ## / ### 本节标题行），不要解释修改过程。',
-            '本节标题与位置须严格遵循优化大纲，不得改名或并入其他章节。'
-          ]
-            .filter(Boolean)
-            .join('\n\n')
-        },
-        {
-          role: 'user',
-          content: [
-            `页面标题：${articleTitle}`,
-            `输出语言：${articleLang.label}（与原文一致）`,
-            userContext.briefForPrompt,
-            getOptimizeSectionActionHintWithProduct(pairing, userContext.productName),
-            getIntroConclusionSectionHint(section.title),
-            '',
-            hasOriginal ? `--- 原文本节（${pairing.sourceTitle}）---\n${originalBody}\n---` : '',
-            '',
-            '编辑说明（来自优化大纲，必须落实）：',
-            section.body.trim() ? section.body.trim() : '（无额外 bullet；按本节动作执行）',
-            '',
-            pairing.action === 'text_polish' ? '' : '诊断摘要：',
-            pairing.action === 'text_polish' ? '' : audit.slice(0, 2500),
-            '',
-            pairing.action === 'text_polish' ? '' : '可补充的竞品缺口（内容增删/新写时写入本节相关处）：',
-            pairing.action === 'text_polish' ? '' : competitorInsights.slice(0, 2000),
-            '',
-            `输出优化后的「${section.title}」正文。`,
-            `词数参考：${wordRange.label}；本节约 ${sectionWordBudget} 词。`
-          ]
-            .filter(Boolean)
-            .join('\n')
-        }
-      ],
-      {
-        temperature: pairing.action === 'text_polish' ? 0.2 : 0.25,
-        maxTokens: maxTokensForOptimizeSection(
-          pairing.action === 'write_new'
-            ? Math.max(sectionWordBudget, 280)
-            : countWords(originalBody),
-          globalMaxTokens
+    const sectionLabel = `正在优化第 ${i + 1}/${sections.length} 节：${section.title}（${formatOptimizeSectionActionLabel(pairing.action)}）`
+    let body = ''
+
+    if (pairing.action === 'write_new' || !hasOriginal) {
+      if (pairing.action !== 'write_new' && !hasOriginal) {
+        emit({
+          type: 'status',
+          step: 'draft',
+          message: `第 ${i + 1} 节「${section.title}」无原文底稿，已保留空节`
+        })
+      } else {
+        const sectionText = await chatCompletion(
+          llm,
+          [
+            { role: 'system', content: draftSystemPrompt },
+            {
+              role: 'user',
+              content: [
+                getOptimizeSectionActionHintWithProduct(pairing, userContext.productName),
+                sectionUserContextBlocks,
+                getIntroConclusionSectionHint(section.title),
+                '',
+                '编辑说明（来自优化大纲，必须落实）：',
+                section.body.trim() ? section.body.trim() : '（无额外 bullet；按本节动作执行）',
+                '',
+                briefing.auditExcerpt ? '本节诊断要点（仅本节）：' : '',
+                briefing.auditExcerpt,
+                '',
+                briefing.competitorExcerpt ? '本节竞品缺口（仅本节）：' : '',
+                briefing.competitorExcerpt,
+                '',
+                `输出优化后的「${section.title}」正文。标题只用行首的 ##，不要写成列表或行内代码。`,
+                `本节约 ${sectionWordBudget} 词。`
+              ]
+                .filter(Boolean)
+                .join('\n')
+            }
+          ],
+          {
+            temperature: 0.25,
+            cacheSystemPrefix: true,
+            step: 'draft',
+            label: sectionLabel,
+            maxTokens: maxTokensForOptimizeSection(Math.max(sectionWordBudget, 280), globalMaxTokens)
+          }
         )
+        body = normalizeArticleMarkdown(stripLeadingSectionHeading(sectionText, section.title))
       }
-    )
+    } else {
+      const patchAction = pairing.action === 'text_polish' ? 'text_polish' : 'content_revise'
+      const patchOptions = patchOptionsForAction(patchAction)
+      let lastError = ''
+      let applied = false
 
-    const body = stripLeadingSectionHeading(sectionText, section.title)
+      const patchTokenCap = maxTokensForOptimizeSection(
+        Math.max(countWords(originalBody), 200),
+        globalMaxTokens
+      )
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        throwIfAborted()
+        const raw = await chatCompletion(
+          llm,
+          [
+            { role: 'system', content: buildSectionPatchSystemPrompt(patchAction) },
+            {
+              role: 'user',
+              content: [
+                getOptimizeSectionActionHintWithProduct(pairing, userContext.productName),
+                sectionUserContextBlocks,
+                getIntroConclusionSectionHint(section.title),
+                '',
+                `--- 原文本节（${pairing.sourceTitle ?? section.title}）---`,
+                originalBody,
+                '---',
+                '',
+                '编辑说明（落成补丁，不要重写整节）：',
+                section.body.trim() ? section.body.trim() : '（无额外 bullet；仅在确有薄弱句时 replace）',
+                '',
+                briefing.auditExcerpt ? '本节诊断要点（仅本节）：' : '',
+                briefing.auditExcerpt,
+                '',
+                briefing.competitorExcerpt ? '本节竞品缺口（仅本节）：' : '',
+                briefing.competitorExcerpt,
+                '',
+                lastError ? `上次补丁未应用：${lastError}。请按原文逐字引用 find 后重试。` : '',
+                '只输出 JSON：{"ops":[...]}'
+              ]
+                .filter(Boolean)
+                .join('\n')
+            }
+          ],
+          {
+            temperature: 0.2,
+            jsonObject: true,
+            step: 'draft',
+            label: sectionLabel,
+            maxTokens: patchTokenCap == null ? 4096 : Math.min(4096, patchTokenCap)
+          }
+        )
+
+        const resolved = resolveOptimizePatch(raw, originalBody, patchOptions)
+        if (resolved.ok) {
+          body = normalizeArticleMarkdown(resolved.text)
+          applied = true
+          break
+        }
+        lastError = resolved.error
+      }
+
+      if (!applied) {
+        body = originalBody
+        emit({
+          type: 'status',
+          step: 'draft',
+          message: `第 ${i + 1} 节「${section.title}」补丁未应用，已保留原文${lastError ? `（${lastError}）` : ''}`
+        })
+      }
+    }
+
     const block = `## ${section.title}\n\n${body}\n\n`
     fullDraft += block
     emit({ type: 'chunk', text: block, step: 'draft' })
@@ -586,77 +680,14 @@ async function draftOptimizedSections(
   return reorderArticleMarkdown(fullDraft.trim())
 }
 
-async function polishOptimizedArticle(
-  llm: LlmConfig,
-  draft: string,
-  articleLang: ArticleLanguageContext,
-  userContext: ReturnType<typeof parseUserWritingContext>,
-  wordRange: OptimizeWordRange,
-  globalMaxTokens: number,
-  emit: (event: GenerateProgressEvent) => void,
-  onChunk: (text: string) => void
-): Promise<string> {
-  emit({ type: 'status', step: 'polish', message: '⑨ 终稿校对（语法与结构完整性）…' })
-  emit({ type: 'reset' })
-
-  const polishMaxTokens = maxTokensForOptimizePolish(countWords(draft), globalMaxTokens)
-
-  const polished = await chatCompletion(
-    llm,
-    [
-      {
-        role: 'system',
-        content: [
-          '你是校对编辑。对**已优化稿**做终稿校对：语法、衔接、可读性与模块完整性；不是整篇重写。',
-          articleLang.lock,
-          getUserContextPromptBlocks(userContext),
-          userContext.productName
-            ? getPolishProductHint(userContext.productName, { geo: true })
-            : '',
-          getOptimizePolishSystemBlocks(),
-          CONTENT_READABILITY_GUIDANCE
-        ]
-          .filter(Boolean)
-          .join('\n\n')
-      },
-      {
-        role: 'user',
-        content: [
-          '对以下优化稿做终稿校对：',
-          `- 保持${articleLang.label}`,
-          getOptimizePolishHint(),
-          userContext.productName
-            ? `- 保留用户指定产品「${userContext.productName}」在正文/对比/结论中的准确全名；**若 Quick Answer 出现该全名，改为模糊表述**；勿在无关处删改成泛称`
-            : '',
-          `- 全文词数参考：${wordRange.label}`,
-          '- 直接输出 Markdown 正文',
-          '- 不要用 ```markdown 代码围栏包裹正文',
-          '',
-          draft
-        ]
-          .filter(Boolean)
-          .join('\n')
-      }
-    ],
-    {
-      temperature: 0.2,
-      maxTokens: polishMaxTokens,
-      step: 'polish',
-      label: '终稿校对',
-      onRateLimitRetry: createRateLimitRetryStatus('⑨ 终稿校对（语法与结构完整性）…', (message) =>
-        emit({ type: 'status', step: 'polish', message })
-      )
-    }
-  )
-
-  onChunk(reorderArticleMarkdown(normalizeArticleMarkdown(polished)))
-  return reorderArticleMarkdown(normalizeArticleMarkdown(polished))
+function acceptOptimizedDraft(draft: string): string {
+  return reorderArticleMarkdown(normalizeArticleMarkdown(draft))
 }
 
 export async function optimizeArticle(
   options: OptimizeArticleOptions,
   sender: WebContents
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true; article: string } | { ok: false; message: string }> {
   const llmSelection = {
     presetId: options.resume?.options.llmPresetId ?? options.llmPresetId ?? '',
     model: options.resume?.options.llmModel ?? options.llmModel ?? ''
@@ -1123,16 +1154,12 @@ export async function optimizeArticle(
       if (!draft) {
         return { ok: false, message: '无法继续：缺少优化稿，请重新开始。' }
       }
-      polished = await polishOptimizedArticle(
-        llmBody,
-        draft,
-        articleLang,
-        userContext,
-        wordRange,
-        globalMaxTokens,
-        emit,
-        (text) => emit({ type: 'chunk', text, step: 'polish' })
-      )
+      emit({
+        type: 'status',
+        step: 'polish',
+        message: '⑨ 跳过全文校对，保留分节补丁…'
+      })
+      polished = acceptOptimizedDraft(draft)
       polished = applyOutlineH2Contract(
         polished,
         outline,
@@ -1142,6 +1169,7 @@ export async function optimizeArticle(
         'polish'
       )
       polished = reorderArticleMarkdown(polished)
+      emit({ type: 'replace', text: polished, step: 'polish' })
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('length', {
           statusLabel: '⑨ 终稿校对完成',
@@ -1183,7 +1211,7 @@ export async function optimizeArticle(
           scraped.markdown,
           maxTokensForOptimizeLengthAdjust(countArticleWords(polished), globalMaxTokens),
           emit,
-          (text) => emit({ type: 'chunk', text, step: 'length' }),
+          (text) => emit({ type: 'replace', text, step: 'length' }),
           { audit }
         )
       )
@@ -1196,6 +1224,7 @@ export async function optimizeArticle(
         'length'
       )
       lengthAdjusted = reorderArticleMarkdown(lengthAdjusted)
+      emit({ type: 'replace', text: lengthAdjusted, step: 'length' })
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('meta', {
           statusLabel: '⑩ 词数校准完成',
@@ -1211,6 +1240,7 @@ export async function optimizeArticle(
       )
     }
 
+    let seoBlock = ''
     if (shouldRunPipelineStep(nextStep, 'meta', 'optimize')) {
       emit({ type: 'status', step: 'meta', message: '⑪ 生成 SEO Meta Title & Description…' })
       const seoMeta = await generateSeoMeta(
@@ -1220,12 +1250,15 @@ export async function optimizeArticle(
         articleLang,
         userContext.productName
       )
-      emit({ type: 'prepend', text: formatSeoMetaBlock(seoMeta), step: 'meta' })
+      seoBlock = formatSeoMetaBlock(seoMeta)
     }
 
-    emit({ type: 'clearCheckpoint' })
+    const finalArticle = `${seoBlock}${finalizeArticleMarkdown(lengthAdjusted || polished || draft, { preserveStructure: true })}`.trim()
+    if (finalArticle) {
+      emit({ type: 'replace', text: finalArticle, step: seoBlock ? 'meta' : 'length' })
+    }
     emit({ type: 'done' })
-    return { ok: true }
+    return { ok: true, article: finalArticle }
   } catch (error) {
     if (isAbortError(error)) {
       emit({ type: 'cancelled', message: '已中止生成' })

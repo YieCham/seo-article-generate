@@ -1,4 +1,12 @@
 import type { ArticleType } from '../constants/articleTypes'
+import {
+  BUILTIN_DOMAIN_PACKS,
+  DEFAULT_DOMAIN_PACK_ID,
+  lookupDomainPack,
+  lookupDomainPackByName,
+  type DomainPack,
+  type DomainPackId
+} from '../../../shared/domainPacks'
 
 export function buildExtraInstructions(options: {
   product?: string
@@ -28,11 +36,14 @@ export function buildExtraInstructions(options: {
 export function formatUserMessageContent(
   topic: string,
   extraInstructions: string,
-  articleType?: ArticleType
+  articleType?: ArticleType,
+  domainPackId?: DomainPackId | string,
+  packs: DomainPack[] = BUILTIN_DOMAIN_PACKS
 ): string {
   const typeLabel =
     articleType === 'review' ? 'Review' : articleType === 'top-rank' ? 'Top rank' : 'How to'
-  const header = `**文章类型：** ${typeLabel}`
+  const pack = lookupDomainPack(domainPackId, packs)
+  const header = `**领域：** ${pack.name}\n**文章类型：** ${typeLabel}`
 
   if (!extraInstructions.trim()) {
     return `${header}\n\n${topic}`
@@ -79,14 +90,22 @@ export function formatOptimizeUserMessageContent(sourceUrl: string, extraInstruc
   return `${header}\n\n**补充要求**\n${extraInstructions.trim()}`
 }
 
-export function parseCreateUserMessage(content: string): {
+export function parseCreateUserMessage(
+  content: string,
+  packs: DomainPack[] = BUILTIN_DOMAIN_PACKS
+): {
   topic: string
   extraInstructions: string
   articleType: ArticleType
+  domainPackId: DomainPackId
 } | null {
   if (content.startsWith('**模式：**')) return null
 
-  const typeMatch = content.match(/^\*\*文章类型：\*\*\s*(Review|Top rank|How to)/)
+  const domainMatch = content.match(/^\*\*领域：\*\*\s*([^\n]+)/m)
+  const domainPackId =
+    lookupDomainPackByName(domainMatch?.[1]?.trim(), packs)?.id ?? DEFAULT_DOMAIN_PACK_ID
+
+  const typeMatch = content.match(/\*\*文章类型：\*\*\s*(Review|Top rank|How to)/)
   let articleType: ArticleType = 'how-to'
   if (typeMatch?.[1] === 'Review') articleType = 'review'
   else if (typeMatch?.[1] === 'Top rank') articleType = 'top-rank'
@@ -94,7 +113,9 @@ export function parseCreateUserMessage(content: string): {
   const extraMatch = content.match(/\n\n\*\*补充要求\*\*\n([\s\S]*)$/)
   const extraInstructions = extraMatch?.[1]?.trim() ?? ''
 
-  let body = content.replace(/^\*\*文章类型：\*\*[^\n]*\n\n?/, '')
+  let body = content
+    .replace(/^\*\*领域：\*\*[^\n]*\n?/, '')
+    .replace(/^\*\*文章类型：\*\*[^\n]*\n\n?/, '')
   if (extraMatch) {
     body = body.replace(/\n\n\*\*补充要求\*\*\n[\s\S]*$/, '')
   }
@@ -102,7 +123,7 @@ export function parseCreateUserMessage(content: string): {
   const topic = body.trim()
   if (!topic) return null
 
-  return { topic, extraInstructions, articleType }
+  return { topic, extraInstructions, articleType, domainPackId }
 }
 
 export function parseOptimizeUserMessage(content: string): {

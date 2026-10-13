@@ -67,6 +67,7 @@ export interface GenerateProgressEvent {
 export interface GenerateArticleResult {
   ok: boolean
   message?: string
+  article?: string
 }
 
 export type LlmReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max'
@@ -183,6 +184,12 @@ export interface GenerateImageRequest {
   model?: string
 }
 
+export interface EditImageReference {
+  fileName?: string
+  imageDataUrl?: string
+  imageUrl?: string
+}
+
 export interface EditImageRequest {
   prompt: string
   size?: string
@@ -190,6 +197,7 @@ export interface EditImageRequest {
   fileName?: string
   imageDataUrl?: string
   imageUrl?: string
+  references?: EditImageReference[]
 }
 
 export interface GenerateImageResult {
@@ -219,6 +227,7 @@ export interface ImportImageResult {
   canceled?: boolean
   message?: string
   item?: ImageHistoryItem
+  items?: ImageHistoryItem[]
 }
 
 export interface SkillItem {
@@ -229,6 +238,7 @@ export interface SkillItem {
   enabled: boolean
   bundled?: boolean
   forced?: boolean
+  packLocked?: boolean
 }
 
 export interface KnowledgeDoc {
@@ -362,6 +372,9 @@ declare global {
         llmPresetId?: string
         llmModel?: string
         writingStyleSkillId?: string
+        domainPackId?: string
+        articleType?: string
+        productId?: string
         reuseResearch?: import('../../shared/researchPack').CreateResearchPack
       }) => Promise<GenerateArticleResult>
       optimizeArticle: (request: {
@@ -409,6 +422,7 @@ declare global {
       generateImage: (request?: GenerateImageRequest) => Promise<GenerateImageResult>
       editImage: (request: EditImageRequest) => Promise<GenerateImageResult>
       importImage: () => Promise<ImportImageResult>
+      importReferenceImages: () => Promise<ImportImageResult>
       listImageHistory: () => Promise<ImageHistoryItem[]>
       deleteImageHistoryItem: (id: string) => Promise<{ ok: true }>
       clearImageHistory: () => Promise<{ ok: true }>
@@ -420,7 +434,12 @@ declare global {
       saveSkill: (skill: SkillItem, mode?: SkillListMode) => Promise<SkillItem>
       deleteSkill: (id: string) => Promise<void>
       setSkillEnabled: (id: string, enabled: boolean, mode?: SkillListMode) => Promise<void>
-      syncArticleTypeSkills: (articleType: 'how-to' | 'review' | 'top-rank') => Promise<void>
+      listDomainPacks: () => Promise<import('../../shared/domainPacks').DomainPack[]>
+      saveDomainPack: (
+        input: import('../../shared/domainPacks').SaveDomainPackInput
+      ) => Promise<import('../../shared/domainPacks').DomainPack>
+      deleteDomainPack: (id: string) => Promise<{ ok: true }>
+      restoreDomainPack: (id: string) => Promise<import('../../shared/domainPacks').DomainPack>
       listKnowledgeDocs: () => Promise<KnowledgeDoc[]>
       saveKnowledgeDoc: (input: SaveKnowledgeDocInput) => Promise<KnowledgeDoc>
       deleteKnowledgeDoc: (id: string) => Promise<{ ok: true }>
@@ -450,6 +469,22 @@ declare global {
       publishWordPressDraft: (request: WordPressPublishRequest) => Promise<WordPressPublishResult>
       getWordPressPublishLog: () => Promise<{ records: WordPressPublishLogRecord[] }>
       clearWordPressPublishLog: () => Promise<{ ok: true }>
+      listInternalLinks: (
+        productId?: string
+      ) => Promise<import('../../shared/internalLinks').InternalLinkCatalogSummary | null>
+      importInternalLinks: (input: {
+        productId: string
+        productName?: string
+        siteUrl: string
+        sitemapUrl?: string
+        includePatterns?: string[] | string
+        excludePatterns?: string[] | string
+      }) => Promise<
+        import('../../shared/internalLinks').InternalLinkCatalogSummary & {
+          ok: true
+          message?: string
+        }
+      >
       loadChatStore: () => Promise<ChatStoreData>
       saveChatStore: (data: ChatStoreData) => Promise<{ ok: true }>
       platform: NodeJS.Platform

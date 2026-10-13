@@ -6,6 +6,7 @@ import {
   parseSourceSections,
   type OutlineSection
 } from './optimizeStructure'
+import { stripHeadingPlacement } from './optimizeSectionSanitize'
 
 export interface OutlineH2ContractReport {
   ok: boolean
@@ -84,7 +85,9 @@ function splitArticleShell(markdown: string): {
 
 export function getExpectedOutlineH2Titles(outline: string): string[] {
   const sections = normalizeOptimizeSectionOrder(parseOutlineSections(outline))
-  return sections.map((item) => item.title.trim()).filter(Boolean)
+  return sections
+    .map((item) => stripHeadingPlacement(item.title))
+    .filter((title) => title.length > 0)
 }
 
 export function analyzeOutlineH2Contract(

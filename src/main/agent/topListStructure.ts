@@ -6,7 +6,7 @@ import {
   MAX_FAQ_QUESTIONS,
   MAX_FAQ_SECTION_WORDS
 } from './articleLength'
-import { GEO_BANNED_TERMS_GUIDANCE } from './geoSeoStructure'
+import { formatDomainPackPrompt, type DomainPack } from '../../shared/domainPacks'
 
 import { isTopListSkillEnabled } from './skillPipeline'
 
@@ -103,23 +103,22 @@ Product placement:
 - User's product **does not qualify** → dedicated supplemental Part outside the Top N — never fake its way into the rankings
 
 Length: **${TOP_LIST_MIN_ARTICLE_WORDS}–${TOP_LIST_MAX_ARTICLE_WORDS} English words** (programmatically verified).
-Style: US English when English is selected; geek-friendly; accurate audio/streaming terms.
+Style: match user's output language; US English when English is selected. Clear, helpful tone; accurate domain-specific terms.
 Do NOT mention AI identity or "As an expert…" in the final article.
 `.trim()
 
 export function getTopListPromptBlock(
-  skillsText: string,
+  topic: string,
   productName?: string,
-  enabledSkillIds?: string[]
+  pack?: DomainPack | null
 ): string {
-  if (!shouldApplyTopListStructure(skillsText, enabledSkillIds)) return ''
-
-  const count = parseTopListCount(skillsText)
+  const count = parseTopListCount(topic)
   return [
     TOP_LIST_ARTICLE_STRUCTURE,
     `Parsed list size from context: **Top ${count}** (adjust ### entries to match Topic).`,
     getTopListProductPlacementGuidance(productName),
-    'Domain style (streaming audio): use accurate terms (bitrate, lossless, ID3, batch conversion, output formats).',
-    GEO_BANNED_TERMS_GUIDANCE
-  ].join('\n\n')
+    formatDomainPackPrompt(pack)
+  ]
+    .filter(Boolean)
+    .join('\n\n')
 }

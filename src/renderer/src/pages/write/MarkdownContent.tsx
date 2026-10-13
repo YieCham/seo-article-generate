@@ -1,7 +1,8 @@
-import type { ReactNode, Ref } from 'react'
+import { isValidElement, memo, type ReactNode, type Ref } from 'react'
 import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { normalizeArticleMarkdown } from '../../../../shared/normalizeArticleMarkdown'
+import { headingAnchorId, isSeoMetaHeading, plainHeadingText } from '../../../../shared/inPageNav'
+import { finalizeArticleMarkdown } from '../../../../shared/normalizeArticleMarkdown'
 
 interface MarkdownContentProps {
   content: string
@@ -28,7 +29,24 @@ function getNodeOffsets(node?: MarkdownNode): { start?: number; end?: number } {
   }
 }
 
-function createSourceMappingComponents(): Components {
+function reactNodeText(node: ReactNode): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(reactNodeText).join('')
+  if (isValidElement(node)) {
+    const props = node.props as { children?: ReactNode }
+    return reactNodeText(props.children)
+  }
+  return ''
+}
+
+function headingDomId(children: ReactNode, used: Set<string>): string | undefined {
+  const title = reactNodeText(children)
+  if (isSeoMetaHeading(title)) return undefined
+  return headingAnchorId(plainHeadingText(title), used)
+}
+
+function createSourceMappingComponents(headingIds: Set<string>): Components {
   const block = (
     Tag: 'p' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'li' | 'blockquote' | 'td' | 'th' | 'pre'
   ) => {
@@ -47,7 +65,7 @@ function createSourceMappingComponents(): Components {
         case 'h1':
           return <h1 {...mappedProps} />
         case 'h2':
-          return <h2 {...mappedProps} />
+          return <h2 {...mappedProps} id={headingDomId(children, headingIds)} />
         case 'h3':
           return <h3 {...mappedProps} />
         case 'h4':
@@ -130,8 +148,6 @@ function createSourceMappingComponents(): Components {
   }
 }
 
-const sourceMappingComponents = createSourceMappingComponents()
-
 function createLinkComponent(): Components['a'] {
   return ({ href, children, ...props }) => {
     const isExternal =
@@ -153,14 +169,19 @@ function createLinkComponent(): Components['a'] {
 
 const linkComponent = createLinkComponent()
 
-function mergeMarkdownComponents(base?: Components): Components {
+function mergeMarkdownComponents(headingIds: Set<string>, base?: Components): Components {
   return {
     a: linkComponent,
+    h2: ({ children, node: _node, ...props }: ExtraProps & { children?: ReactNode }) => (
+      <h2 {...props} id={headingDomId(children, headingIds)}>
+        {children}
+      </h2>
+    ),
     ...base
   }
 }
 
-export default function MarkdownContent({
+function MarkdownContent({
   content,
   streaming,
   waitingLabel,
@@ -190,7 +211,8 @@ export default function MarkdownContent({
     )
   }
 
-  const renderedContent = normalizeArticleMarkdown(content)
+  const renderedContent = finalizeArticleMarkdown(content, { preserveStructure: true })
+  const headingIds = new Set<string>()
 
   const bodyClass = [
     'markdown-body',
@@ -207,7 +229,10 @@ export default function MarkdownContent({
       <div ref={bodyRef} className={bodyClass}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          components={mergeMarkdownComponents(sourceMapping ? sourceMappingComponents : undefined)}
+          components={mergeMarkdownComponents(
+            headingIds,
+            sourceMapping ? createSourceMappingComponents(headingIds) : undefined
+          )}
         >
           {renderedContent}
         </ReactMarkdown>
@@ -221,3 +246,5 @@ export default function MarkdownContent({
     </>
   )
 }
+
+export default memo(MarkdownContent)

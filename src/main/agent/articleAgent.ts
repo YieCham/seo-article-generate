@@ -10,6 +10,7 @@ import {
 import { maxTokensForFullArticleOutput, maxTokensForOutlineSkeleton, maxTokensForPlanning, resolveStepMaxTokens } from '../config/llmTokenLimits'
 import type { ResearchConfig } from '../config/types'
 import { LLM_REASONING_EFFORT_OPTIONS } from '../config/types'
+import { insertInlineInternalLinksIntoArticle } from './internalLinkInserter'
 import { getCreateSkillBundles, type EnabledSkillBundle } from './skillManager'
 import {
   buildFullSkillsText,
@@ -127,12 +128,20 @@ import {
   type PipelineCheckpoint,
   shouldRunPipelineStep
 } from './pipelineCheckpoint'
+import { finalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
 import { normalizeArticleMarkdown, stripLeadingSectionHeading } from '../../shared/normalizeArticleMarkdown'
 import {
   createResearchPackMatchesTopic,
   type CreateResearchPack,
   type ResearchPack
 } from '../../shared/researchPack'
+import {
+  clampFormatForPack,
+  formatDomainPackSearchGuidance,
+  type ArticleType,
+  type DomainPack
+} from '../../shared/domainPacks'
+import { resolveStoredDomainPack } from '../domainPack/domainPackStore'
 
 export interface GenerateArticleOptions {
   topic: string
@@ -142,6 +151,9 @@ export interface GenerateArticleOptions {
   llmModel?: string
   /** Composer-selected writing style Skill id; empty/omit = AI default (no style Skill). */
   writingStyleSkillId?: string
+  domainPackId?: string
+  articleType?: ArticleType | string
+  productId?: string
   resume?: CreatePipelineCheckpoint
   /** When set and topic matches, skip Tavily/Firecrawl and reuse extracted research. */
   reuseResearch?: CreateResearchPack
@@ -215,12 +227,14 @@ interface PipelineSkillContext {
   bundles: EnabledSkillBundle[]
   skillsText: string
   enabledSkillIds: string[]
+  format: ArticleType
+  pack: DomainPack
 }
 
 function getStructurePromptBlocks(
-  skillsText: string,
+  skillCtx: PipelineSkillContext,
   productName?: string,
-  enabledSkillIds?: string[]
+  topic?: string
 ): {
   combined: string
   geoBlock: string
@@ -229,11 +243,12 @@ function getStructurePromptBlocks(
   lengthBlock: string
   wordBounds: ArticleLengthBounds
 } {
-  const topListBlock = getTopListPromptBlock(skillsText, productName, enabledSkillIds)
-  const geoBlock = topListBlock ? '' : getGeoSeoPromptBlock(skillsText, enabledSkillIds)
-  const reviewBlock = getReviewPromptBlock(skillsText, enabledSkillIds, productName)
-  const wordBounds = getArticleLengthBounds(skillsText, enabledSkillIds)
-  const lengthBlock = getArticleLengthPromptBlock(skillsText, enabledSkillIds)
+  const { format, pack } = skillCtx
+  const topListBlock = format === 'top-rank' ? getTopListPromptBlock(topic ?? '', productName, pack) : ''
+  const geoBlock = format === 'how-to' ? getGeoSeoPromptBlock(pack) : ''
+  const reviewBlock = format === 'review' ? getReviewPromptBlock(productName, pack) : ''
+  const wordBounds = getArticleLengthBounds(undefined, undefined, format)
+  const lengthBlock = getArticleLengthPromptBlock(undefined, undefined, format)
   const productMentionBlock = getProductMentionSupplement(productName, {
     review: Boolean(reviewBlock),
     topList: Boolean(topListBlock),
@@ -248,6 +263,17 @@ function getStructurePromptBlocks(
     combined: [lengthBlock, productMentionBlock, topListBlock, geoBlock, reviewBlock]
       .filter(Boolean)
       .join('\n\n')
+  }
+}
+
+function skillStepContext(
+  skillCtx: PipelineSkillContext,
+  extra?: Omit<Parameters<typeof getSkillsTextForStep>[1], 'bundles' | 'format'>
+): Parameters<typeof getSkillsTextForStep>[1] {
+  return {
+    bundles: skillCtx.bundles,
+    format: skillCtx.format,
+    ...extra
   }
 }
 
@@ -289,7 +315,7 @@ async function extractEeatInsights(
   userContext: UserWritingContext,
   maxTokens?: number
 ): Promise<string> {
-  const stepSkills = getSkillsTextForStep('extract', { bundles: skillCtx.bundles })
+  const stepSkills = getSkillsTextForStep('extract', skillStepContext(skillCtx))
   if (!corpus.trim()) {
     return articleLang.code === 'en'
       ? '(No scraped content available; writing from topic and Skills.)'
@@ -363,11 +389,11 @@ async function generateArticlePlan(
   onStatus?: (message: string) => void
 ): Promise<string> {
   const { reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
-    skillCtx.skillsText,
+    skillCtx,
     userContext.productName,
-    skillCtx.enabledSkillIds
+    topic
   )
-  const stepSkills = getSkillsTextForStep('plan', { bundles: skillCtx.bundles })
+  const stepSkills = getSkillsTextForStep('plan', skillStepContext(skillCtx))
   const useSectionLayoutPlan = !reviewBlock && !topListBlock
   const messages = [
     {
@@ -458,9 +484,9 @@ async function generateDifferentiatedOutline(
   maxTokens?: number
 ): Promise<string> {
   const { geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
-    skillCtx.skillsText,
+    skillCtx,
     userContext.productName,
-    skillCtx.enabledSkillIds
+    topic
   )
 
   const structureSkeleton = topListBlock
@@ -545,16 +571,16 @@ async function draftBySections(
 ): Promise<string> {
   const sections = normalizeOptimizeSectionOrder(parseOutlineSections(outline))
   const { combined, geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
-    skillCtx.skillsText,
+    skillCtx,
     userContext.productName,
-    skillCtx.enabledSkillIds
+    topic
   )
   const sectionTitles = sections.map((section) => section.title)
   const articleH1 = resolveArticleH1(outline, topic, resume?.initialDraft)
   const startIndex = resume?.startIndex ?? 0
   const productName = userContext.productName ?? ''
   const productKnowledge = productName
-    ? await retrieveProductIntroKnowledge(productName)
+    ? await retrieveProductIntroKnowledge(productName, { tags: skillCtx.pack.knowledgeTags })
     : { promptBlock: '', documentCount: 0 }
   const productIntroSectionIndex = findUserProductIntroSectionIndex(sections, productName, {
     review: Boolean(reviewBlock),
@@ -642,13 +668,12 @@ async function draftBySections(
       }`
     })
 
-    const stepSkills = getSkillsTextForStep('draft', {
-      bundles: skillCtx.bundles,
+    const stepSkills = getSkillsTextForStep('draft', skillStepContext(skillCtx, {
       structureBlock: combined,
       sectionTitle: section.title,
       sectionProductKind,
       sectionOutlineBody: section.body
-    })
+    }))
 
     const sectionUserContextBlocks = getUserContextPromptBlocksForSection(
       productName || undefined,
@@ -798,14 +823,13 @@ async function polishDraft(
   onChunk: (text: string) => void
 ): Promise<string> {
   emit({ type: 'status', step: 'polish', message: '⑧ 润色并降低 AI 味…' })
-  emit({ type: 'reset' })
 
   const { combined, geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
-    skillCtx.skillsText,
+    skillCtx,
     userContext.productName,
-    skillCtx.enabledSkillIds
+    topic
   )
-  const stepSkills = getSkillsTextForStep('polish', { bundles: skillCtx.bundles })
+  const stepSkills = getSkillsTextForStep('polish', skillStepContext(skillCtx))
   const humanizer = await getForcedHumanizerPolishText()
   const polished = await chatCompletion(
     llm,
@@ -884,7 +908,7 @@ async function polishDraft(
 export async function generateArticle(
   options: GenerateArticleOptions,
   sender: WebContents
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true; article: string } | { ok: false; message: string }> {
   const llmSelection = {
     presetId: options.resume?.options.llmPresetId ?? options.llmPresetId ?? '',
     model: options.resume?.options.llmModel ?? options.llmModel ?? ''
@@ -954,7 +978,10 @@ export async function generateArticle(
       llmPresetId: resume?.options.llmPresetId ?? options.llmPresetId,
       llmModel: resume?.options.llmModel ?? options.llmModel,
       writingStyleSkillId:
-        resume?.options.writingStyleSkillId ?? options.writingStyleSkillId
+        resume?.options.writingStyleSkillId ?? options.writingStyleSkillId,
+      domainPackId: resume?.options.domainPackId ?? options.domainPackId,
+      articleType: resume?.options.articleType ?? options.articleType,
+      productId: resume?.options.productId ?? options.productId
     },
     ...partial
   })
@@ -966,22 +993,33 @@ export async function generateArticle(
   let searchIntentSummary = resume?.searchIntentSummary ?? ''
 
   try {
+    const domainPack = await resolveStoredDomainPack(
+      resume?.options.domainPackId ?? options.domainPackId
+    )
+    const articleFormat = clampFormatForPack(
+      domainPack,
+      resume?.options.articleType ?? options.articleType
+    )
     emit({
       type: 'status',
       step: 'skills',
       message: resume?.statusLabel
         ? `继续生成：${resume.statusLabel}`
-        : `① 加载 Skills…（成文语言：${articleLang.label}${userContext.productName ? ` · 产品：${userContext.productName}` : ''}）`
+        : `① 加载 Skills…（领域：${domainPack.name} · ${articleFormat} · 成文语言：${articleLang.label}${userContext.productName ? ` · 产品：${userContext.productName}` : ''}）`
     })
-    const skillBundles = await getCreateSkillBundles(
-      resume?.options.writingStyleSkillId ?? options.writingStyleSkillId
-    )
+    const skillBundles = await getCreateSkillBundles({
+      domainPackId: domainPack.id,
+      articleType: articleFormat,
+      writingStyleSkillId: resume?.options.writingStyleSkillId ?? options.writingStyleSkillId
+    })
     const enabledSkillIds = getEnabledSkillIdsFromBundles(skillBundles)
     const skillsText = buildFullSkillsText(skillBundles)
     const skillCtx: PipelineSkillContext = {
       bundles: skillBundles,
       skillsText,
-      enabledSkillIds
+      enabledSkillIds,
+      format: articleFormat,
+      pack: domainPack
     }
 
     if (resume?.plan && !shouldRunPipelineStep(nextStep, 'plan', 'create')) {
@@ -1026,7 +1064,9 @@ export async function generateArticle(
           articleLang,
           extraInstructions: options.extraInstructions,
           userContext,
-          globalMaxTokens
+          globalMaxTokens,
+          domainGuidance: formatDomainPackSearchGuidance(domainPack),
+          excludeQueryTerms: domainPack.excludeQueryTerms
         })
         searchQueries = intentResult.queries
         searchIntentSummary = [
@@ -1193,7 +1233,7 @@ export async function generateArticle(
         articleLang,
         maxTokensForOutlineSkeleton(
           globalMaxTokens,
-          estimateOutlineSectionCount(topic, skillsText, enabledSkillIds)
+          estimateOutlineSectionCount(topic, skillsText, enabledSkillIds, articleFormat)
         )
       )
 
@@ -1309,7 +1349,7 @@ export async function generateArticle(
         maxTokensForFullArticleOutput(countArticleWords(draft), globalMaxTokens, 'polish'),
         emit,
         (text) => {
-          emit({ type: 'chunk', text, step: 'polish' })
+          emit({ type: 'replace', text, step: 'polish' })
         }
       )
       emitCreateCheckpoint(
@@ -1338,9 +1378,10 @@ export async function generateArticle(
         articleLang,
         maxTokensForFullArticleOutput(countArticleWords(polished), globalMaxTokens, 'lengthAdjust'),
         emit,
-        (text) => emit({ type: 'chunk', text, step: 'length' }),
+        (text) => emit({ type: 'replace', text, step: 'length' }),
         skillsText,
-        enabledSkillIds
+        enabledSkillIds,
+        articleFormat
         )
       )
       emitCreateCheckpoint(
@@ -1356,6 +1397,35 @@ export async function generateArticle(
       )
     }
 
+    try {
+      emit({ type: 'status', step: 'length', message: '内链：在正文中匹配可链接短语…' })
+      const related = await insertInlineInternalLinksIntoArticle({
+        markdown: lengthAdjusted,
+        topic,
+        outline,
+        productId: resume?.options.productId ?? options.productId,
+        productName: userContext.productName,
+        searchHints: domainPack.searchHints,
+        language: articleLang.code
+      })
+      lengthAdjusted = related.markdown
+      if (related.inserted) {
+        emit({ type: 'replace', text: lengthAdjusted, step: 'length' })
+      }
+      emit({
+        type: 'status',
+        step: 'length',
+        message: related.inserted
+          ? `内链：已在正文插入 ${related.inserted} 条`
+          : related.skippedReason
+            ? `内链：已跳过（${related.skippedReason}）`
+            : '内链：未插入'
+      })
+    } catch {
+      emit({ type: 'status', step: 'length', message: '内链：插入失败，已跳过' })
+    }
+
+    let seoBlock = ''
     if (shouldRunPipelineStep(nextStep, 'meta', 'create')) {
       emit({ type: 'status', step: 'meta', message: '⑩ 生成 SEO Meta Title & Description…' })
       const seoMeta = await generateSeoMeta(
@@ -1365,12 +1435,15 @@ export async function generateArticle(
         articleLang,
         userContext.productName
       )
-      emit({ type: 'prepend', text: formatSeoMetaBlock(seoMeta), step: 'meta' })
+      seoBlock = formatSeoMetaBlock(seoMeta)
     }
 
-    emit({ type: 'clearCheckpoint' })
+    const finalArticle = `${seoBlock}${finalizeArticleMarkdown(lengthAdjusted || polished || draft)}`.trim()
+    if (finalArticle) {
+      emit({ type: 'replace', text: finalArticle, step: seoBlock ? 'meta' : 'length' })
+    }
     emit({ type: 'done' })
-    return { ok: true }
+    return { ok: true, article: finalArticle }
   } catch (error) {
     if (isAbortError(error)) {
       emit({ type: 'cancelled', message: '已中止生成' })

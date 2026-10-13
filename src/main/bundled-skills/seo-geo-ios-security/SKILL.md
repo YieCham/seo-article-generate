@@ -164,8 +164,8 @@ description: >-
 
 #### Introduction / Conclusion
 
-- **## Introduction**：**≤150 英文词、≤3 段** — 共情痛点，预告 Part 结构，不在首段硬推销产品。
-- **## Conclusion**：**≤150 英文词、≤3 段** — 总结要点 + 自然 CTA（非口号式硬广）。
+- Introduction（`## Introduction`）：**≤150 英文词、≤3 段** — 共情痛点，预告 Part 结构，不在首段硬推销产品。勿写成 `**## Introduction**`（加粗包裹会使 `##` 原样显示）。
+- Conclusion（`## Conclusion`）：**≤150 英文词、≤3 段** — 总结要点 + 自然 CTA（非口号式硬广）。同样勿用 `**## …**`。
 
 #### 图片占位符
 

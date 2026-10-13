@@ -1,6 +1,10 @@
 import { countArticleWords as countWords } from './articleLength'
 import type { OutlineSection } from './optimizeStructure'
 import { classifyArticleModule } from './optimizeStructure'
+import { isCommentRegionHeading, trimCommentTailFromBody } from '../../shared/commentRegion'
+import { stripHeadingPlacement } from '../../shared/normalizeArticleMarkdown'
+
+export { stripHeadingPlacement }
 
 export interface SectionSanitizeLog {
   dropped: Array<{ title: string; reason: string }>
@@ -33,6 +37,13 @@ export function isJunkOptimizeSection(title: string, body: string): boolean {
 
   if (JUNK_TITLE_PATTERNS.some((pattern) => pattern.test(trimmedTitle))) {
     return true
+  }
+
+  if (isCommentRegionHeading(trimmedTitle)) {
+    const words = countWords(body)
+    const looksLikeComment =
+      words < 150 || /#respond|cancel reply|leave a reply/i.test(body)
+    if (looksLikeComment) return true
   }
 
   const combined = `${trimmedTitle}\n${body}`
@@ -93,11 +104,12 @@ function parseSectionTitleMetadata(rawTitle: string): ParsedSectionTitle {
     isPlacementMeta = true
   }
 
-  title = title
-    .replace(/^\[NEW H2\]\s*/i, '')
-    .replace(/^\[新增\s*H2(?:\s*[:：][^\]]*)?\]\s*/i, '')
-    .replace(/\s*\|\s*`?(?:Insert|insert)\s+(?:before|between)[^|]*$/i, '')
-    .trim()
+  title = stripHeadingPlacement(
+    title
+      .replace(/^\[NEW H2\]\s*/i, '')
+      .replace(/^\[新增\s*H2(?:\s*[:：][^\]]*)?\]\s*/i, '')
+      .replace(/\s*\|\s*`?(?:Insert|insert)\s+(?:before|between)[^|]*$/i, '')
+  )
 
   if (/^(?:Insert|insert)\s+(?:before|between)\b/i.test(title)) {
     isPlacementMeta = true
@@ -197,7 +209,12 @@ function buildMergeBullet(section: OutlineSection, parsed: ParsedSectionTitle): 
 }
 
 export function filterJunkSourceSections(sections: OutlineSection[]): OutlineSection[] {
-  return sections.filter((section) => !isJunkOptimizeSection(section.title, section.body))
+  return sections
+    .map((section) => ({
+      ...section,
+      body: trimCommentTailFromBody(section.body)
+    }))
+    .filter((section) => !isJunkOptimizeSection(section.title, section.body))
 }
 
 export function sanitizeOptimizeSections(

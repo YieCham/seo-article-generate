@@ -3,7 +3,7 @@ import { MULTI_METHOD_POLISH_PRESERVATION_HINT } from './outlineSkeleton'
 import { MULTI_METHOD_STRUCTURE_PRESERVE_RULE } from './articleStructurePreserve'
 import { parseOutlineSections } from './llmClient'
 import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
-import { filterJunkSourceSections } from './optimizeSectionSanitize'
+import { filterJunkSourceSections, stripHeadingPlacement } from './optimizeSectionSanitize'
 
 export type OutlineSection = { title: string; body: string }
 
@@ -93,16 +93,17 @@ export interface AuditOutlineSkeletonItem {
 }
 
 function normalizeAuditH2Title(raw: string): string {
-  return raw
-    .trim()
-    .replace(/\*\*/g, '')
-    .replace(/^[\d.]+\s*/, '')
-    .replace(/^\[NEW H2\]\s*/i, '')
-    .replace(/^\[新增\s*H2(?:\s*[:：][^\]]*)?\]\s*/i, '')
-    .replace(/\s*\([^)]*\)\s*$/, '')
-    .replace(/\s*[|｜].*$/, '')
-    .replace(/\s*[（(]原[^）)]*[）)]\s*/g, '')
-    .trim()
+  return stripHeadingPlacement(
+    raw
+      .trim()
+      .replace(/\*\*/g, '')
+      .replace(/^[\d.]+\s*/, '')
+      .replace(/^\[NEW H2\]\s*/i, '')
+      .replace(/^\[新增\s*H2(?:\s*[:：][^\]]*)?\]\s*/i, '')
+      .replace(/\s*\([^)]*\)\s*$/, '')
+      .replace(/\s*[|｜].*$/, '')
+      .replace(/\s*[（(]原[^）)]*[）)]\s*/g, '')
+  )
 }
 
 /**
@@ -132,8 +133,10 @@ export function parseAuditOutlineSkeleton(audit: string): AuditOutlineSkeletonIt
       || line.match(/insert\s+before\s*[「"']?([^」"'\n|]+)[」"']?/i)
     const afterMatch = line.match(/insert\s+\*\*after\*\*\s*[「"']?([^」"'\n|]+)[」"']?/i)
       || line.match(/insert\s+after\s*[「"']?([^」"'\n|]+)[」"']?/i)
-    if (beforeMatch) insertBefore = beforeMatch[1].replace(/\*\*/g, '').trim()
-    if (afterMatch) insertAfter = afterMatch[1].replace(/\*\*/g, '').trim()
+    const cleanAnchor = (value: string): string =>
+      value.replace(/\*\*/g, '').replace(/^[\[【［「"'“]+|[\]】］」"'”]+$/g, '').trim()
+    if (beforeMatch) insertBefore = cleanAnchor(beforeMatch[1])
+    if (afterMatch) insertAfter = cleanAnchor(afterMatch[1])
 
     let title = line
       .replace(/^\d+\.\s+/, '')

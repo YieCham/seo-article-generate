@@ -26,6 +26,7 @@ import {
 } from './optimizeStructure'
 import { CONTENT_READABILITY_GUIDANCE } from './articleLength'
 import { getUserContextPromptBlocks, parseUserWritingContext } from './userContext'
+import { finalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
 import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
 
 export interface BatchOptimizePageOptions {
@@ -120,7 +121,7 @@ async function optimizeScrapedPage(
 export async function batchOptimizePage(
   options: BatchOptimizePageOptions,
   sender: WebContents
-): Promise<{ ok: boolean; message?: string }> {
+): Promise<{ ok: true; article?: string } | { ok: false; message: string }> {
   const llmSelection = {
     presetId: options.llmPresetId ?? '',
     model: options.llmModel ?? ''
@@ -201,13 +202,14 @@ export async function batchOptimizePage(
         )
       )
 
-      const draft = optimized.startsWith('#')
+      const titled = optimized.startsWith('#')
         ? optimized
         : `# ${extractSourceH1(scraped.markdown, scraped.title)}\n\n${optimized}`
+      const draft = finalizeArticleMarkdown(titled, { preserveStructure: true })
 
       emit({ type: 'chunk', text: draft, step: 'draft' })
       emit({ type: 'done' })
-      return { ok: true }
+      return { ok: true, article: draft }
     } catch (error) {
       if (isAbortError(error)) {
         emit({ type: 'cancelled', message: '已中止生成' })

@@ -9,8 +9,10 @@ import TokenLogPanel from './settings/TokenLogPanel'
 import WindowClosePanel from './settings/WindowClosePanel'
 import NetworkProxyPanel from './settings/NetworkProxyPanel'
 import ImageGenPanel from './settings/ImageGenPanel'
+import DomainPackPanel from './settings/DomainPackPanel'
 import KnowledgeBasePanel from './settings/KnowledgeBasePanel'
 import IllustrationLibraryPanel from './settings/IllustrationLibraryPanel'
+import InternalLinkPanel from './settings/InternalLinkPanel'
 import WordPressPanel from './settings/WordPressPanel'
 import { normalizeWordPressSettings } from '../../../shared/wordpress'
 
@@ -22,8 +24,10 @@ type SettingsTab =
   | 'shortcuts'
   | 'prompts'
   | 'skills'
+  | 'domainPacks'
   | 'knowledge'
   | 'illustrations'
+  | 'internalLinks'
   | 'imageGen'
   | 'wordpress'
 
@@ -309,9 +313,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   async function handleSaveImageGen(): Promise<void> {
     if (!config) return
     const imageGen = config.imageGen ?? {
-      apiUrl: 'https://uuapi.shop/v1/images/generations',
+      apiUrl: 'https://uuapi.net/v1/images/generations',
       apiKey: '',
-      model: 'gpt-image-2',
+      model: 'gpt-image-2.5',
       size: '1024x1024',
       defaultPrompt: ''
     }
@@ -487,6 +491,15 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         <button
           type="button"
           role="tab"
+          aria-selected={tab === 'domainPacks'}
+          className={tab === 'domainPacks' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('domainPacks')}
+        >
+          领域包
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === 'knowledge'}
           className={tab === 'knowledge' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('knowledge')}
@@ -501,6 +514,15 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           onClick={() => switchTab('illustrations')}
         >
           插图库
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'internalLinks'}
+          className={tab === 'internalLinks' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('internalLinks')}
+        >
+          内链库
         </button>
         <button
           type="button"
@@ -837,8 +859,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
               <div>
                 <h2 className="section-title">Skill 列表</h2>
                 <p className="section-desc">
-                  文章创作不含优化类与写作风格 Skill；文章优化仅 article-optimizer；页面批量优化仅
-                  page-batch-optimizer；写作风格为文风类 Skill 清单。创作时是否套用文风，以对话页「文风」下拉为准，与此处开关无关。
+                  文章创作不含优化类与写作风格 Skill；领域类内置 Skill（流媒体、iOS、测评）由写作页「领域」选择，此处开关锁定。文章优化仅
+                  article-optimizer；页面批量优化仅 page-batch-optimizer；写作风格为文风类 Skill
+                  清单。创作时是否套用文风，以对话页「文风」下拉为准，与此处开关无关。
                 </p>
               </div>
               <div className="section-actions">
@@ -883,12 +906,18 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
                         type="checkbox"
                         className="toggle-input"
                         checked={skill.enabled}
-                        disabled={Boolean(skill.forced)}
+                        disabled={Boolean(skill.forced || skill.packLocked)}
                         onChange={(e) => void handleToggleSkill(skill.id, e.target.checked)}
                       />
                       <span className="toggle-switch" aria-hidden="true" />
                       <span className="toggle-label">
-                        {skill.forced ? '润色强制' : skill.enabled ? '已启用' : '已禁用'}
+                        {skill.forced
+                          ? '润色强制'
+                          : skill.packLocked
+                            ? '由领域选择'
+                            : skill.enabled
+                              ? '已启用'
+                              : '已禁用'}
                       </span>
                     </label>
                     <div className="skill-meta">
@@ -896,6 +925,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
                         {skill.name}
                         {skill.bundled ? <span className="skill-badge">内置</span> : null}
                         {skill.forced ? <span className="skill-badge">润色强制</span> : null}
+                        {skill.packLocked ? <span className="skill-badge">领域包</span> : null}
                       </strong>
                       <span>{skill.description || '无描述'}</span>
                     </div>
@@ -981,6 +1011,16 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         </>
       )}
 
+      {tab === 'domainPacks' && (
+        <DomainPackPanel
+          visible={visible}
+          saving={saving}
+          onSavingChange={setSaving}
+          onStatus={setStatus}
+          onSaved={() => onConfigSaved?.()}
+        />
+      )}
+
       {tab === 'knowledge' && (
         <KnowledgeBasePanel
           visible={visible}
@@ -1000,11 +1040,21 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         />
       )}
 
+      {tab === 'internalLinks' && (
+        <InternalLinkPanel
+          visible={visible}
+          saving={saving}
+          quickPicks={config.quickPicks?.products ?? []}
+          onSavingChange={setSaving}
+          onStatus={setStatus}
+        />
+      )}
+
       {tab === 'imageGen' && config && (
         <section className="panel">
           <h2 className="section-title">绘图接口</h2>
           <p className="section-desc">
-            配置图片生成 API（OpenAI Images 兼容）。左侧栏进入绘图后，将使用此处参数发起请求。
+            配置图片生成 API。文生图走 /v1/images/generations，图生图自动走同主机的 /v1/images/edits。
           </p>
           <ImageGenPanel
             config={config}

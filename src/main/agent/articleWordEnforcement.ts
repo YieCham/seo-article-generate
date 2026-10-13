@@ -1,5 +1,10 @@
 import { chatCompletion, createRateLimitRetryStatus, type LlmConfig } from './llmClient'
 import {
+  buildDeleteOnlyPatchSystemPrompt,
+  patchOptionsForAction,
+  resolveOptimizePatch
+} from './optimizePatch'
+import {
   LENGTH_EDIT_SCOPE_RULE,
   PRESERVE_MARKDOWN_HEADINGS_RULE
 } from './articleStructurePreserve'
@@ -10,6 +15,7 @@ import {
 } from './articleLength'
 import type { GenerateProgressEvent } from './articleAgent'
 import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
+import type { ArticleType } from '../../shared/domainPacks'
 
 import {
   getOptimizeLengthPromptBlock,
@@ -45,6 +51,7 @@ async function runWordCountAdjustment(
     optimizeMode?: boolean
     sourcePreview?: string
     skillsText?: string
+    format?: ArticleType
     qualityShorten?: boolean
   }
 ): Promise<string> {
@@ -79,7 +86,6 @@ async function runWordCountAdjustment(
       step: 'length',
       message: `⑨ 词数校准：程序计数 ${count} 词 → 目标 ${bounds.label}…`
     })
-    emit({ type: 'reset' })
 
     const lengthStatusMessage = `⑨ 词数校准：程序计数 ${count} 词 → 目标 ${bounds.label}…`
 
@@ -98,7 +104,7 @@ async function runWordCountAdjustment(
               options?.optimizeMode ? '' : LENGTH_EDIT_SCOPE_RULE,
               options?.optimizeMode
                 ? getOptimizePromptBlocks()
-                : getArticleLengthPromptBlock(options?.skillsText),
+                : getArticleLengthPromptBlock(options?.skillsText, undefined, options?.format),
               options?.optimizeMode ? getOptimizeLengthPromptBlock(bounds as OptimizeWordRange) : ''
             ]
               .filter(Boolean)
@@ -164,9 +170,10 @@ export async function enforceArticleWordCount(
   emit: (event: GenerateProgressEvent) => void,
   onChunk: (text: string) => void,
   skillsText?: string,
-  enabledSkillIds?: string[]
+  enabledSkillIds?: string[],
+  format?: ArticleType
 ): Promise<string> {
-  const bounds = getArticleLengthBounds(skillsText, enabledSkillIds)
+  const bounds = getArticleLengthBounds(skillsText, enabledSkillIds, format)
   return runWordCountAdjustment(
     llm,
     article,
@@ -176,7 +183,7 @@ export async function enforceArticleWordCount(
     maxTokens,
     emit,
     onChunk,
-    { skillsText }
+    { skillsText, format }
   )
 }
 
@@ -223,9 +230,66 @@ export async function enforceOptimizeArticleWordCount(
     }
   }
 
-  return runWordCountAdjustment(llm, trimmed, topicLabel, articleLang, bounds, maxTokens, emit, onChunk, {
-    optimizeMode: true,
-    sourcePreview: sourceMarkdown,
-    qualityShorten: qualityShorten.allowBelowMin
+  if (count < bounds.min) {
+    emit({
+      type: 'status',
+      step: 'length',
+      message: `⑨ 词数校准：程序计数 ${count} 词，低于 ${bounds.min}，不扩写全文`
+    })
+    return trimmed
+  }
+
+  if (count <= bounds.max) return trimmed
+
+  emit({
+    type: 'status',
+    step: 'length',
+    message: `⑨ 词数校准：程序计数 ${count} 词，高于 ${bounds.max}，仅删除重复句…`
   })
+
+  const raw = await chatCompletion(
+    llm,
+    [
+      { role: 'system', content: `${buildDeleteOnlyPatchSystemPrompt()}\n\n${articleLang.lock}` },
+      {
+        role: 'user',
+        content: [
+          `主题/页面：${topicLabel}`,
+          `程序计词结果：${count} words，上限 ${bounds.max}。`,
+          '只删除重复或低价值原句，使全文靠近上限。不要改标题，不要重写。',
+          '',
+          trimmed
+        ].join('\n')
+      }
+    ],
+    {
+      temperature: 0.2,
+      jsonObject: true,
+      maxTokens: Math.min(4096, maxTokens ?? 4096),
+      step: 'length',
+      label: '词数删减补丁'
+    }
+  )
+
+  const resolved = resolveOptimizePatch(raw, trimmed, patchOptionsForAction('delete_only'))
+  if (!resolved.ok) {
+    emit({
+      type: 'status',
+      step: 'length',
+      message: `⑨ 词数仍偏高（${count} 词）：删减补丁未应用（${resolved.error}）`
+    })
+    return trimmed
+  }
+
+  const next = normalizeArticleMarkdown(resolved.text.trim())
+  const nextCount = countArticleWords(next)
+  onChunk(next)
+  if (nextCount > bounds.max) {
+    emit({
+      type: 'status',
+      step: 'length',
+      message: `⑨ 词数仍偏高（${nextCount} 词，上限 ${bounds.max}），已保留删减后的稿件`
+    })
+  }
+  return next
 }

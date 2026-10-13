@@ -1137,6 +1137,53 @@ input[type='range'] {
   gap: 4px;
 }
 
+.pack-builtin-tag {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.pack-check-grid,
+.pack-skill-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0 0 16px;
+}
+
+.pack-skill-list {
+  flex-direction: column;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-wash-muted);
+}
+
+.pack-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.84rem;
+  color: var(--text-primary);
+}
+
+.pack-check input {
+  margin: 3px 0 0;
+}
+
+.pack-check span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pack-check em {
+  font-style: normal;
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+}
+
 .illust-toolbar {
   display: flex;
   align-items: flex-start;
@@ -2241,6 +2288,86 @@ body.embed .title-bar {
   cursor: not-allowed;
 }
 
+.draw-references {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.draw-references-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.draw-references-head > span {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.draw-references-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+}
+
+.draw-references-hint {
+  margin: 0;
+  color: var(--text-muted, var(--muted));
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.draw-reference-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.draw-reference-card {
+  position: relative;
+  width: 72px;
+}
+
+.draw-reference-card img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--surface-2, rgba(0, 0, 0, 0.04));
+}
+
+.draw-reference-card > span {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.6875rem;
+  text-align: center;
+  color: var(--text-muted, var(--muted));
+}
+
+.draw-reference-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 14px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
 .draw-error {
   margin: 0;
   color: var(--error);
@@ -2486,13 +2613,70 @@ body.embed .title-bar {
 }
 
 .draw-history-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
   border-radius: 8px;
   background: var(--bg-wash-muted);
   overflow: hidden;
+}
+
+.draw-history-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 4px rgba(12, 16, 32, 0.16);
+  color: var(--text-secondary);
+}
+
+.draw-history-delete:hover:not(:disabled) {
+  border: none;
+  box-shadow: 0 1px 4px rgba(12, 16, 32, 0.16);
+  color: var(--error);
+  background: #fff;
+}
+
+.draw-history-meta {
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.draw-history-prompt {
+  margin: 0;
+  max-height: 2.8em;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.draw-history-footer {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .draw-history-thumb {
@@ -2528,56 +2712,6 @@ body.embed .title-bar {
   place-items: center;
   color: var(--text-tertiary);
   font-size: 0.75rem;
-}
-
-.draw-history-meta {
-  padding: 0 10px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.draw-history-prompt {
-  margin: 0;
-  font-size: 0.78rem;
-  line-height: 1.4;
-  color: var(--text-primary);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
-.draw-history-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  font-size: 0.72rem;
-  color: var(--text-tertiary);
-}
-
-.draw-history-delete {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-tertiary);
-}
-
-.draw-history-delete:hover:not(:disabled) {
-  border: none;
-  box-shadow: none;
-  color: var(--error);
-  background: var(--error-soft);
 }
 
 @media (max-width: 900px) {
@@ -3567,16 +3701,28 @@ body.embed .title-bar {
   overflow: auto;
   min-height: 0;
   --thread-fade-size: 44px;
-  -webkit-mask-image: linear-gradient(
+  position: relative;
+  /* Do not put mask-image on this scroll container — Chromium/Electron
+     paints hairline banding after wheel scroll. Top fade is a fixed overlay. */
+}
+
+.chat-thread::before {
+  content: '';
+  position: sticky;
+  top: 0;
+  left: 0;
+  display: block;
+  width: 100%;
+  height: var(--thread-fade-size);
+  margin-bottom: calc(var(--thread-fade-size) * -1);
+  background: linear-gradient(
     to bottom,
-    transparent 0,
-    #000 var(--thread-fade-size)
+    var(--bg-app) 0%,
+    color-mix(in srgb, var(--bg-app) 72%, transparent) 45%,
+    transparent 100%
   );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    #000 var(--thread-fade-size)
-  );
+  pointer-events: none;
+  z-index: 2;
 }
 
 .chat-thread-inner {
@@ -4226,6 +4372,7 @@ body.embed .title-bar {
 
 .markdown-body h2 {
   font-size: 1.15rem;
+  scroll-margin-top: 12px;
 }
 
 .markdown-body p,

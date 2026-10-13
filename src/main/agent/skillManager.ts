@@ -6,6 +6,14 @@ import { getArticleAgentRoot, getArticleUserDataDir } from '../paths'
 import { loadConfig, saveConfig } from '../config/configStore'
 import type { PipelineMode, SkillItem, ModeEnabledSkillsConfig, SkillListMode } from '../config/types'
 import { parseSkillMarkdown, serializeSkillMarkdown } from '../agent/skillLoader'
+import {
+  clampFormatForPack,
+  isPackOwnedSkillId,
+  skillIdsForPack,
+  type ArticleType,
+  type DomainPackId
+} from '../../shared/domainPacks'
+import { resolveStoredDomainPack } from '../domainPack/domainPackStore'
 
 export type { SkillListMode }
 
@@ -309,7 +317,8 @@ export async function listSkills(mode: SkillListMode = 'create'): Promise<SkillI
         content: parsed.body,
         enabled: isPolishForceSkillId(location.id) ? true : enabledSet.has(location.id),
         bundled: location.bundled,
-        forced: isPolishForceSkillId(location.id)
+        forced: isPolishForceSkillId(location.id),
+        packLocked: isPackOwnedSkillId(location.id)
       })
     } catch {
       // skip invalid skill folders
@@ -374,6 +383,7 @@ export async function setSkillEnabled(
   mode: SkillListMode = 'create'
 ): Promise<void> {
   if (isPolishForceSkillId(id)) return
+  if (mode === 'create' && isPackOwnedSkillId(id)) return
   if (mode === 'optimize' && id !== OPTIMIZER_SKILL_ID) return
   if (mode === 'batch-optimize' && id !== BATCH_OPTIMIZER_SKILL_ID) return
   if (mode === 'writing-style' && !isWritingStyleSkillId(id)) return
@@ -390,36 +400,10 @@ export async function setSkillEnabled(
   })
 }
 
-export type ArticleTypeSkillSync = 'how-to' | 'review' | 'top-rank'
-
-/** Atomically toggle create-mode skills tied to composer article type. */
-export async function syncCreateSkillsForArticleType(articleType: ArticleTypeSkillSync): Promise<void> {
-  await updateEnabledSkillIds('create', (enabledSkills) => {
-    enabledSkills.delete(REVIEW_SKILL_ID)
-    enabledSkills.delete(SEO_GEO_SKILL_ID)
-    enabledSkills.delete(STREAMING_DOMAIN_SKILL_ID)
-    enabledSkills.delete(STREAMING_COMPLIANCE_SKILL_ID)
-    enabledSkills.delete(STREAMING_TOP_SKILL_ID)
-
-    if (articleType === 'review') {
-      enabledSkills.add(REVIEW_SKILL_ID)
-    } else if (articleType === 'how-to') {
-      enabledSkills.add(STREAMING_DOMAIN_SKILL_ID)
-      enabledSkills.add(STREAMING_COMPLIANCE_SKILL_ID)
-    } else if (articleType === 'top-rank') {
-      enabledSkills.add(STREAMING_DOMAIN_SKILL_ID)
-      enabledSkills.add(STREAMING_COMPLIANCE_SKILL_ID)
-      enabledSkills.add(STREAMING_TOP_SKILL_ID)
-    }
-  })
-}
-
 async function buildEnabledSkillBundles(mode: PipelineMode): Promise<EnabledSkillBundle[]> {
-  // Writing-style skills are NOT included from settings toggles — they are selected
-  // per conversation in the composer and merged via getCreateSkillBundles.
   const skills = await listSkills(mode)
   return skills
-    .filter((item) => item.enabled)
+    .filter((item) => item.enabled && !item.packLocked)
     .map((skill) => ({
       id: skill.id,
       name: skill.name,
@@ -445,21 +429,62 @@ export async function loadSkillBundleById(id: string): Promise<EnabledSkillBundl
   }
 }
 
+export interface CreateSkillBundleOptions {
+  domainPackId?: DomainPackId | string | null
+  articleType?: ArticleType | string | null
+  writingStyleSkillId?: string | null
+}
+
 /**
- * Create-pipeline skills: domain skills from settings + optional writing-style Skill
- * chosen in the composer (ignores settings writing-style toggle).
+ * Create-pipeline skills: domain pack + extra custom settings skills + composer writing style.
+ * Pack-owned Skill toggles in settings are ignored.
  */
 export async function getCreateSkillBundles(
-  writingStyleSkillId?: string | null
+  options?: CreateSkillBundleOptions | string | null
 ): Promise<EnabledSkillBundle[]> {
-  const domain = await buildEnabledSkillBundles('create')
-  const styleId = writingStyleSkillId?.trim() ?? ''
-  if (!styleId || !isWritingStyleSkillId(styleId) || isPolishForceSkillId(styleId)) return domain
-  if (domain.some((item) => item.id === styleId)) return domain
+  const resolved: CreateSkillBundleOptions =
+    typeof options === 'string' || options == null
+      ? { writingStyleSkillId: options }
+      : options
+
+  const pack = await resolveStoredDomainPack(resolved.domainPackId)
+  const format = clampFormatForPack(pack, resolved.articleType)
+  const packIds = skillIdsForPack(pack, format)
+
+  const bundles: EnabledSkillBundle[] = []
+  const seen = new Set<string>()
+
+  for (const id of packIds) {
+    const bundle = await loadSkillBundleById(id)
+    if (!bundle || seen.has(bundle.id)) continue
+    seen.add(bundle.id)
+    bundles.push(bundle)
+  }
+
+  const extras = await listSkills('create')
+  for (const skill of extras) {
+    if (!skill.enabled) continue
+    if (isPackOwnedSkillId(skill.id) || isWritingStyleSkillId(skill.id) || isPolishForceSkillId(skill.id)) {
+      continue
+    }
+    if (seen.has(skill.id)) continue
+    seen.add(skill.id)
+    bundles.push({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      content: skill.content
+    })
+  }
+
+  const styleId = resolved.writingStyleSkillId?.trim() ?? ''
+  if (!styleId || !isWritingStyleSkillId(styleId) || isPolishForceSkillId(styleId) || seen.has(styleId)) {
+    return bundles
+  }
 
   const style = await loadSkillBundleById(styleId)
-  if (!style) return domain
-  return [...domain, style]
+  if (!style) return bundles
+  return [...bundles, style]
 }
 
 async function buildEnabledSkillsText(mode: PipelineMode): Promise<string> {

@@ -7,27 +7,20 @@ import {
   runWithTokenContext,
   updateTokenUsageContext
 } from '../token/tokenUsageContext'
-import { maxTokensForFullArticleOutput, maxTokensForOutlineSkeleton, maxTokensForPlanning, resolveStepMaxTokens } from '../config/llmTokenLimits'
+import { maxTokensForOutlineSkeleton, maxTokensForPlanning, resolveStepMaxTokens } from '../config/llmTokenLimits'
 import type { ResearchConfig } from '../config/types'
 import { LLM_REASONING_EFFORT_OPTIONS } from '../config/types'
+import type { LengthWorkbenchState } from '../../shared/lengthWorkbench'
 import { insertInlineInternalLinksIntoArticle } from './internalLinkInserter'
 import { getCreateSkillBundles, type EnabledSkillBundle } from './skillManager'
 import {
   buildFullSkillsText,
   getEnabledSkillIdsFromBundles,
-  getForcedHumanizerPolishText,
   getSkillsTextForStep
 } from './skillPipeline'
-import {
-  LENGTH_EDIT_SCOPE_RULE,
-  MULTI_METHOD_STRUCTURE_PRESERVE_RULE,
-  POLISH_EDIT_SCOPE_RULE,
-  PRESERVE_MARKDOWN_HEADINGS_RULE
-} from './articleStructurePreserve'
 import { normalizeOptimizeSectionOrder, reorderArticleMarkdown } from './optimizeStructure'
 import {
   chatCompletion,
-  createRateLimitRetryStatus,
   parseOutlineSections,
   sleepWithAbort,
   type LlmConfig
@@ -61,7 +54,6 @@ import {
   getDraftProductPartHint,
   getDraftQuickAnswerHint,
   getExtractProductHint,
-  getPolishProductHint,
   getProductMentionSupplement,
   getUserContextPromptBlocksForSection,
   isQuickAnswerSection
@@ -86,7 +78,6 @@ import {
   sectionOutlineHasMethodStubs
 } from './outlineSkeleton'
 import {
-  countArticleWords,
   getArticleLengthPromptBlock,
   getArticleLengthBounds,
   getSectionWordBudget,
@@ -95,14 +86,15 @@ import {
   getIntroConclusionSectionHint,
   getFaqSectionHint,
   getFaqHeadingGuidance,
-  getIntroConclusionPolishHint,
   isFaqSection,
   MIN_FAQ_QUESTIONS,
   MAX_FAQ_QUESTIONS,
-  MAX_FAQ_SECTION_WORDS,
   type ArticleLengthBounds
 } from './articleLength'
-import { enforceArticleWordCount } from './articleWordEnforcement'
+import {
+  checkArticleStructure,
+  formatStructureCheckStatus
+} from './articleStructureCheck'
 import { formatSeoMetaBlock, generateSeoMeta } from './seoMeta'
 import { parseUserWritingContext, getUserContextPromptBlocks, type UserWritingContext } from './userContext'
 import { retrieveProductIntroKnowledge } from '../knowledge/knowledgeStore'
@@ -115,12 +107,16 @@ import {
 import {
   getPrimaryKeywordOutlineHint,
   getPrimaryKeywordH1Hint,
-  getPrimaryKeywordPolishHint,
+  getPrimaryKeywordPromptBlock,
   getPrimaryKeywordSectionHint,
   resolveArticleH1,
   getWritingPromptBlocks
 } from './topicKeyword'
-import { VOCABULARY_STYLE_HINT_ZH } from './writingStyle'
+import {
+  PLAIN_PROSE_STYLE_GUIDANCE,
+  VOCABULARY_STYLE_GUIDANCE,
+  VOCABULARY_STYLE_HINT_ZH
+} from './writingStyle'
 import {
   type CreatePipelineCheckpoint,
   type DraftSectionResume,
@@ -128,8 +124,7 @@ import {
   type PipelineCheckpoint,
   shouldRunPipelineStep
 } from './pipelineCheckpoint'
-import { finalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
-import { normalizeArticleMarkdown, stripLeadingSectionHeading } from '../../shared/normalizeArticleMarkdown'
+import { finalizeArticleMarkdown, stripLeadingSectionHeading } from '../../shared/normalizeArticleMarkdown'
 import {
   createResearchPackMatchesTopic,
   type CreateResearchPack,
@@ -196,6 +191,7 @@ export interface GenerateProgressEvent {
     | 'prepend'
     | 'checkpoint'
     | 'clearCheckpoint'
+    | 'lengthWorkbench'
   text?: string
   message?: string
   step?: PipelineStep
@@ -204,6 +200,7 @@ export interface GenerateProgressEvent {
   sources?: ResearchSourcePreview[]
   checkpoint?: PipelineCheckpoint
   researchPack?: ResearchPack
+  lengthWorkbench?: LengthWorkbenchState
 }
 
 interface ArticleLanguageContext {
@@ -570,11 +567,18 @@ async function draftBySections(
   resume?: DraftSectionResume
 ): Promise<string> {
   const sections = normalizeOptimizeSectionOrder(parseOutlineSections(outline))
-  const { combined, geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
+  const { lengthBlock, geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
     skillCtx,
     userContext.productName,
     topic
   )
+  // Article-level structure shared by every section. It deliberately excludes the
+  // product-mention supplement: that one is section-specific and lives in the
+  // per-section user message, so keeping it out of the cached system prefix also
+  // avoids over-promoting the product in generic sections.
+  const stableStructureBlock = [lengthBlock, topListBlock, geoBlock, reviewBlock]
+    .filter(Boolean)
+    .join('\n\n')
   const sectionTitles = sections.map((section) => section.title)
   const articleH1 = resolveArticleH1(outline, topic, resume?.initialDraft)
   const startIndex = resume?.startIndex ?? 0
@@ -669,7 +673,9 @@ async function draftBySections(
     })
 
     const stepSkills = getSkillsTextForStep('draft', skillStepContext(skillCtx, {
-      structureBlock: combined,
+      // The shared structure block lives in the (cacheable) system prompt below;
+      // passing it here again would duplicate it for product sections.
+      structureBlock: '',
       sectionTitle: section.title,
       sectionProductKind,
       sectionOutlineBody: section.body
@@ -686,13 +692,16 @@ async function draftBySections(
       [
         {
           role: 'system',
+          // Keep this prefix byte-identical across sections (and across articles
+          // with the same skill set) so providers can reuse their prompt cache.
           content: [
             reviewBlock
               ? '你是该领域专业测评作者：经验与判断写在正文细节里，勿用 Real-World / Hands-On / In My Experience 等口号化标题自我证明。'
               : '你是该领域专家作者，写作需体现 Experience 与 Expertise。',
             articleLang.lock,
-            getWritingPromptBlocks(sectionUserContextBlocks, topic),
-            stepSkills || combined,
+            PLAIN_PROSE_STYLE_GUIDANCE,
+            VOCABULARY_STYLE_GUIDANCE,
+            stableStructureBlock,
             '只输出本节 Markdown 正文，不要输出 ## / ### 本节标题行，不要重复输出大纲。'
           ]
             .filter(Boolean)
@@ -701,6 +710,9 @@ async function draftBySections(
         {
           role: 'user',
           content: [
+            sectionUserContextBlocks,
+            getPrimaryKeywordPromptBlock(topic),
+            stepSkills,
             `文章主题：${topic}`,
             `输出语言：${articleLang.label}（与主题一致，不得切换语言）`,
             userContext.briefForPrompt,
@@ -747,7 +759,7 @@ async function draftBySections(
             .join('\n')
         }
       ],
-      { temperature: 0.65, maxTokens: maxTokensForWordBudget(tokenWordBudget, globalMaxTokens, draftTokenTier) }
+      { temperature: 0.65, maxTokens: maxTokensForWordBudget(tokenWordBudget, globalMaxTokens, draftTokenTier), cacheSystemPrefix: true }
     )
 
     const body = stripLeadingSectionHeading(sectionText, section.title)
@@ -811,104 +823,31 @@ function findUserProductIntroSectionIndex(
   return -1
 }
 
-async function polishDraft(
-  llm: LlmConfig,
-  draft: string,
-  topic: string,
-  skillCtx: PipelineSkillContext,
-  userContext: UserWritingContext,
-  articleLang: ArticleLanguageContext,
-  maxTokens: number | undefined,
+function runCreateStructureCheck(
+  article: string,
+  outline: string,
   emit: (event: GenerateProgressEvent) => void,
-  onChunk: (text: string) => void
-): Promise<string> {
-  emit({ type: 'status', step: 'polish', message: '⑧ 润色并降低 AI 味…' })
-
-  const { combined, geoBlock, reviewBlock, topListBlock, wordBounds } = getStructurePromptBlocks(
-    skillCtx,
-    userContext.productName,
-    topic
-  )
-  const stepSkills = getSkillsTextForStep('polish', skillStepContext(skillCtx))
-  const humanizer = await getForcedHumanizerPolishText()
-  const polished = await chatCompletion(
-    llm,
-    [
-      {
-        role: 'system',
-        content: [
-          '你是资深文字编辑，擅长让文章更自然、更有原创感。',
-          articleLang.lock,
-          PRESERVE_MARKDOWN_HEADINGS_RULE,
-          POLISH_EDIT_SCOPE_RULE,
-          MULTI_METHOD_STRUCTURE_PRESERVE_RULE,
-          getWritingPromptBlocks(getUserContextPromptBlocks(userContext), topic),
-          stepSkills ? `合规与风格要点：\n${stepSkills}` : '',
-          humanizer
-            ? `去 AI 味必须遵循下列 Humanizer Skill（embedded 模式，完整注入，优先于其它文风中与 AI 套话相关的条款）：\n${humanizer}`
-            : ''
-        ]
-          .filter(Boolean)
-          .join('\n\n')
-      },
-      {
-        role: 'user',
-        content: [
-          `对以下关于「${topic}」的文章进行「降 AI 味」润色：`,
-          `- 全文必须保持${articleLang.label}，与主题语言一致`,
-          '- **所有 # / ## / ### 标题必须与草稿逐字一致**，不得改写章节名',
-          userContext.productName
-            ? getPolishProductHint(userContext.productName, {
-                review: Boolean(reviewBlock),
-                topList: Boolean(topListBlock),
-                geo: Boolean(geoBlock)
-              })
-            : userContext.raw
-              ? '- 润色时必须保留用户补充要求中的关键信息（含产品/工具名称）'
-              : '',
-          userContext.briefForPrompt,
-          '- 保留事实与结构，但改写句式与过渡',
-          '- 按 Humanizer 的 35 条 AI 写作特征清理套话、销售腔、空洞三段式与机器人收尾；不得增删事实',
-          '- 增强自然语气与具体判断',
-          '- 删除模板化开头/空洞总结',
-          '- 正文中禁止出现 "Target audience"、"for US reader"、"目标读者" 等来自写作 brief 的标签或元信息',
-          '- 保持段落连贯自然，勿为凑字数而机械拆段、重复或堆砌空话',
-          '- 若草稿混入了其它语言，润色时全部改为主题语言',
-          topListBlock
-            ? `- 保留 Quick Answer、Introduction、选型标准 Part、Top N 榜单（### 1…N 每条含 Pros/Cons）、可选对比表、FAQ（${MIN_FAQ_QUESTIONS}–${MAX_FAQ_QUESTIONS} 问、整节 ≤${MAX_FAQ_SECTION_WORDS} 词）、Conclusion；移除 <thinking>`
-            : geoBlock
-            ? `- 保留 Quick Answer、Introduction（≤150 词、≤3 段）、通用 Part（行业价值为主，联动时可轻量提及产品）+ **单一产品 Part**（推广与教程合一，禁止拆成两个 Part）、FAQ（${MIN_FAQ_QUESTIONS}–${MAX_FAQ_QUESTIONS} 问、整节 ≤${MAX_FAQ_SECTION_WORDS} 词）、[Image: …]；Conclusion ≤150 词、≤3 段；移除 <thinking>`
-            : reviewBlock
-              ? '- 保留对被测评产品的充分描述（已有被测评相关 Part 不可无故删并）；保留「Best … Alternative」专属 Part、对比表格与 FAQ；移除任何 <thinking> 标签'
-              : '',
-          `- 终稿英文词数须在 ${wordBounds.min}–${wordBounds.max} 之间；不足时补充与主题相关、对读者有帮助的实质内容，禁止水字数`,
-          getIntroConclusionPolishHint(),
-          getPrimaryKeywordPolishHint(topic),
-          '- 直接输出最终 Markdown 正文，不要解释修改过程',
-          '- 不要用 ```markdown 代码围栏包裹正文',
-          '',
-          draft
-        ]
-          .filter(Boolean)
-          .join('\n')
-      }
-    ],
-    { temperature: 0.55, maxTokens: maxTokens, step: 'polish', label: '润色',
-      onRateLimitRetry: createRateLimitRetryStatus('⑧ 润色并降低 AI 味…', (message) =>
-        emit({ type: 'status', step: 'polish', message })
-      )
-    }
-  )
-
-  const normalized = reorderArticleMarkdown(normalizeArticleMarkdown(polished))
-  onChunk(normalized)
-  return normalized
+  step: 'polish' | 'length',
+  prefix: string
+): { article: string; warnings: string[] } {
+  emit({
+    type: 'status',
+    step,
+    message: `${prefix}结构性检查：格式与大纲章节…`
+  })
+  const result = checkArticleStructure(article, outline)
+  emit({
+    type: 'status',
+    step,
+    message: `${prefix}${formatStructureCheckStatus(result)}`
+  })
+  return { article: result.article, warnings: result.warnings }
 }
 
 export async function generateArticle(
   options: GenerateArticleOptions,
   sender: WebContents
-): Promise<{ ok: true; article: string } | { ok: false; message: string }> {
+): Promise<{ ok: true; article: string; warning?: string } | { ok: false; message: string }> {
   const llmSelection = {
     presetId: options.resume?.options.llmPresetId ?? options.llmPresetId ?? '',
     model: options.resume?.options.llmModel ?? options.llmModel ?? ''
@@ -934,7 +873,7 @@ export async function generateArticle(
     return { ok: false, message: '正文前/Meta 分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
   }
   if (!llmBody.apiKey) {
-    return { ok: false, message: '正文与润色分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
+    return { ok: false, message: '正文工作分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
   }
 
   const topic = (options.resume?.options.topic ?? options.topic)?.trim()
@@ -958,6 +897,9 @@ export async function generateArticle(
     }
     sender.send('article:progress', event)
   }
+
+  /** Non-fatal degradations the user should still know about. */
+  const warnings: string[] = []
 
   const emitCreateCheckpoint = (checkpoint: CreatePipelineCheckpoint): void => {
     emit({ type: 'checkpoint', checkpoint })
@@ -1339,22 +1281,25 @@ export async function generateArticle(
       if (!draft) {
         return { ok: false, message: '无法继续：缺少正文草稿，请重新开始。' }
       }
-      polished = await polishDraft(
-        llmBody,
-        draft,
-        topic,
-        skillCtx,
-        userContext,
-        articleLang,
-        maxTokensForFullArticleOutput(countArticleWords(draft), globalMaxTokens, 'polish'),
-        emit,
-        (text) => {
-          emit({ type: 'replace', text, step: 'polish' })
-        }
-      )
+      try {
+        const checked = runCreateStructureCheck(draft, outline, emit, 'polish', '⑧ ')
+        polished = checked.article
+        warnings.push(...checked.warnings)
+      } catch (error) {
+        if (isAbortError(error)) throw error
+        const message = error instanceof Error ? error.message : '未知错误'
+        emit({
+          type: 'status',
+          step: 'polish',
+          message: `⑧ 结构性检查失败（${message}），已保留完整正文并继续`
+        })
+        polished = draft
+        warnings.push('结构性检查失败，已保留完整正文')
+      }
+      emit({ type: 'replace', text: polished, step: 'polish' })
       emitCreateCheckpoint(
         buildCreateCheckpoint('length', {
-          statusLabel: '⑧ 润色完成',
+          statusLabel: '⑧ 结构已校验',
           extracted,
           writingBrief,
           plan,
@@ -1368,25 +1313,27 @@ export async function generateArticle(
     let lengthAdjusted = polished
     if (shouldRunPipelineStep(nextStep, 'length', 'create')) {
       if (!polished) {
-        return { ok: false, message: '无法继续：缺少润色稿，请重新开始。' }
+        return { ok: false, message: '无法继续：缺少正文稿，请重新开始。' }
       }
-      lengthAdjusted = reorderArticleMarkdown(
-        await enforceArticleWordCount(
-        llmBody,
-        polished,
-        topic,
-        articleLang,
-        maxTokensForFullArticleOutput(countArticleWords(polished), globalMaxTokens, 'lengthAdjust'),
-        emit,
-        (text) => emit({ type: 'replace', text, step: 'length' }),
-        skillsText,
-        enabledSkillIds,
-        articleFormat
-        )
-      )
+      if (!shouldRunPipelineStep(nextStep, 'polish', 'create')) {
+        try {
+          const checked = runCreateStructureCheck(polished, outline, emit, 'length', '⑨ ')
+          lengthAdjusted = checked.article
+          warnings.push(...checked.warnings)
+        } catch (error) {
+          if (isAbortError(error)) throw error
+          emit({
+            type: 'status',
+            step: 'length',
+            message: '⑨ 结构性检查失败，已保留完整正文'
+          })
+          warnings.push('结构性检查失败，已保留完整正文')
+        }
+        emit({ type: 'replace', text: lengthAdjusted, step: 'length' })
+      }
       emitCreateCheckpoint(
         buildCreateCheckpoint('meta', {
-          statusLabel: '⑨ 词数校准完成',
+          statusLabel: '⑨ 章节结构已校验',
           extracted,
           writingBrief,
           plan,
@@ -1428,22 +1375,38 @@ export async function generateArticle(
     let seoBlock = ''
     if (shouldRunPipelineStep(nextStep, 'meta', 'create')) {
       emit({ type: 'status', step: 'meta', message: '⑩ 生成 SEO Meta Title & Description…' })
-      const seoMeta = await generateSeoMeta(
-        llmPre,
-        topic,
-        lengthAdjusted,
-        articleLang,
-        userContext.productName
-      )
-      seoBlock = formatSeoMetaBlock(seoMeta)
+      try {
+        const seoMeta = await generateSeoMeta(
+          llmPre,
+          topic,
+          lengthAdjusted,
+          articleLang,
+          userContext.productName
+        )
+        seoBlock = formatSeoMetaBlock(seoMeta)
+      } catch (error) {
+        if (isAbortError(error)) throw error
+        const message = error instanceof Error ? error.message : '未知错误'
+        emit({
+          type: 'status',
+          step: 'meta',
+          message: `⑩ SEO Meta 生成失败（${message}），已跳过`
+        })
+        warnings.push('SEO Meta 生成失败，已跳过')
+      }
     }
 
     const finalArticle = `${seoBlock}${finalizeArticleMarkdown(lengthAdjusted || polished || draft)}`.trim()
     if (finalArticle) {
       emit({ type: 'replace', text: finalArticle, step: seoBlock ? 'meta' : 'length' })
     }
+
     emit({ type: 'done' })
-    return { ok: true, article: finalArticle }
+    return {
+      ok: true,
+      article: finalArticle,
+      ...(warnings.length > 0 ? { warning: warnings.join('；') } : {})
+    }
   } catch (error) {
     if (isAbortError(error)) {
       emit({ type: 'cancelled', message: '已中止生成' })

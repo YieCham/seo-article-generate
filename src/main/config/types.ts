@@ -1,5 +1,10 @@
 import { DEFAULT_LLM_MAX_TOKENS, normalizeLlmMaxTokens } from './llmTokenLimits'
 import {
+  DEFAULT_AI_TRACE_CONFIG,
+  normalizeAiTraceConfig,
+  type AiTraceConfig
+} from '../../shared/aiTrace'
+import {
   DEFAULT_WORDPRESS_SETTINGS,
   type WordPressSettings
 } from '../../shared/wordpress'
@@ -17,6 +22,7 @@ export {
 } from '../../shared/wordpress'
 
 export { DEFAULT_LLM_MAX_TOKENS, normalizeLlmMaxTokens }
+export { DEFAULT_AI_TRACE_CONFIG, normalizeAiTraceConfig, type AiTraceConfig }
 
 /** Per-model reasoning intensity for OpenAI-compatible `reasoning_effort`. */
 export type LlmReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max'
@@ -345,7 +351,7 @@ export interface LlmRoleRoutingConfig {
   enabled: boolean
   /** expand, extract, writingBrief, plan, seo meta */
   preBodyAndMeta: LlmModelRef
-  /** outline, section draft, polish, length adjust (and optimize body steps) */
+  /** outline, section draft, on-demand length adjust (and optimize body steps) */
   bodyWork: LlmModelRef
 }
 
@@ -386,6 +392,7 @@ export interface AppConfig {
   imageGen: ImageGenConfig
   networkProxy: NetworkProxyConfig
   wordpress: WordPressSettings
+  aiTrace: AiTraceConfig
 }
 
 export interface SkillItem {
@@ -395,7 +402,7 @@ export interface SkillItem {
   content: string
   enabled: boolean
   bundled?: boolean
-  /** Always-on for create polish; UI toggle is locked. */
+  /** When true, the settings toggle is locked. Unused after create polish was removed. */
   forced?: boolean
   /** Domain-pack owned; enablement is chosen on the write page, not here. */
   packLocked?: boolean
@@ -573,7 +580,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   wordpress: {
     presets: DEFAULT_WORDPRESS_SETTINGS.presets.map((item) => ({ ...item })),
     activePresetId: DEFAULT_WORDPRESS_SETTINGS.activePresetId
-  }
+  },
+  aiTrace: { ...DEFAULT_AI_TRACE_CONFIG, ignorePhrases: [] }
 }
 
 /** @deprecated fields from older configs */

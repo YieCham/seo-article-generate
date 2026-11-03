@@ -6,6 +6,10 @@ export interface ApiTokenUsage {
   prompt_tokens?: number
   completion_tokens?: number
   total_tokens?: number
+  /** OpenAI-compatible prompt cache breakdown. */
+  prompt_tokens_details?: { cached_tokens?: number } | null
+  /** DeepSeek context-cache hit tokens. */
+  prompt_cache_hit_tokens?: number | null
 }
 
 function estimateTokensFromText(text: string): number {
@@ -23,10 +27,22 @@ export function normalizeApiUsage(
   usage: ApiTokenUsage | undefined,
   messages: ChatMessage[],
   completionText: string
-): { promptTokens: number; completionTokens: number; totalTokens: number; estimated: boolean } {
+): {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cachedPromptTokens?: number
+  estimated: boolean
+} {
   const prompt = usage?.prompt_tokens
   const completion = usage?.completion_tokens
   const total = usage?.total_tokens
+
+  const cachedRaw = usage?.prompt_tokens_details?.cached_tokens ?? usage?.prompt_cache_hit_tokens
+  const cachedPromptTokens =
+    typeof cachedRaw === 'number' && Number.isFinite(cachedRaw) && cachedRaw > 0
+      ? cachedRaw
+      : undefined
 
   if (
     typeof prompt === 'number' &&
@@ -38,6 +54,7 @@ export function normalizeApiUsage(
       promptTokens: prompt,
       completionTokens: completion,
       totalTokens: typeof total === 'number' && Number.isFinite(total) ? total : prompt + completion,
+      cachedPromptTokens,
       estimated: false
     }
   }
@@ -83,6 +100,7 @@ export async function recordLlmTokenUsage(input: {
       promptTokens: normalized.promptTokens,
       completionTokens: normalized.completionTokens,
       totalTokens: normalized.totalTokens,
+      cachedPromptTokens: normalized.cachedPromptTokens,
       maxTokensRequested: input.maxTokensRequested,
       finishReason: input.finishReason,
       possiblyTruncated,

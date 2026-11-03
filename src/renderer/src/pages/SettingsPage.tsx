@@ -14,6 +14,7 @@ import KnowledgeBasePanel from './settings/KnowledgeBasePanel'
 import IllustrationLibraryPanel from './settings/IllustrationLibraryPanel'
 import InternalLinkPanel from './settings/InternalLinkPanel'
 import WordPressPanel from './settings/WordPressPanel'
+import AiTracePanel from './settings/AiTracePanel'
 import { normalizeWordPressSettings } from '../../../shared/wordpress'
 
 type SettingsTab =
@@ -30,6 +31,7 @@ type SettingsTab =
   | 'internalLinks'
   | 'imageGen'
   | 'wordpress'
+  | 'aiTrace'
 
 const DEFAULT_CREATE_PROMPTS = {
   systemPrompt:
@@ -60,7 +62,7 @@ const SKILL_LIST_MODE_OPTIONS: Array<{ value: SkillListMode; label: string; hint
   {
     value: 'writing-style',
     label: '写作风格',
-    hint: '文风类 Skill 清单；explainer-voice 由创作页下拉选择。Humanizer 在润色去 AI 味阶段强制注入，不可关闭。'
+    hint: '文风类 Skill 清单；explainer-voice 由创作页下拉选择。Humanizer 供 AI 痕迹阅读使用，创作流程不再强制注入。'
   }
 ]
 
@@ -105,7 +107,14 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
   }, [visible, tab, skillListMode])
 
   useEffect(() => {
-    if (!status || status === '正在保存…' || status.startsWith('正在测试')) return
+    if (
+      !status ||
+      status === '正在保存…' ||
+      status.startsWith('正在测试') ||
+      status.startsWith('正在扫描') ||
+      status.startsWith('正在阅读')
+    )
+      return
     const delay = status.includes('失败') ? 5000 : 2500
     const timer = window.setTimeout(() => setStatus(''), delay)
     return () => window.clearTimeout(timer)
@@ -545,6 +554,15 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         <button
           type="button"
           role="tab"
+          aria-selected={tab === 'aiTrace'}
+          className={tab === 'aiTrace' ? 'settings-nav-item active' : 'settings-nav-item'}
+          onClick={() => switchTab('aiTrace')}
+        >
+          AI 痕迹
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === 'general'}
           className={tab === 'general' ? 'settings-nav-item active' : 'settings-nav-item'}
           onClick={() => switchTab('general')}
@@ -581,7 +599,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
           <div className="settings-subsection">
             <h3 className="subsection-title">多模型分工</h3>
             <p className="section-desc">
-              启用后可为工作流指定两套模型：一套处理正文前分析与 Meta，一套处理大纲、正文撰写与润色。
+              启用后可为工作流指定两套模型：一套处理正文前分析与 Meta，一套处理大纲与正文撰写。
             </p>
             <LlmRoleRoutingPanel
               config={config}
@@ -887,7 +905,7 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
 
             {skillListMode === 'writing-style' ? (
               <p className="empty-hint">
-                explainer-voice 由创作页「文风」下拉选择。Humanizer 在文章创作的「润色并降低 AI 味」阶段强制注入，不可关闭。
+                explainer-voice 由创作页「文风」下拉选择。Humanizer 供设置页「AI 痕迹」阅读使用，创作流程不再强制注入。
               </p>
             ) : null}
 
@@ -1081,6 +1099,22 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
         </section>
       )}
 
+      {tab === 'aiTrace' && config && (
+        <section className="panel ai-trace-panel">
+          <h2 className="section-title">AI 痕迹</h2>
+          <p className="section-desc">
+            对照已完成页面，找出跨页反复出现的句子和已知套话，用来排查生成痕迹。
+          </p>
+          <AiTracePanel
+            config={config}
+            visible={visible}
+            onConfigChange={setConfig}
+            onConfigSaved={onConfigSaved}
+            onStatus={setStatus}
+          />
+        </section>
+      )}
+
       {tab === 'general' && config && (
         <>
           <section className="panel">
@@ -1125,7 +1159,9 @@ export default function SettingsPage({ visible = true, onConfigSaved }: Settings
             status.includes('已禁用') ||
             status.includes('已导入') ||
             status.includes('已将') ||
-            status.includes('已清除')
+            status.includes('已清除') ||
+            status.includes('扫描了') ||
+            status.includes('模型读了')
               ? ' is-success'
               : ''
           }`}

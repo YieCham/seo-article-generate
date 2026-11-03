@@ -4,6 +4,8 @@ import { optimizeArticle } from '../agent/articleOptimizer'
 import { batchOptimizePage } from '../agent/batchPageOptimizer'
 import { reviseArticle } from '../agent/articleReviser'
 import { insertArticleIllustrations } from '../agent/articleIllustrationInserter'
+import { calibrateArticleLength } from '../agent/articleLengthCalibrator'
+import { scanArticleAiVoice, suggestAiVoiceRewrites } from '../agent/humanizerScan'
 import type { PipelineCheckpoint } from '../agent/pipelineCheckpoint'
 import {
   beginArticleRun,
@@ -60,6 +62,46 @@ export function registerArticleIpc(): void {
       return await runWithAbortSignal(signal, () =>
         insertArticleIllustrations(options, event.sender)
       )
+    } finally {
+      endArticleRun(event.sender.id)
+    }
+  })
+
+  ipcMain.handle('article:scanAiVoice', async (event, article: string) => {
+    const signal = beginArticleRun(event.sender.id)
+    try {
+      const findings = await runWithAbortSignal(signal, () => scanArticleAiVoice(article))
+      return { ok: true as const, findings }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '扫描失败'
+      return { ok: false as const, message }
+    } finally {
+      endArticleRun(event.sender.id)
+    }
+  })
+
+  ipcMain.handle(
+    'article:suggestAiVoice',
+    async (event, payload: { article: string; findings: import('../../shared/aiVoice').AiVoiceFinding[] }) => {
+      const signal = beginArticleRun(event.sender.id)
+      try {
+        const findings = await runWithAbortSignal(signal, () =>
+          suggestAiVoiceRewrites(payload.article, payload.findings)
+        )
+        return { ok: true as const, findings }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '生成建议失败'
+        return { ok: false as const, message }
+      } finally {
+        endArticleRun(event.sender.id)
+      }
+    }
+  )
+
+  ipcMain.handle('article:calibrateLength', async (event, options) => {
+    const signal = beginArticleRun(event.sender.id)
+    try {
+      return await runWithAbortSignal(signal, () => calibrateArticleLength(options, event.sender))
     } finally {
       endArticleRun(event.sender.id)
     }

@@ -20,7 +20,9 @@ import {
   IconDelete,
   IconRegenerate,
   IconPageCompleted,
-  IconMoveToActive
+  IconMoveToActive,
+  IconSearch,
+  IconClose
 } from '../../components/Icons'
 import type { WriteMode } from '../../constants/writeMode'
 import SessionRenameDialog from './SessionRenameDialog'
@@ -95,6 +97,7 @@ export default function ChatSidebar({
   isRunning = false
 }: ChatSidebarProps) {
   const [lifecycleGroup, setLifecycleGroup] = useState<SessionLifecycleGroup>(readStoredLifecycleGroup)
+  const [query, setQuery] = useState('')
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
   const [pendingConfirm, setPendingConfirm] = useState<{
@@ -108,17 +111,29 @@ export default function ChatSidebar({
   } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
-  const visibleSessions = useMemo(
-    () =>
-      sortSessions(
+  const searching = query.trim().length > 0
+
+  const visibleSessions = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    // While searching, look across both lifecycle groups so a completed page
+    // does not silently disappear from the results.
+    if (needle) {
+      return sortSessions(
         sessions.filter(
           (session) =>
-            getSessionLifecycleGroup(session) === lifecycleGroup &&
-            getSessionListGroup(session) === writeMode
+            getSessionListGroup(session) === writeMode &&
+            getSessionDisplayTitle(session).toLowerCase().includes(needle)
         )
-      ),
-    [sessions, lifecycleGroup, writeMode]
-  )
+      )
+    }
+    return sortSessions(
+      sessions.filter(
+        (session) =>
+          getSessionLifecycleGroup(session) === lifecycleGroup &&
+          getSessionListGroup(session) === writeMode
+      )
+    )
+  }, [sessions, lifecycleGroup, writeMode, query])
 
   const listGroup: SessionListGroup = writeMode
 
@@ -257,7 +272,7 @@ export default function ChatSidebar({
           .filter(Boolean)
           .join(' ')}
         title={`${displayTitle} · ${formatTime(session.updatedAt)}`}
-        draggable={!isRunningSession}
+        draggable={!isRunningSession && !searching}
         onDragStart={(event) => handleDragStart(event, session.id)}
         onDragOver={(event) => handleDragOver(event, session)}
         onDrop={handleDrop}
@@ -301,7 +316,11 @@ export default function ChatSidebar({
       : !contextCanRegenerate
         ? '尚无初始请求'
         : undefined
-  const emptyLabel = lifecycleGroup === 'completed' ? '暂无已完成对话' : '暂无进行中对话'
+  const emptyLabel = searching
+    ? `没有匹配「${query.trim()}」的会话`
+    : lifecycleGroup === 'completed'
+      ? '暂无已完成对话'
+      : '暂无进行中对话'
 
   const contextMenuNode =
     contextMenu && contextSession ? (
@@ -404,6 +423,37 @@ export default function ChatSidebar({
           </button>
         </div>
       </nav>
+
+      <div className="sidebar-search">
+        <div className="sidebar-search-field">
+          <IconSearch size={13} className="sidebar-search-icon" aria-hidden="true" />
+          <input
+            type="text"
+            className="sidebar-search-input"
+            value={query}
+            placeholder="搜索会话标题…"
+            aria-label="搜索会话标题"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setQuery('')
+            }}
+          />
+          {searching ? (
+            <button
+              type="button"
+              className="sidebar-search-clear"
+              aria-label="清除搜索"
+              title="清除搜索"
+              onClick={() => setQuery('')}
+            >
+              <IconClose size={10} />
+            </button>
+          ) : null}
+        </div>
+        {searching ? (
+          <span className="sidebar-search-scope">跨「进行中 / 已完成」搜索</span>
+        ) : null}
+      </div>
 
       <div className="sidebar-section">
         <div className="session-list">

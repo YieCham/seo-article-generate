@@ -10,6 +10,9 @@ import type {
   WordPressTermsResult,
   WordPressTestResult
 } from '../../shared/wordpress'
+import type { AiTraceConfig, AiTraceReport } from '../../shared/aiTrace'
+
+export type { AiTraceConfig, AiTraceReport }
 
 export type {
   WordPressConfig,
@@ -54,6 +57,7 @@ export interface GenerateProgressEvent {
     | 'prepend'
     | 'checkpoint'
     | 'clearCheckpoint'
+    | 'lengthWorkbench'
   text?: string
   message?: string
   step?: string
@@ -62,12 +66,16 @@ export interface GenerateProgressEvent {
   sources?: ResearchSourcePreview[]
   checkpoint?: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
   researchPack?: import('../../shared/researchPack').ResearchPack
+  lengthWorkbench?: import('../../shared/lengthWorkbench').LengthWorkbenchState
 }
 
 export interface GenerateArticleResult {
   ok: boolean
   message?: string
   article?: string
+  /** Non-fatal degradation, e.g. word-count calibration failed and the previous complete text was kept. */
+  warning?: string
+  lengthWorkbench?: import('../../shared/lengthWorkbench').LengthWorkbenchState
 }
 
 export type LlmReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max'
@@ -176,6 +184,7 @@ export interface AppConfig {
   imageGen: ImageGenConfig
   networkProxy: NetworkProxyConfig
   wordpress: WordPressSettings
+  aiTrace: AiTraceConfig
 }
 
 export interface GenerateImageRequest {
@@ -295,12 +304,16 @@ export interface ChatStoreData {
       role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
       content: string
       status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
+      revisionBaseline?: string
+      revisionUserMessageId?: string
     }>
     updatedAt: number
     writeMode?: 'create' | 'optimize' | 'batch-optimize'
     llmPresetId?: string
     llmModel?: string
     pipelineCheckpoint?: import('../../shared/pipelineCheckpoint').PipelineCheckpoint
+    articleOutline?: string
+    lengthWorkbench?: import('../../shared/lengthWorkbench').LengthWorkbenchState
     researchPack?: import('../../shared/researchPack').ResearchPack
     wordpressDraft?: WordPressDraftBinding
   }>
@@ -335,6 +348,7 @@ export interface TokenUsageRecord {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  cachedPromptTokens?: number
   maxTokensRequested?: number
   estimated: boolean
 }
@@ -416,6 +430,32 @@ declare global {
         llmPresetId?: string
         llmModel?: string
       }) => Promise<GenerateArticleResult>
+      calibrateArticleLength: (request: {
+        article: string
+        topic?: string
+        outputLanguage?: string
+        pipeline?: 'create' | 'optimize' | 'batch-optimize'
+        articleType?: string
+        min?: number
+        max?: number
+        label?: string
+        llmPresetId?: string
+        llmModel?: string
+        focusShrinks?: Array<{ title: string; removeWords: number }>
+      }) => Promise<GenerateArticleResult>
+      scanAiVoice: (
+        article: string
+      ) => Promise<
+        | { ok: true; findings: import('../../shared/aiVoice').AiVoiceFinding[] }
+        | { ok: false; message: string }
+      >
+      suggestAiVoice: (payload: {
+        article: string
+        findings: import('../../shared/aiVoice').AiVoiceFinding[]
+      }) => Promise<
+        | { ok: true; findings: import('../../shared/aiVoice').AiVoiceFinding[] }
+        | { ok: false; message: string }
+      >
       onProgress: (callback: (event: GenerateProgressEvent) => void) => () => void
       getConfig: () => Promise<AppConfig>
       saveConfig: (partial: Partial<AppConfig>) => Promise<AppConfig>
@@ -487,6 +527,9 @@ declare global {
       >
       loadChatStore: () => Promise<ChatStoreData>
       saveChatStore: (data: ChatStoreData) => Promise<{ ok: true }>
+      getAiTraceReport: () => Promise<AiTraceReport | null>
+      scanAiTrace: () => Promise<AiTraceReport>
+      readAiTrace: () => Promise<AiTraceReport>
       platform: NodeJS.Platform
       windowMinimize: () => void
       windowMaximize: () => void

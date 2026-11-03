@@ -54,6 +54,7 @@ import DrawWorkspace from './write/DrawWorkspace'
 import type { ModeRailView } from './write/ModeRail'
 
 import ChatThread from './write/ChatThread'
+import ProgressBoard from './write/ProgressBoard'
 
 import Composer from './write/Composer'
 import RevisionConfirmBar from './write/RevisionConfirmBar'
@@ -98,6 +99,13 @@ import {
   type SessionListGroup
 } from './write/types'
 import type { WordPressDraftBinding } from '../../../shared/wordpress'
+import {
+  defaultLengthBounds,
+  normalizeLengthWorkbench,
+  type LengthWorkbenchState
+} from '../../../shared/lengthWorkbench'
+import { countArticleWords } from '../../../shared/wordCount'
+import { applyAiVoiceEdits, type AiVoiceFinding } from '../../../shared/aiVoice'
 
 
 
@@ -135,8 +143,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   const [batchDialogMode, setBatchDialogMode] = useState<BatchDialogMode | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [pipelineStatusMessage, setPipelineStatusMessage] = useState('')
+  const [pipelineStep, setPipelineStep] = useState('')
   const [pipelineElapsedSec, setPipelineElapsedSec] = useState(0)
   const [reviseSelection, setReviseSelection] = useState<ReviseArticleSelection | null>(null)
+  const [aiVoiceBusy, setAiVoiceBusy] = useState(false)
+  const [aiVoiceBySession, setAiVoiceBySession] = useState<
+    Record<string, { phase: 'flagged' | 'review'; findings: Array<AiVoiceFinding & { selected: boolean }> }>
+  >({})
   const [runningSessionId, setRunningSessionId] = useState('')
   const [sidebarWriteMode, setSidebarWriteMode] = useState<WriteMode>(() => {
     try {
@@ -173,6 +186,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     messageId: string
     content: string
     userMessageId: string
+  } | null>(null)
+  const lengthWorkbenchRef = useRef<Map<string, LengthWorkbenchState>>(new Map())
+  const lengthCalibrateBaselineRef = useRef<{
+    sessionId: string
+    messageId: string
+    content: string
   } | null>(null)
 
   const saveTimerRef = useRef<number | null>(null)
@@ -379,6 +398,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
   useEffect(() => {
     if (!isRunning) {
       setPipelineStatusMessage('')
+      setPipelineStep('')
       setPipelineElapsedSec(0)
       pipelineStepStartedAtRef.current = null
       return
@@ -416,11 +436,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           event.type === 'researchPack' ||
           event.type === 'planning' ||
           event.type === 'checkpoint' ||
-          event.type === 'clearCheckpoint')
+          event.type === 'clearCheckpoint' ||
+          event.type === 'lengthWorkbench')
       if (isStaleGenerationEvent) return
 
       if (event.type === 'status' && event.message) {
         setPipelineStatusMessage(event.message)
+        if (event.step) setPipelineStep(event.step)
         pipelineStepStartedAtRef.current = Date.now()
         setPipelineElapsedSec(0)
       }
@@ -469,6 +491,18 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         clearSessionCheckpoint(targetSessionId)
       }
 
+      if (event.type === 'lengthWorkbench' && event.lengthWorkbench) {
+        const workbench = normalizeLengthWorkbench(event.lengthWorkbench)
+        if (workbench) {
+          lengthWorkbenchRef.current.set(targetSessionId, workbench)
+          updateSession(targetSessionId, (session) => ({
+            ...session,
+            lengthWorkbench: workbench,
+            updatedAt: Date.now()
+          }))
+        }
+      }
+
       if (event.type === 'cancelled') {
         if (batchActiveRef.current) return
         if (!abortRevisionAttempt(targetSessionId)) {
@@ -499,11 +533,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         // Invoke path may already have finalized via finishGenerationRun.
         if (!finishedGenerationSessionsRef.current.has(targetSessionId)) {
           restoreAssistantFromCheckpointIfEmpty(targetSessionId)
-          if (revisionBaselineRef.current) {
-            finalizePendingRevision(targetSessionId)
-          } else {
-            finalizeAssistantMessage(targetSessionId)
-          }
+          finalizeGenerationMessages(targetSessionId)
         }
         setIsRunning(false)
         generatingSessionIdRef.current = ''
@@ -723,20 +753,35 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
+  function abortLengthCalibrate(sessionId = getTargetSessionId()): boolean {
+    const baseline = lengthCalibrateBaselineRef.current
+    if (!baseline || baseline.sessionId !== sessionId) return false
+
+    updateSession(sessionId, (session) => ({
+      ...session,
+      messages: session.messages.map((item) =>
+        item.id === baseline.messageId
+          ? { ...item, content: baseline.content, status: 'done' as const }
+          : item
+      ),
+      updatedAt: Date.now()
+    }))
+    lengthCalibrateBaselineRef.current = null
+    return true
+  }
+
   function abortRevisionAttempt(sessionId = getTargetSessionId()): boolean {
 
     const baseline = revisionBaselineRef.current
 
-    if (!baseline) return false
+    if (baseline) {
+      restoreRevisionBaseline(sessionId)
+      removeMessageById(baseline.userMessageId, sessionId)
+      revisionBaselineRef.current = null
+      return true
+    }
 
-    restoreRevisionBaseline(sessionId)
-
-    removeMessageById(baseline.userMessageId, sessionId)
-
-    revisionBaselineRef.current = null
-
-    return true
-
+    return abortLengthCalibrate(sessionId)
   }
 
   function restoreRevisionBaseline(sessionId = getTargetSessionId()): boolean {
@@ -827,6 +872,46 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   }
 
+  function finalizeLengthPending(sessionId: string, workbench: LengthWorkbenchState): void {
+    const baseline = workbench.baseline?.trim()
+    if (!baseline || workbench.hunks.length === 0) {
+      finalizeAssistantMessage(sessionId)
+      return
+    }
+
+    updateSession(sessionId, (session) => {
+      const filtered = session.messages.filter((item) => item.role !== 'status')
+      for (let index = filtered.length - 1; index >= 0; index -= 1) {
+        if (filtered[index].role !== 'assistant') continue
+        filtered[index] = {
+          ...filtered[index],
+          status: 'pendingApply',
+          revisionBaseline: baseline
+        }
+        break
+      }
+      return {
+        ...session,
+        messages: filtered,
+        lengthWorkbench: { ...workbench, pending: true, baseline },
+        updatedAt: Date.now()
+      }
+    })
+  }
+
+  function finalizeGenerationMessages(sessionId: string): void {
+    const workbench = lengthWorkbenchRef.current.get(sessionId) ?? null
+    if (workbench?.pending && workbench.hunks.length > 0 && workbench.baseline) {
+      finalizeLengthPending(sessionId, workbench)
+      return
+    }
+    if (revisionBaselineRef.current) {
+      finalizePendingRevision(sessionId)
+      return
+    }
+    finalizeAssistantMessage(sessionId)
+  }
+
   function prependAssistantContent(text: string, sessionId = getTargetSessionId()): void {
     updateSession(sessionId, (session) =>
       patchLiveAssistant(session, (current) => ({
@@ -904,6 +989,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           ...checkpoint,
           assistantMessageId: assistantId || checkpoint.assistantMessageId
         },
+        articleOutline: checkpoint.outline?.trim() || session.articleOutline,
         updatedAt: Date.now()
       }
     })
@@ -967,7 +1053,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
   async function finishGenerationRun(
     sessionId: string,
-    result: { ok: boolean; message?: string; article?: string },
+    result: {
+      ok: boolean
+      message?: string
+      article?: string
+      warning?: string
+      lengthWorkbench?: LengthWorkbenchState
+    },
     errorLabel: string
   ): Promise<{ ok: boolean; aborted: boolean; message?: string }> {
     const aborted = !result.ok && result.message === '已中止生成'
@@ -1000,8 +1092,21 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     } else {
       restoreAssistantFromCheckpointIfEmpty(sessionId)
     }
+    const workbench = normalizeLengthWorkbench(result.lengthWorkbench)
+    if (workbench) {
+      lengthWorkbenchRef.current.set(sessionId, workbench)
+      updateSession(sessionId, (session) => ({
+        ...session,
+        lengthWorkbench: workbench,
+        updatedAt: Date.now()
+      }))
+    }
     clearSessionCheckpoint(sessionId)
-    finalizeAssistantMessage(sessionId)
+    finalizeGenerationMessages(sessionId)
+    if (result.warning) {
+      setToast(result.warning)
+      window.setTimeout(() => setToast(''), 5000)
+    }
     // Clear running UI here. If `done` progress arrives after invoke resolves,
     // generatingSessionIdRef may already be empty and the progress handler
     // would skip setIsRunning(false) — leaving the UI stuck on 正在修订文章.
@@ -1159,6 +1264,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
               customTitle: undefined,
               messages: [],
               pipelineCheckpoint: undefined,
+              articleOutline: undefined,
+              lengthWorkbench: undefined,
               researchPack: undefined,
               wordpressDraft: undefined
             }
@@ -1167,6 +1274,10 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     )
 
     pipelineCheckpointRef.current.delete(id)
+    lengthWorkbenchRef.current.delete(id)
+    if (lengthCalibrateBaselineRef.current?.sessionId === id) {
+      lengthCalibrateBaselineRef.current = null
+    }
 
     if (activeSessionId === id) {
       setDraftTopic('')
@@ -1251,6 +1362,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
     pipelineCheckpointRef.current.delete(id)
     revisionBaselineRef.current = null
+    lengthCalibrateBaselineRef.current = null
+    lengthWorkbenchRef.current.delete(id)
     setReviseSelection(null)
 
     const assistantMessage = createMessage('assistant', '')
@@ -1261,6 +1374,8 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       ...current,
       messages: [firstUser, assistantMessage],
       pipelineCheckpoint: undefined,
+      articleOutline: undefined,
+      lengthWorkbench: undefined,
       researchPack: retainedPack,
       updatedAt: Date.now()
     }))
@@ -1640,6 +1755,266 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
     setRunningSessionId('')
   }
 
+  async function handleCalibrateLength(
+    focusShrinks: Array<{ title: string; removeWords: number }> = []
+  ): Promise<void> {
+    if (isRunning || !activeSession) return
+
+    if (sessionHasPendingRevision(activeSession)) {
+      setToast('请先应用或取消当前修改')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    const articleMessage = getLatestDoneAssistantMessage(activeSession)
+    if (!articleMessage?.content.trim()) {
+      setToast('当前没有可校准的文章')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+
+    const sessionId = activeSession.id
+    const articleContent = articleMessage.content
+    const bounds = defaultLengthBounds(articleType, activeWriteMode)
+    const checkpoint = activeSession.pipelineCheckpoint
+    const wordRange =
+      checkpoint && checkpoint.kind === 'optimize' && checkpoint.wordRange
+        ? checkpoint.wordRange
+        : bounds
+
+    lengthCalibrateBaselineRef.current = {
+      sessionId,
+      messageId: articleMessage.id,
+      content: articleContent
+    }
+
+    updateSession(sessionId, (session) => ({
+      ...session,
+      messages: session.messages.map((item) =>
+        item.id === articleMessage.id ? { ...item, status: 'revising' as const } : item
+      ),
+      updatedAt: Date.now()
+    }))
+
+    finishedGenerationSessionsRef.current.delete(sessionId)
+    setIsRunning(true)
+    generatingSessionIdRef.current = sessionId
+    setRunningSessionId(sessionId)
+
+    const result = await window.app.calibrateArticleLength({
+      article: articleContent,
+      topic: getSessionDisplayTitle(activeSession),
+      outputLanguage,
+      pipeline:
+        activeWriteMode === 'create' || activeWriteMode === 'optimize' || activeWriteMode === 'batch-optimize'
+          ? activeWriteMode
+          : 'optimize',
+      articleType,
+      min: wordRange.min,
+      max: wordRange.max,
+      label: wordRange.label,
+      focusShrinks,
+      ...resolveLlmRequestFields(activeSession)
+    })
+
+    const aborted = !result.ok && result.message === '已中止生成'
+    if (aborted) {
+      if (!abortRevisionAttempt(sessionId)) {
+        finalizeOrInterruptAssistant(sessionId)
+      }
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+      return
+    }
+
+    if (!result.ok) {
+      if (!abortRevisionAttempt(sessionId)) {
+        markAssistantError(result.message ?? '词数校准失败')
+      } else {
+        setToast(result.message ?? '词数校准失败')
+        window.setTimeout(() => setToast(''), 2200)
+      }
+      setIsRunning(false)
+      generatingSessionIdRef.current = ''
+      setRunningSessionId('')
+      return
+    }
+
+    finishedGenerationSessionsRef.current.add(sessionId)
+    lengthCalibrateBaselineRef.current = null
+    const workbench = normalizeLengthWorkbench(result.lengthWorkbench)
+    if (workbench) {
+      lengthWorkbenchRef.current.set(sessionId, workbench)
+      updateSession(sessionId, (session) => ({
+        ...session,
+        lengthWorkbench: workbench,
+        updatedAt: Date.now()
+      }))
+    }
+
+    if (workbench?.pending && workbench.hunks.length > 0 && workbench.baseline) {
+      finalizeLengthPending(sessionId, workbench)
+    } else {
+      finalizeAssistantMessage(sessionId)
+      if (workbench?.status === 'in_range' && focusShrinks.length === 0) {
+        setToast('词数已在区间，无需调整')
+      } else if (workbench?.status === 'skipped') {
+        setToast('词数校准未能落地，已保留原文')
+      } else {
+        setToast('词数校准完成')
+      }
+      window.setTimeout(() => setToast(''), 2200)
+    }
+
+    setIsRunning(false)
+    generatingSessionIdRef.current = ''
+    setRunningSessionId('')
+  }
+
+  async function handleScanAiVoice(): Promise<void> {
+    if (!activeSession || aiVoiceBusy || isRunning) return
+    const article = [...activeSession.messages].reverse().find((message) => message.role === 'assistant')?.content ?? ''
+    if (article.trim().length < 80) {
+      setToast('正文太短，暂时不用扫描')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+    const sessionId = activeSession.id
+    setAiVoiceBusy(true)
+    setToast('正在扫描 AI 腔…')
+    try {
+      const result = await window.app.scanAiVoice(article)
+      if (!result.ok) {
+        setToast(result.message)
+        window.setTimeout(() => setToast(''), 2200)
+        return
+      }
+      if (result.findings.length === 0) {
+        setAiVoiceBySession((current) => {
+          const next = { ...current }
+          delete next[sessionId]
+          return next
+        })
+        setToast('没有明显的 AI 腔')
+        window.setTimeout(() => setToast(''), 1800)
+        return
+      }
+      setAiVoiceBySession((current) => ({
+        ...current,
+        [sessionId]: {
+          phase: 'flagged',
+          findings: result.findings.map((item) => ({ ...item, selected: true }))
+        }
+      }))
+      setToast(`标出 ${result.findings.length} 处，成稿尚未改动`)
+      window.setTimeout(() => setToast(''), 2200)
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '扫描失败')
+      window.setTimeout(() => setToast(''), 2200)
+    } finally {
+      setAiVoiceBusy(false)
+    }
+  }
+
+  async function handleSuggestAiVoice(): Promise<void> {
+    if (!activeSession || aiVoiceBusy) return
+    const panel = aiVoiceBySession[activeSession.id]
+    if (!panel || panel.findings.length === 0) return
+    const article = [...activeSession.messages].reverse().find((message) => message.role === 'assistant')?.content ?? ''
+    const sessionId = activeSession.id
+    setAiVoiceBusy(true)
+    setToast('正在生成优化建议…')
+    try {
+      const result = await window.app.suggestAiVoice({ article, findings: panel.findings })
+      if (!result.ok) {
+        setToast(result.message)
+        window.setTimeout(() => setToast(''), 2200)
+        return
+      }
+      setAiVoiceBySession((current) => ({
+        ...current,
+        [sessionId]: {
+          phase: 'review',
+          findings: result.findings.map((item) => ({
+            ...item,
+            selected: Boolean(item.replacement && item.replacement !== item.quote)
+          }))
+        }
+      }))
+      setToast('建议已生成。勾选后才会写入成稿')
+      window.setTimeout(() => setToast(''), 2200)
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '生成建议失败')
+      window.setTimeout(() => setToast(''), 2200)
+    } finally {
+      setAiVoiceBusy(false)
+    }
+  }
+
+  function handleToggleAiVoice(id: string): void {
+    if (!activeSession) return
+    const sessionId = activeSession.id
+    setAiVoiceBySession((current) => {
+      const panel = current[sessionId]
+      if (!panel) return current
+      return {
+        ...current,
+        [sessionId]: {
+          ...panel,
+          findings: panel.findings.map((item) =>
+            item.id === id ? { ...item, selected: !item.selected } : item
+          )
+        }
+      }
+    })
+  }
+
+  function handleApplyAiVoice(): void {
+    if (!activeSession) return
+    const panel = aiVoiceBySession[activeSession.id]
+    if (!panel) return
+    const edits = panel.findings.flatMap((item) => {
+      if (!item.selected || !item.replacement || item.replacement === item.quote) return []
+      return [{ quote: item.quote, replacement: item.replacement }]
+    })
+    if (edits.length === 0) {
+      setToast('没有可写入的建议')
+      window.setTimeout(() => setToast(''), 1800)
+      return
+    }
+    const sessionId = activeSession.id
+    updateSession(sessionId, (session) => {
+      const assistant = [...session.messages].reverse().find((message) => message.role === 'assistant')
+      if (!assistant) return session
+      const content = applyAiVoiceEdits(assistant.content, edits)
+      return {
+        ...session,
+        messages: session.messages.map((message) =>
+          message.id === assistant.id ? { ...message, content } : message
+        ),
+        updatedAt: Date.now()
+      }
+    })
+    setAiVoiceBySession((current) => {
+      const next = { ...current }
+      delete next[sessionId]
+      return next
+    })
+    setToast(`已写入 ${edits.length} 处`)
+    window.setTimeout(() => setToast(''), 1800)
+  }
+
+  function handleClearAiVoice(): void {
+    if (!activeSession) return
+    const sessionId = activeSession.id
+    setAiVoiceBySession((current) => {
+      const next = { ...current }
+      delete next[sessionId]
+      return next
+    })
+  }
+
   function handleApplyRevision(assistantMessageId: string): void {
     if (!activeSession) return
 
@@ -1651,8 +2026,13 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
 
       const userMessageId = assistant.revisionUserMessageId
 
+      const isLengthPending = Boolean(!userMessageId && session.lengthWorkbench?.pending)
       return {
         ...session,
+        lengthWorkbench:
+          isLengthPending && session.lengthWorkbench
+            ? { ...session.lengthWorkbench, pending: false }
+            : session.lengthWorkbench,
         messages: session.messages
           .filter((message) => message.role === 'status' || message.id !== userMessageId)
           .map((message) =>
@@ -1669,7 +2049,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       }
     })
 
-    setToast('已应用修改')
+    setToast(
+      !activeSession.messages.find((message) => message.id === assistantMessageId)?.revisionUserMessageId &&
+        activeSession.lengthWorkbench?.pending
+        ? '已应用词数校准'
+        : '已应用修改'
+    )
     window.setTimeout(() => setToast(''), 1800)
   }
 
@@ -1683,16 +2068,29 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       if (!assistant?.revisionBaseline) return session
 
       const userMessageId = assistant.revisionUserMessageId
+      const isLengthPending = !userMessageId && session.lengthWorkbench?.pending
+      const restored = assistant.revisionBaseline ?? assistant.content
 
       return {
         ...session,
+        lengthWorkbench:
+          isLengthPending && session.lengthWorkbench
+            ? {
+                ...session.lengthWorkbench,
+                pending: false,
+                hunks: [],
+                status: 'skipped',
+                words: countArticleWords(restored),
+                baseline: undefined
+              }
+            : session.lengthWorkbench,
         messages: session.messages
           .filter((message) => message.role === 'status' || message.id !== userMessageId)
           .map((message) =>
             message.id === assistantMessageId
               ? {
                   ...message,
-                  content: assistant.revisionBaseline ?? message.content,
+                  content: restored,
                   status: 'done' as const,
                   revisionBaseline: undefined,
                   revisionUserMessageId: undefined
@@ -1703,7 +2101,12 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       }
     })
 
-    setToast('已取消修改')
+    setToast(
+      !activeSession.messages.find((message) => message.id === assistantMessageId)?.revisionUserMessageId &&
+        activeSession.lengthWorkbench?.pending
+        ? '已忽略词数校准'
+        : '已取消修改'
+    )
     window.setTimeout(() => setToast(''), 1800)
   }
 
@@ -1748,6 +2151,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       const userMessage = createMessage('user', userContent)
       const assistantMessage = createMessage('assistant', '')
 
+      lengthWorkbenchRef.current.delete(sessionId)
       updateSession(sessionId, (session) => ({
         ...session,
         title: session.messages.length === 0 ? sessionTitleFromPrompt(topic) : session.title,
@@ -1755,6 +2159,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
         writingStyleSkillId: writingStyleId || undefined,
         llmPresetId: llmFields.llmPresetId,
         llmModel: llmFields.llmModel,
+        lengthWorkbench: undefined,
         updatedAt: Date.now()
       }))
     } else {
@@ -2278,6 +2683,10 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
       ? null
       : latestArticleMessage?.id ?? null
   const topbarTitle = activeSession ? getSessionTopbarTitle(activeSession) : null
+  const liveAssistantMarkdown = activeSession
+    ? [...activeSession.messages].reverse().find((message) => message.role === 'assistant')
+        ?.content ?? ''
+    : ''
 
 
 
@@ -2348,6 +2757,7 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
           />
 
           <main className="write-main">
+            <div className="write-main-article">
             <header className="write-topbar">
               {topbarTitle ? <h1>{topbarTitle}</h1> : null}
             </header>
@@ -2367,12 +2777,25 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
               onReviseSelectionChange={setReviseSelection}
               onDeleteMessage={handleDeleteMessage}
               insertIllustrationsDisabled={isActiveSessionRunning || hasPendingRevision}
+              lengthWorkbench={activeSession.lengthWorkbench}
+              aiVoiceMarks={aiVoiceBySession[activeSession.id]?.findings ?? []}
             />
 
             <div className="composer-area">
               {hasPendingRevision && pendingRevisionAssistant ? (
                 <RevisionConfirmBar
-                  instructionPreview={pendingRevisionInstruction}
+                  mode={
+                    !pendingRevisionAssistant.revisionUserMessageId &&
+                    activeSession.lengthWorkbench?.pending
+                      ? 'length'
+                      : 'revision'
+                  }
+                  instructionPreview={
+                    !pendingRevisionAssistant.revisionUserMessageId &&
+                    activeSession.lengthWorkbench?.pending
+                      ? `${activeSession.lengthWorkbench.hunks.length} 处章节补丁`
+                      : pendingRevisionInstruction
+                  }
                   onApply={() => handleApplyRevision(pendingRevisionAssistant.id)}
                   onCancel={() => handleCancelRevision(pendingRevisionAssistant.id)}
                 />
@@ -2454,8 +2877,37 @@ export default function WritePage({ onOpenSettings, configRevision }: WritePageP
                 )}
               </footer>
             </div>
-
             {toast ? <div className="toast">{toast}</div> : null}
+            </div>
+
+            <ProgressBoard
+              outline={activeSession.articleOutline || activeSession.pipelineCheckpoint?.outline}
+              articleMarkdown={liveAssistantMarkdown}
+              checkpoint={activeSession.pipelineCheckpoint}
+              pipelineStep={isActiveSessionRunning ? pipelineStep : ''}
+              statusMessage={isActiveSessionRunning ? pipelineStatusMessage : ''}
+              isRunning={isActiveSessionRunning}
+              articleComplete={
+                Boolean(latestArticleMessage || pendingRevisionAssistant) && !isActiveSessionRunning
+              }
+              articleType={articleType}
+              writeMode={activeWriteMode}
+              lengthWorkbench={activeSession.lengthWorkbench}
+              onCalibrateLength={(titles) => void handleCalibrateLength(titles)}
+              calibrateDisabled={
+                isActiveSessionRunning ||
+                hasPendingRevision ||
+                !latestArticleMessage
+              }
+              aiVoiceBusy={aiVoiceBusy}
+              aiVoicePhase={aiVoiceBySession[activeSession.id]?.phase}
+              aiVoiceFindings={aiVoiceBySession[activeSession.id]?.findings}
+              onScanAiVoice={() => void handleScanAiVoice()}
+              onSuggestAiVoice={() => void handleSuggestAiVoice()}
+              onToggleAiVoice={handleToggleAiVoice}
+              onApplyAiVoice={handleApplyAiVoice}
+              onClearAiVoice={handleClearAiVoice}
+            />
 
             <BatchWriteDialog
               open={batchDialogMode != null}

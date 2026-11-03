@@ -15,7 +15,8 @@ const shortcutPath = path.join(desktop, shortcutName)
 const wscript = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'wscript.exe')
 
 function escapeVbsPath(value) {
-  return value.replace(/\\/g, '\\\\')
+  // VBScript string literals have no backslash escapes; only quotes are doubled.
+  return value.replace(/"/g, '""')
 }
 
 function escapePsPath(value) {

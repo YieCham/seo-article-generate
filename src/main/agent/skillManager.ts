@@ -39,8 +39,8 @@ export const HUMANIZER_SKILL_ID = 'humanizer'
 /** Writing-style skills: listed under「写作风格」, enabled state stored in create. */
 export const WRITING_STYLE_SKILL_IDS = new Set([EXPLAINER_VOICE_SKILL_ID, HUMANIZER_SKILL_ID])
 
-/** Always injected at create-pipeline polish; not selectable as a composer voice. */
-export const POLISH_FORCE_SKILL_IDS = new Set([HUMANIZER_SKILL_ID])
+/** Legacy: create polish no longer injects skills. Kept so `forced` UI still compiles. */
+export const POLISH_FORCE_SKILL_IDS = new Set<string>()
 
 export function isWritingStyleSkillId(id: string): boolean {
   return WRITING_STYLE_SKILL_IDS.has(id)
@@ -478,7 +478,12 @@ export async function getCreateSkillBundles(
   }
 
   const styleId = resolved.writingStyleSkillId?.trim() ?? ''
-  if (!styleId || !isWritingStyleSkillId(styleId) || isPolishForceSkillId(styleId) || seen.has(styleId)) {
+  if (
+    !styleId ||
+    !isWritingStyleSkillId(styleId) ||
+    styleId === HUMANIZER_SKILL_ID ||
+    seen.has(styleId)
+  ) {
     return bundles
   }
 

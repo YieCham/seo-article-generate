@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent } from 'react'
 import type { ChatMessage, ReviseArticleSelection } from './types'
 import MarkdownContent from './MarkdownContent'
 import CollapsibleMarkdownCard from './CollapsibleMarkdownCard'
@@ -7,8 +7,83 @@ import { getMarkdownRangeFromDomSelection } from '../../utils/markdownSourceMap'
 import { projectRenderedRangeToSource } from '../../utils/markdownSelection'
 import { getArticleCopyMarkdown } from '../../utils/articleCopy'
 import { finalizeArticleMarkdown } from '../../../../shared/normalizeArticleMarkdown'
+import { countArticleWords } from '../../../../shared/wordCount'
+import {
+  buildLengthHighlightMarkdown,
+  type LengthWorkbenchState
+} from '../../../../shared/lengthWorkbench'
 import { IconCopyArticle, IconIllustration, IconMessage, IconWordPress } from '../../components/Icons'
 import type { WordPressDraftBinding } from '../../../../shared/wordpress'
+
+function clearAiVoiceMarks(root: HTMLElement): void {
+  root.querySelectorAll('mark.ai-voice-hit').forEach((mark) => {
+    const parent = mark.parentNode
+    if (!parent) return
+    parent.replaceChild(document.createTextNode(mark.textContent ?? ''), mark)
+    parent.normalize()
+  })
+}
+
+function visibleQuote(quote: string): string {
+  return quote
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[*_`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function wrapVisibleQuote(root: HTMLElement, quote: string, id: string): void {
+  const needle = visibleQuote(quote)
+  if (needle.length < 8) return
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const nodes: Text[] = []
+  let full = ''
+  let current = walker.nextNode()
+  while (current) {
+    const node = current as Text
+    if (node.parentElement?.closest('mark.ai-voice-hit')) {
+      current = walker.nextNode()
+      continue
+    }
+    nodes.push(node)
+    full += node.data
+    current = walker.nextNode()
+  }
+  const index = full.indexOf(needle)
+  if (index < 0) return
+  const end = index + needle.length
+  let cursor = 0
+  for (const node of nodes) {
+    const nodeStart = cursor
+    const nodeEnd = cursor + node.data.length
+    cursor = nodeEnd
+    const from = Math.max(index, nodeStart)
+    const to = Math.min(end, nodeEnd)
+    if (from >= to) continue
+    const startOffset = from - nodeStart
+    const endOffset = to - nodeStart
+    let text = node
+    if (startOffset > 0) text = text.splitText(startOffset)
+    if (endOffset - startOffset < text.data.length) text.splitText(endOffset - startOffset)
+    const mark = document.createElement('mark')
+    mark.className = 'ai-voice-hit'
+    mark.dataset.aiVoiceId = id
+    text.parentNode?.insertBefore(mark, text)
+    mark.appendChild(text)
+  }
+}
+
+function paintAiVoiceMarks(root: HTMLElement, marks: Array<{ id: string; quote: string }>): void {
+  clearAiVoiceMarks(root)
+  for (const mark of marks) {
+    wrapVisibleQuote(root, mark.quote, mark.id)
+  }
+}
+
+interface AiVoiceMark {
+  id: string
+  quote: string
+}
 
 interface ChatMessageItemProps {
   message: ChatMessage
@@ -23,6 +98,8 @@ interface ChatMessageItemProps {
   reviseSelection?: ReviseArticleSelection | null
   onReviseSelectionChange?: (selection: ReviseArticleSelection | null) => void
   insertIllustrationsDisabled?: boolean
+  lengthWorkbench?: LengthWorkbenchState
+  aiVoiceMarks?: AiVoiceMark[]
 }
 
 export default function ChatMessageItem({
@@ -37,7 +114,9 @@ export default function ChatMessageItem({
   reviseSelectionEnabled = false,
   reviseSelection = null,
   onReviseSelectionChange,
-  insertIllustrationsDisabled = false
+  insertIllustrationsDisabled = false,
+  lengthWorkbench,
+  aiVoiceMarks = []
 }: ChatMessageItemProps) {
   const markdownRef = useRef<HTMLDivElement>(null)
   const lastSelectionRef = useRef<ReviseArticleSelection | null>(null)
@@ -134,6 +213,26 @@ export default function ChatMessageItem({
     }
   }, [reviseSelection, reviseSelectionEnabled])
 
+  // Live word count for the article: updates while the article is streaming in.
+  const wordCount = useMemo(() => countArticleWords(message.content), [message.content])
+  const highlightContent = useMemo(() => {
+    if (
+      message.status !== 'pendingApply' ||
+      !lengthWorkbench?.pending ||
+      !lengthWorkbench.baseline ||
+      lengthWorkbench.hunks.length === 0
+    ) {
+      return message.content
+    }
+    return buildLengthHighlightMarkdown(lengthWorkbench.baseline, lengthWorkbench.hunks)
+  }, [lengthWorkbench, message.content, message.status])
+
+  useEffect(() => {
+    const root = markdownRef.current
+    if (!root || message.role !== 'assistant') return
+    paintAiVoiceMarks(root, aiVoiceMarks)
+  }, [aiVoiceMarks, highlightContent, message.role, message.status])
+
   if (message.role === 'status') {
     return (
       <div className="chat-status">
@@ -219,7 +318,7 @@ export default function ChatMessageItem({
           <div className={`section-editor-article${reviseSelectionEnabled ? ' is-active' : ''}`}>
             <MarkdownContent
               bodyRef={markdownRef}
-              content={message.content}
+              content={highlightContent}
               streaming={streaming}
               waitingLabel={waitingLabel}
               waitingElapsedSec={waitingElapsedSec}
@@ -235,7 +334,7 @@ export default function ChatMessageItem({
           ) : null}
           {pendingApply ? (
             <div className="assistant-pending-badge" aria-live="polite">
-              待确认修改
+              {lengthWorkbench?.pending ? '待确认词数校准' : '待确认修改'}
             </div>
           ) : null}
           {interrupted ? (
@@ -244,6 +343,16 @@ export default function ChatMessageItem({
             </div>
           ) : null}
         </div>
+        {message.content.trim() ? (
+          <div className="assistant-meta-row">
+            <span
+              className="assistant-word-count"
+              title="与生成流水线同一统计规则：英文按词、中文按 1.5 字/词折算，已排除 SEO Meta、代码块与 [Image: …] 占位符"
+            >
+              {wordCount.toLocaleString('en-US')} 词
+            </span>
+          </div>
+        ) : null}
         {showArticleCopy ? (
           <div className="assistant-copy-footer">
             <button

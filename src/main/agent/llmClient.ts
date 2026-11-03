@@ -166,11 +166,25 @@ function buildChatCompletionBody(
   })
 }
 
+export interface ChatCompletionResult {
+  text: string
+  finishReason?: string
+}
+
 export async function chatCompletion(
   config: LlmConfig,
   messages: ChatMessage[],
   options?: LlmCallOptions
 ): Promise<string> {
+  const result = await chatCompletionDetailed(config, messages, options)
+  return result.text
+}
+
+export async function chatCompletionDetailed(
+  config: LlmConfig,
+  messages: ChatMessage[],
+  options?: LlmCallOptions
+): Promise<ChatCompletionResult> {
   const signal = getAbortSignal()
   const url = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`
   const headers = {
@@ -210,7 +224,7 @@ export async function chatCompletion(
           label: options?.label
         })
 
-        return content
+        return { text: content, finishReason }
       }
 
       const detail = await response.text()

@@ -1,6 +1,6 @@
 import type { WebContents } from 'electron'
 import { getEffectiveConfig, resolveRoutedLlm } from '../config/configStore'
-import { resolveStepMaxTokens, maxTokensForOptimizeLengthAdjust, maxTokensForOptimizeSection } from '../config/llmTokenLimits'
+import { resolveStepMaxTokens, maxTokensForOptimizeSection } from '../config/llmTokenLimits'
 import {
   createTokenRunContext,
   runWithTokenContext,
@@ -49,6 +49,7 @@ import {
   lockOutlineH2TitlesToTemplate,
   normalizeOptimizeSectionOrder,
   pairOutlineSectionWithSource,
+  parseOptimizeSectionContract,
   reorderArticleMarkdown,
   parseSourceSections,
   validateSourceMarkdown,
@@ -67,10 +68,8 @@ import {
 import {
   CONTENT_READABILITY_GUIDANCE,
   getIntroConclusionSectionHint,
-  getSectionWordBudget,
-  countArticleWords
+  getSectionWordBudget
 } from './articleLength'
-import { enforceOptimizeArticleWordCount } from './articleWordEnforcement'
 import {
   buildSectionPatchSystemPrompt,
   patchOptionsForAction,
@@ -159,6 +158,10 @@ function buildSourcePreviewMarkdown(sourceUrl: string, title: string, markdown: 
   ].join('\n')
 }
 
+function auditForDisplay(audit: string): string {
+  return audit.replace(/\n*<!-- OPTIMIZE_SECTION_CONTRACT -->[\s\S]*$/i, '').trim()
+}
+
 async function extractCompetitorGapInsights(
   llm: LlmConfig,
   topic: string,
@@ -239,7 +242,12 @@ async function auditSourcePage(
   wordRange: OptimizeWordRange,
   maxTokens?: number
 ): Promise<string> {
-  return chatCompletion(
+  const sourceSections = parseSourceSections(sourceMarkdown)
+  const sourceSectionIndex = sourceSections
+    .map((section, index) => `- S${index + 1}: ${section.title}`)
+    .join('\n')
+
+  const report = await chatCompletion(
     llm,
     [
       {
@@ -279,6 +287,22 @@ async function auditSourcePage(
           '- KEEP: 1–3 条；ADD: 1–5 条（新节以 ADD 为主）；REMOVE: 0–3 条',
           '「插在两节中间」只写在新节块的 placement，不要写进相邻旧节的 ADD。',
           '',
+          '11. **机器章节合同（必填，必须是报告最后一块）**：',
+          '先依据下方「原文章节 ID」确定每个终稿章节来自哪一节，再原样输出标记和 JSON fence：',
+          '<!-- OPTIMIZE_SECTION_CONTRACT -->',
+          '```json',
+          '{"sections":[{"title":"不含 Part N. 前缀的最终标题","kind":"body","part":true,"action":"revise","sourceIds":["S1"],"keep":["保留点"],"add":["新增点"],"remove":["有证据的删减点"]}]}',
+          '```',
+          '- sections 数组顺序就是终稿顺序，禁止另写 placement。',
+          '- kind 只能是 body | quick_answer | introduction | faq | conclusion。',
+          '- action 只能是 keep | revise | add。keep/revise 必须且只能引用一个 sourceId；add 的 sourceIds 必须是空数组。',
+          '- part=true 仅用于参与 Part 连续编号的 body；title 不得包含 Part 数字。FAQ、Conclusion、Quick Answer、Introduction 的 part 必须为 false。',
+          '- 原文中保留/改名的章节必须引用准确 sourceId；不得按新 Part 数字猜原 Part。',
+          '- JSON 必须可直接解析，不得带注释、尾逗号或省略号。',
+          '',
+          '--- 原文章节 ID（机器合同只能引用这些 ID）---',
+          sourceSectionIndex,
+          '',
           `终稿语言须保持：${articleLang.label}`,
           '',
           '--- 竞品缺口分析 ---',
@@ -294,6 +318,55 @@ async function auditSourcePage(
     ],
     { temperature: 0.35, maxTokens }
   )
+
+  if (parseOptimizeSectionContract(report, sourceSections).length >= 2) {
+    return report
+  }
+
+  const repairedContract = await chatCompletion(
+    llm,
+    [
+      {
+        role: 'system',
+        content: [
+          '你只负责把已有诊断转换为机器章节合同，不要重写诊断。',
+          '只输出合法 JSON 对象，不要 Markdown fence、解释、注释或尾逗号。',
+          '格式：{"sections":[{"title":"不含 Part N. 前缀的最终标题","kind":"body","part":true,"action":"revise","sourceIds":["S1"],"keep":[],"add":[],"remove":[]}]}',
+          'kind 只能是 body | quick_answer | introduction | faq | conclusion。',
+          'action 只能是 keep | revise | add。keep/revise 必须且只能引用一个有效 sourceId；add 必须用空 sourceIds。',
+          'sections 顺序就是终稿顺序；part=true 的 body 将由程序连续编号。'
+        ].join('\n')
+      },
+      {
+        role: 'user',
+        content: [
+          `终稿语言：${articleLang.label}`,
+          '--- 原文章节 ID ---',
+          sourceSectionIndex,
+          '',
+          '--- 已有诊断 ---',
+          report
+        ].join('\n')
+      }
+    ],
+    {
+      temperature: 0.1,
+      jsonObject: true,
+      maxTokens: maxTokens == null ? 4096 : Math.min(maxTokens, 4096),
+      step: 'extract',
+      label: '修复优化章节合同'
+    }
+  )
+  const contractJson = repairedContract
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim()
+  const withContract = `${auditForDisplay(report)}\n\n<!-- OPTIMIZE_SECTION_CONTRACT -->\n\`\`\`json\n${contractJson}\n\`\`\``
+  if (parseOptimizeSectionContract(withContract, sourceSections).length < 2) {
+    throw new Error('诊断未能生成合法的章节合同，已停止优化以避免 Part 顺序或原文配对错误。')
+  }
+  return withContract
 }
 
 async function enrichAnchoredOutline(
@@ -340,6 +413,8 @@ async function generateOptimizedOutline(
   maxTokens?: number
 ): Promise<string> {
   const anchored = buildAnchoredOutline(sourceMarkdown, audit, skillsText)
+  const contract = parseOptimizeSectionContract(audit, parseSourceSections(sourceMarkdown))
+  if (contract.length >= 2) return anchored
   const enriched = await enrichAnchoredOutline(llm, anchored, audit, articleLang, maxTokens)
   return lockOutlineH2TitlesToTemplate(anchored, enriched)
 }
@@ -464,8 +539,9 @@ async function draftOptimizedSections(
     emit({ type: 'status', step: 'draft', message: `大纲消毒：${sanitizeNote}…` })
   }
 
+  const usedSources = new Set<number>()
   const pairings = sections.map((section) => {
-    const pairing = pairOutlineSectionWithSource(section, sourceSections, audit)
+    const pairing = pairOutlineSectionWithSource(section, sourceSections, audit, usedSources)
     if (
       /^introduction$/i.test(section.title.trim()) &&
       pairing.action === 'write_new' &&
@@ -715,7 +791,7 @@ export async function optimizeArticle(
     return { ok: false, message: '正文前/Meta 分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
   }
   if (!llmBody.apiKey) {
-    return { ok: false, message: '正文与润色分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
+    return { ok: false, message: '正文工作分工模型未配置 API Key，请检查 LLM 预设或关闭多模型分工。' }
   }
   if (!firecrawlKey) {
     return { ok: false, message: '未配置 Firecrawl API Key，请在设置 → 调研配置中填写。' }
@@ -1018,7 +1094,7 @@ export async function optimizeArticle(
         type: 'planning',
         step: 'plan',
         message: '诊断完成',
-        planningSummary: audit
+        planningSummary: auditForDisplay(audit)
       })
 
       emitOptimizeCheckpoint(
@@ -1201,22 +1277,8 @@ export async function optimizeArticle(
           'length'
         )
       }
-      lengthAdjusted = reorderArticleMarkdown(
-        await enforceOptimizeArticleWordCount(
-          llmBody,
-          polished,
-          scraped.title,
-          articleLang,
-          wordRange,
-          scraped.markdown,
-          maxTokensForOptimizeLengthAdjust(countArticleWords(polished), globalMaxTokens),
-          emit,
-          (text) => emit({ type: 'replace', text, step: 'length' }),
-          { audit }
-        )
-      )
       lengthAdjusted = applyOutlineH2Contract(
-        lengthAdjusted,
+        polished,
         outline,
         { draft: polished, sourceMarkdown: scraped.markdown },
         emit,
@@ -1227,7 +1289,7 @@ export async function optimizeArticle(
       emit({ type: 'replace', text: lengthAdjusted, step: 'length' })
       emitOptimizeCheckpoint(
         buildOptimizeCheckpoint('meta', {
-          statusLabel: '⑩ 词数校准完成',
+          statusLabel: '⑩ 章节结构已校验',
           sourceTitle: scraped.title,
           sourceMarkdown: scraped.markdown,
           audit,

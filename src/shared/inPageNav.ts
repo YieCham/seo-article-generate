@@ -212,7 +212,8 @@ export function renumberPartHeadings(markdown: string): string {
   for (const index of targets) {
     const match = lines[index].match(/^(##\s+)(.+)$/)
     if (!match) continue
-    const parsed = match[2].match(/^Part\s+\d+\s*([.:：])\s+([\s\S]+)$/i)
+    const plain = plainHeadingText(match[2])
+    const parsed = plain.match(/^Part\s+\d+\s*([.:：])\s+([\s\S]+)$/i)
     if (!parsed) continue
     const rest = parsed[2].trim()
     if (isNonPartLabel(rest)) {

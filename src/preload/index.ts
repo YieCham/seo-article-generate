@@ -67,6 +67,7 @@ export interface GenerateProgressEvent {
     | 'prepend'
     | 'checkpoint'
     | 'clearCheckpoint'
+    | 'lengthWorkbench'
   text?: string
   message?: string
   step?: string
@@ -75,6 +76,7 @@ export interface GenerateProgressEvent {
   sources?: ResearchSourcePreview[]
   checkpoint?: PipelineCheckpoint
   researchPack?: ResearchPack
+  lengthWorkbench?: import('../shared/lengthWorkbench').LengthWorkbenchState
 }
 
 export interface ReviseArticleSelection {
@@ -106,10 +108,27 @@ export interface InsertIllustrationsRequest {
   llmModel?: string
 }
 
+export interface CalibrateArticleLengthRequest {
+  article: string
+  topic?: string
+  outputLanguage?: string
+  pipeline?: 'create' | 'optimize' | 'batch-optimize'
+  articleType?: string
+  min?: number
+  max?: number
+  label?: string
+  llmPresetId?: string
+  llmModel?: string
+  focusShrinks?: Array<{ title: string; removeWords: number }>
+}
+
 export interface GenerateArticleResult {
   ok: boolean
   message?: string
   article?: string
+  /** Non-fatal degradation reported by the main process (article is still complete). */
+  warning?: string
+  lengthWorkbench?: import('../shared/lengthWorkbench').LengthWorkbenchState
 }
 
 export interface LlmConfig {
@@ -334,6 +353,7 @@ export interface TokenUsageRecord {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  cachedPromptTokens?: number
   maxTokensRequested?: number
   estimated: boolean
 }
@@ -369,12 +389,16 @@ export interface ChatStoreData {
       role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
       content: string
       status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
+      revisionBaseline?: string
+      revisionUserMessageId?: string
     }>
     updatedAt: number
     writeMode?: 'create' | 'optimize' | 'batch-optimize'
     llmPresetId?: string
     llmModel?: string
     pipelineCheckpoint?: import('../shared/pipelineCheckpoint').PipelineCheckpoint
+    articleOutline?: string
+    lengthWorkbench?: import('../shared/lengthWorkbench').LengthWorkbenchState
     researchPack?: import('../shared/researchPack').ResearchPack
     wordpressDraft?: WordPressDraftBinding
   }>
@@ -394,6 +418,21 @@ const api = {
     ipcRenderer.invoke('article:revise', request),
   insertIllustrations: (request: InsertIllustrationsRequest): Promise<GenerateArticleResult> =>
     ipcRenderer.invoke('article:insertIllustrations', request),
+  calibrateArticleLength: (request: CalibrateArticleLengthRequest): Promise<GenerateArticleResult> =>
+    ipcRenderer.invoke('article:calibrateLength', request),
+  scanAiVoice: (
+    article: string
+  ): Promise<
+    | { ok: true; findings: import('../shared/aiVoice').AiVoiceFinding[] }
+    | { ok: false; message: string }
+  > => ipcRenderer.invoke('article:scanAiVoice', article),
+  suggestAiVoice: (payload: {
+    article: string
+    findings: import('../shared/aiVoice').AiVoiceFinding[]
+  }): Promise<
+    | { ok: true; findings: import('../shared/aiVoice').AiVoiceFinding[] }
+    | { ok: false; message: string }
+  > => ipcRenderer.invoke('article:suggestAiVoice', payload),
   onProgress: (callback: (event: GenerateProgressEvent) => void): (() => void) => {
     const listener = (_: Electron.IpcRendererEvent, event: GenerateProgressEvent): void => {
       callback(event)
@@ -493,6 +532,12 @@ const api = {
     ipcRenderer.invoke('internalLinks:import', input),
   loadChatStore: (): Promise<ChatStoreData> => ipcRenderer.invoke('chat:load'),
   saveChatStore: (data: ChatStoreData): Promise<{ ok: true }> => ipcRenderer.invoke('chat:save', data),
+  getAiTraceReport: (): Promise<import('../shared/aiTrace').AiTraceReport | null> =>
+    ipcRenderer.invoke('aiTrace:getReport'),
+  scanAiTrace: (): Promise<import('../shared/aiTrace').AiTraceReport> =>
+    ipcRenderer.invoke('aiTrace:scan'),
+  readAiTrace: (): Promise<import('../shared/aiTrace').AiTraceReport> =>
+    ipcRenderer.invoke('aiTrace:read'),
   platform: process.platform,
   windowMinimize: (): void => ipcRenderer.send('window:minimize'),
   windowMaximize: (): void => ipcRenderer.send('window:maximize'),

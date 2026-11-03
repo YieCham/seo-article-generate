@@ -16,6 +16,8 @@ export interface TokenUsageRecord {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  /** Prompt tokens served from the provider's cache, when reported. */
+  cachedPromptTokens?: number
   maxTokensRequested?: number
   finishReason?: string
   possiblyTruncated?: boolean

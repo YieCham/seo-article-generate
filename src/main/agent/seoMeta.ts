@@ -257,7 +257,8 @@ async function requestSeoMeta(
       : undefined,
     jsonObject: true,
     step: 'meta',
-    label: 'SEO Meta'
+    label: 'SEO Meta',
+    cacheSystemPrefix: true
   })
 }
 

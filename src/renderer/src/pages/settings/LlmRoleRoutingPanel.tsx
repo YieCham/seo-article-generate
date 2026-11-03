@@ -150,8 +150,8 @@ export default function LlmRoleRoutingPanel({
           />
           <RoleModelSelect
             id="llmRoleBodyWork"
-            label="正文与润色"
-            hint="用于：大纲、分段撰写、润色、词数校准；文章优化中的大纲、分节改写与终稿校对同理。"
+            label="正文工作"
+            hint="用于：大纲、分段撰写、按需词数校准；文章优化中的大纲与分节改写同理。"
             value={routing.bodyWork}
             options={options}
             onChange={(bodyWork) => patchRouting({ bodyWork })}

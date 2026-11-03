@@ -1,6 +1,10 @@
 import { maxTokensForSectionDraft, type SectionDraftTier } from '../config/llmTokenLimits'
 import type { ArticleType } from '../../shared/domainPacks'
-import { sanitizeHeadingTitle, stripOuterCodeFence } from '../../shared/normalizeArticleMarkdown'
+import { isConclusionHeading, isFaqHeading } from '../../shared/articleModules'
+import { sanitizeHeadingTitle } from '../../shared/normalizeArticleMarkdown'
+import { countArticleWords } from '../../shared/wordCount'
+
+export { countArticleWords }
 
 export const MIN_ARTICLE_WORDS = 1000
 export const MAX_ARTICLE_WORDS = 1800
@@ -64,27 +68,6 @@ function buildArticleLengthGuidance(bounds: ArticleLengthBounds): string {
 `.trim()
 }
 
-export function countArticleWords(text: string): number {
-  const body = stripOuterCodeFence(
-    text.replace(/^##\s+SEO Meta[\s\S]*?(?=\n## |\n# |$)/im, '').trim()
-  )
-  const withoutPlaceholders = body.replace(/\[Image:[^\]]*\]/gi, ' ')
-  const plain = withoutPlaceholders
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+\.\s+/gm, '')
-    .replace(/[|*_`~>\[\]()]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  if (!plain) return 0
-
-  const cjk = plain.match(/[\u4e00-\u9fff]/g)?.length ?? 0
-  const latin = plain.replace(/[\u4e00-\u9fff]/g, ' ').trim().split(/\s+/).filter(Boolean).length
-  return latin + Math.ceil(cjk / 1.5)
-}
-
 export function formatArticleWordRangeLabel(): string {
   return `${MIN_ARTICLE_WORDS}–${MAX_ARTICLE_WORDS}`
 }
@@ -120,30 +103,11 @@ export function normalizeHeadingTitle(title: string): string {
 }
 
 export function isConclusionSection(title: string): boolean {
-  const t = normalizeHeadingTitle(title)
-  if (!t) return false
-  if (/^conclusion\b/i.test(t)) return true
-  if (/^in conclusion\b/i.test(t)) return true
-  if (/^(?:final thoughts|wrapping up|bottom line)\b/i.test(t)) return true
-  if (/^(?:the|our|a)\s+(?:bottom line|conclusion|final thoughts)\b/i.test(t)) return true
-  if (/\bpart\s*\d+\s*[.:：)\-–—]\s*(?:bottom line|conclusion|final thoughts|wrapping up|in conclusion)\b/i.test(t)) {
-    return true
-  }
-  if (/\b(?:bottom line|final thoughts|wrapping up|in conclusion|conclusion)\s*$/i.test(t)) return true
-  if (/^(?:总结|结语|結語|写在最后|寫在最後)\b/.test(t)) return true
-  return false
+  return isConclusionHeading(normalizeHeadingTitle(title))
 }
 
 export function isFaqSection(title: string): boolean {
-  const t = normalizeHeadingTitle(title)
-  if (!t) return false
-  if (/^faqs?$/i.test(t)) return true
-  if (/frequently asked questions/i.test(t)) return true
-  if (/常见问题|常見問題/.test(t)) return true
-  // Topic-related FAQ H2s e.g. "FAQs About How to Fix Spotify"
-  if (/\bfaqs?\b/i.test(t) && t.length <= 90) return true
-  if (/^q\s*&\s*a\b/i.test(t) && t.length <= 90) return true
-  return false
+  return isFaqHeading(normalizeHeadingTitle(title))
 }
 
 /** Soft guidance: FAQ H2 may include topic context; no fixed title template. */

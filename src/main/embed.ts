@@ -3,6 +3,7 @@ import { app, type BrowserWindow } from 'electron'
 import { existsSync } from 'fs'
 import { loadConfig } from './config/configStore'
 import { registerArticleIpc } from './ipc/article'
+import { registerAiTraceIpc } from './ipc/aiTrace'
 import { registerChatIpc } from './ipc/chat'
 import { registerConfigIpc } from './ipc/config'
 import { registerImageIpc } from './ipc/image'
@@ -82,6 +83,7 @@ export async function bootstrapArticleAgent(
   registerArticleIpc()
   registerChatIpc()
   registerConfigIpc()
+  registerAiTraceIpc()
   registerImageIpc()
   registerKnowledgeIpc()
   registerDomainPackIpc()

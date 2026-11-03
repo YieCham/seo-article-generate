@@ -2,6 +2,7 @@ import { isValidElement, memo, type ReactNode, type Ref } from 'react'
 import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { headingAnchorId, isSeoMetaHeading, plainHeadingText } from '../../../../shared/inPageNav'
+import { parseLengthInsertMarker } from '../../../../shared/lengthWorkbench'
 import { finalizeArticleMarkdown } from '../../../../shared/normalizeArticleMarkdown'
 
 interface MarkdownContentProps {
@@ -46,6 +47,34 @@ function headingDomId(children: ReactNode, used: Set<string>): string | undefine
   return headingAnchorId(plainHeadingText(title), used)
 }
 
+function stripLengthInsertMarker(children: ReactNode): ReactNode {
+  if (typeof children === 'string') {
+    return parseLengthInsertMarker(children)?.rest ?? children
+  }
+  if (Array.isArray(children) && typeof children[0] === 'string') {
+    const parsed = parseLengthInsertMarker(children[0])
+    if (!parsed) return children
+    return [parsed.rest, ...children.slice(1)]
+  }
+  return children
+}
+
+function withLengthInsertMark<T extends object>(
+  props: T,
+  children: ReactNode | undefined
+): T & { className?: string; 'data-length-hunk'?: string; children?: ReactNode } {
+  const text = reactNodeText(children)
+  const parsed = parseLengthInsertMarker(text)
+  if (!parsed) return { ...props, children }
+  const className = 'className' in props && typeof props.className === 'string' ? props.className : undefined
+  return {
+    ...props,
+    className: [className, 'length-hunk-ins'].filter(Boolean).join(' '),
+    'data-length-hunk': parsed.id,
+    children: stripLengthInsertMarker(children)
+  }
+}
+
 function createSourceMappingComponents(headingIds: Set<string>): Components {
   const block = (
     Tag: 'p' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'li' | 'blockquote' | 'td' | 'th' | 'pre'
@@ -61,7 +90,7 @@ function createSourceMappingComponents(headingIds: Set<string>): Components {
 
       switch (Tag) {
         case 'p':
-          return <p {...mappedProps} />
+          return <p {...withLengthInsertMark(mappedProps, children)} />
         case 'h1':
           return <h1 {...mappedProps} />
         case 'h2':
@@ -75,7 +104,7 @@ function createSourceMappingComponents(headingIds: Set<string>): Components {
         case 'h6':
           return <h6 {...mappedProps} />
         case 'li':
-          return <li {...mappedProps} />
+          return <li {...withLengthInsertMark(mappedProps, children)} />
         case 'blockquote':
           return <blockquote {...mappedProps} />
         case 'td':
@@ -176,6 +205,12 @@ function mergeMarkdownComponents(headingIds: Set<string>, base?: Components): Co
       <h2 {...props} id={headingDomId(children, headingIds)}>
         {children}
       </h2>
+    ),
+    p: ({ children, node: _node, ...props }: ExtraProps & { children?: ReactNode }) => (
+      <p {...withLengthInsertMark(props, children)} />
+    ),
+    li: ({ children, node: _node, ...props }: ExtraProps & { children?: ReactNode }) => (
+      <li {...withLengthInsertMark(props, children)} />
     ),
     ...base
   }

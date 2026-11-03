@@ -45,7 +45,7 @@ export function formatLlmRoleRoutingHint(
   if (!routing) return ''
   const pre = formatLlmModelRefLabel(presets, routing.preBodyAndMeta)
   const body = formatLlmModelRefLabel(presets, routing.bodyWork)
-  return `正文前工作 + Meta：${pre}\n正文与润色：${body}`
+  return `正文前工作 + Meta：${pre}\n正文工作：${body}`
 }
 
 export function resolveBodyWorkModelOptionId(

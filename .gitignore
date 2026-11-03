@@ -5,3 +5,4 @@ dist
 *.log
 *.tsbuildinfo
 start-app.bat
+.tmp-build

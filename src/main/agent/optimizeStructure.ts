@@ -90,6 +90,26 @@ export interface AuditOutlineSkeletonItem {
   insertAfter?: string
   /** e.g. "Part 1" when audit says 原 Part 1 */
   sourcePartHint?: string
+  /** Diagnosis KEEP/ENHANCE lines, used to recover a renamed source section. */
+  keepNotes?: string
+  /** Diagnosis REMOVE lines. A source named only here is not reused as the KEEP body. */
+  removeNotes?: string
+  /** Exact source-section ids from the machine-readable diagnosis contract. */
+  sourceIds?: string[]
+}
+
+type OptimizeContractAction = 'keep' | 'revise' | 'add'
+type OptimizeContractKind = 'body' | 'quick_answer' | 'introduction' | 'faq' | 'conclusion'
+
+interface RawOptimizeContractSection {
+  title?: unknown
+  kind?: unknown
+  part?: unknown
+  action?: unknown
+  sourceIds?: unknown
+  keep?: unknown
+  add?: unknown
+  remove?: unknown
 }
 
 function normalizeAuditH2Title(raw: string): string {
@@ -100,10 +120,98 @@ function normalizeAuditH2Title(raw: string): string {
       .replace(/^[\d.]+\s*/, '')
       .replace(/^\[NEW H2\]\s*/i, '')
       .replace(/^\[新增\s*H2(?:\s*[:：][^\]]*)?\]\s*/i, '')
-      .replace(/\s*\([^)]*\)\s*$/, '')
       .replace(/\s*[|｜].*$/, '')
       .replace(/\s*[（(]原[^）)]*[）)]\s*/g, '')
   )
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+    : []
+}
+
+function contractTitle(raw: string, part: boolean, partNumber: number): string {
+  const clean = normalizeAuditH2Title(raw).replace(/^part\s+\d+\s*[.:：]\s*/i, '').trim()
+  return part ? `Part ${partNumber}. ${clean}` : clean
+}
+
+/**
+ * Read the diagnosis' machine contract. Invalid or incomplete contracts return
+ * an empty list so legacy Markdown diagnosis parsing remains the safe fallback.
+ */
+export function parseOptimizeSectionContract(
+  audit: string,
+  sourceSections: OutlineSection[]
+): AuditOutlineSkeletonItem[] {
+  const marker = '<!-- OPTIMIZE_SECTION_CONTRACT -->'
+  const markerIndex = audit.indexOf(marker)
+  if (markerIndex < 0) return []
+
+  const tail = audit.slice(markerIndex + marker.length)
+  const fenced = tail.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (!fenced) return []
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fenced[1])
+  } catch {
+    return []
+  }
+
+  const sections = (parsed as { sections?: unknown })?.sections
+  if (!Array.isArray(sections) || sections.length < 2) return []
+
+  const validIds = new Set(sourceSections.map((_, index) => `S${index + 1}`))
+  const usedSourceIds = new Set<string>()
+  const seenTitles = new Set<string>()
+  const result: AuditOutlineSkeletonItem[] = []
+  let nextPart = 1
+
+  for (const value of sections) {
+    if (!value || typeof value !== 'object') return []
+    const item = value as RawOptimizeContractSection
+    if (typeof item.title !== 'string' || !item.title.trim()) return []
+
+    const action = item.action as OptimizeContractAction
+    const kind = item.kind as OptimizeContractKind
+    if (!['keep', 'revise', 'add'].includes(action)) return []
+    if (!['body', 'quick_answer', 'introduction', 'faq', 'conclusion'].includes(kind)) return []
+
+    const isPart = kind === 'body' && item.part === true
+    const title = contractTitle(item.title, isPart, nextPart)
+    if (isPart) nextPart += 1
+    if (!title) return []
+
+    const titleKey = title.toLowerCase()
+    if (seenTitles.has(titleKey)) return []
+    seenTitles.add(titleKey)
+
+    const sourceIds = stringList(item.sourceIds)
+    if (action === 'add' && sourceIds.length > 0) return []
+    if (action !== 'add' && sourceIds.length !== 1) return []
+    for (const id of sourceIds) {
+      if (!validIds.has(id) || usedSourceIds.has(id)) return []
+      usedSourceIds.add(id)
+    }
+
+    const keep = stringList(item.keep)
+    const removals = stringList(item.remove)
+    result.push({
+      title,
+      isNew: action === 'add',
+      sourceIds,
+      sourcePartHint:
+        sourceIds.length === 1
+          ? sourceSections[Number(sourceIds[0].slice(1)) - 1]?.title
+          : undefined,
+      keepNotes: keep.length > 0 ? keep.map((note) => `- KEEP: ${note}`).join('\n') : undefined,
+      removeNotes:
+        removals.length > 0 ? removals.map((note) => `- REMOVE: ${note}`).join('\n') : undefined
+    })
+  }
+
+  return result
 }
 
 /**
@@ -145,7 +253,7 @@ export function parseAuditOutlineSkeleton(audit: string): AuditOutlineSkeletonIt
       .replace(/\[NEW H2\]\s*/gi, '')
       .replace(/\*\*/g, '')
       .replace(/\s*[|｜]\s*insert\s+.+$/i, '')
-      .replace(/\s*[（(][^）)]*[）)]\s*$/g, '')
+      .replace(/\s*[（(](?:原|insert|new|新增)[^）)]*[）)]\s*$/gi, '')
       .trim()
 
     title = normalizeAuditH2Title(title)
@@ -166,24 +274,164 @@ export function parseAuditOutlineSkeleton(audit: string): AuditOutlineSkeletonIt
   return items
 }
 
-function findSourceSectionForSkeletonItem(
-  item: AuditOutlineSkeletonItem,
-  sourceSections: OutlineSection[]
-): OutlineSection | undefined {
-  if (item.sourcePartHint) {
-    const hint = item.sourcePartHint.toLowerCase()
-    const byPart = sourceSections.find((section) =>
-      section.title.toLowerCase().includes(hint.toLowerCase())
-    )
-    if (byPart) return byPart
+const TITLE_TOKEN_STOP = new Set([
+  'the', 'and', 'for', 'with', 'from', 'that', 'this', 'your', 'how', 'via', 'into'
+])
+
+function partlessTitle(title: string): string {
+  return title
+    .replace(/[*_`]/g, '')
+    .replace(/^part\s+\d+\s*[.:：]\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function titleTokens(title: string): string[] {
+  return partlessTitle(title)
+    .split(/[^a-z0-9\u4e00-\u9fff]+/)
+    .filter((token) => token.length > 2 && !TITLE_TOKEN_STOP.has(token))
+}
+
+function titleOverlap(left: string, right: string): number {
+  const a = new Set(titleTokens(left))
+  const b = new Set(titleTokens(right))
+  if (a.size === 0 || b.size === 0) return 0
+  let shared = 0
+  for (const token of a) {
+    if (b.has(token)) shared += 1
+  }
+  return shared / Math.min(a.size, b.size)
+}
+
+function partNumber(title: string): number | null {
+  const match = title.match(/\bpart\s+(\d+)\b/i)
+  return match ? Number(match[1]) : null
+}
+
+/**
+ * The diagnosis「按 H2 索引」list is the final section order when no numbered
+ * 大纲骨架 was parsed. Placement notes are not used to reshuffle that list.
+ */
+export function parseAuditH2Index(audit: string): AuditOutlineSkeletonItem[] {
+  const items: AuditOutlineSkeletonItem[] = []
+  const seen = new Set<string>()
+  let title = ''
+  let notes: string[] = []
+
+  const flush = (): void => {
+    const cleaned = normalizeAuditH2Title(title)
+    title = ''
+    const block = notes.join('\n')
+    notes = []
+    if (cleaned.length < 3) return
+    const key = cleaned.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    const action = block.match(/\*\*Action\*\*:\s*\*\*([^*]+)\*\*/i)?.[1] ?? ''
+    const isNew = /\b(?:ADD|NEW)\b/i.test(action) && !/\bKEEP\b/i.test(action)
+    const noteLines = block.split('\n')
+    const keepNotes = noteLines
+      .filter((line) => /^\s*-\s+\*\*(?:KEEP|ENHANCE)\*\*/i.test(line))
+      .join('\n')
+    const removeNotes = noteLines
+      .filter((line) => /^\s*-\s+\*\*REMOVE\*\*/i.test(line))
+      .join('\n')
+    items.push({
+      title: cleaned,
+      isNew,
+      keepNotes: keepNotes || undefined,
+      removeNotes: removeNotes || undefined
+    })
   }
 
-  const exact = sourceSections.find(
-    (section) => section.title.trim().toLowerCase() === item.title.trim().toLowerCase()
-  )
-  if (exact) return exact
+  for (const line of audit.split('\n')) {
+    const heading = line.match(/^####\s+H2:\s*(.+)$/i)
+    if (heading) {
+      if (title) flush()
+      title = heading[1].trim()
+      notes = []
+      continue
+    }
+    if (title) notes.push(line)
+  }
+  if (title) flush()
+  return items
+}
 
-  return sourceSections.find((section) => titleMatchesAnchor(section.title, item.title))
+function findSourceSectionForSkeletonItem(
+  item: AuditOutlineSkeletonItem,
+  sourceSections: OutlineSection[],
+  used: Set<number>
+): OutlineSection | undefined {
+  const available = sourceSections
+    .map((section, index) => ({ section, index }))
+    .filter((entry) => !used.has(entry.index))
+
+  const take = (index: number): OutlineSection => {
+    used.add(index)
+    return sourceSections[index]
+  }
+
+  if (item.sourceIds?.length === 1) {
+    const index = Number(item.sourceIds[0].slice(1)) - 1
+    if (Number.isInteger(index) && index >= 0 && index < sourceSections.length && !used.has(index)) {
+      return take(index)
+    }
+  }
+
+  if (item.sourcePartHint) {
+    const hint = item.sourcePartHint.toLowerCase()
+    const byPart = available.find((entry) => entry.section.title.toLowerCase().includes(hint))
+    if (byPart) return take(byPart.index)
+  }
+
+  const exact = available.find(
+    (entry) => entry.section.title.trim().toLowerCase() === item.title.trim().toLowerCase()
+  )
+  if (exact) return take(exact.index)
+
+  const anchor = available.find((entry) => titleMatchesAnchor(entry.section.title, item.title))
+  if (anchor) return take(anchor.index)
+
+  const itemCore = partlessTitle(item.title)
+  const core = available.find((entry) => {
+    const sourceCore = partlessTitle(entry.section.title)
+    return sourceCore.length > 8 && (sourceCore.includes(itemCore) || itemCore.includes(sourceCore))
+  })
+  if (core) return take(core.index)
+
+  let best: { index: number; score: number } | undefined
+  for (const entry of available) {
+    const score = titleOverlap(entry.section.title, item.title)
+    if (!best || score > best.score) best = { index: entry.index, score }
+  }
+  if (best && best.score >= 0.72) return take(best.index)
+
+  const number = partNumber(item.title)
+  if (!item.isNew && number != null) {
+    const sameNumber = available.filter((entry) => partNumber(entry.section.title) === number)
+    if (sameNumber.length === 1 && titleOverlap(sameNumber[0].section.title, item.title) >= 0.25) {
+      return take(sameNumber[0].index)
+    }
+  }
+
+  if (!item.isNew && item.keepNotes?.trim()) {
+    const keepTokens = new Set(titleTokens(item.keepNotes))
+    const banned = new Set(
+      titleTokens(item.removeNotes ?? '').filter((token) => !keepTokens.has(token))
+    )
+    let noted: { index: number; score: number } | undefined
+    for (const entry of available) {
+      const sourceTokens = titleTokens(entry.section.title)
+      if (sourceTokens.some((token) => banned.has(token))) continue
+      const score = titleOverlap(entry.section.title, item.keepNotes)
+      if (!noted || score > noted.score) noted = { index: entry.index, score }
+    }
+    if (noted && noted.score >= 0.6) return take(noted.index)
+  }
+
+  return undefined
 }
 
 function materializeAuditOutlineSkeleton(
@@ -210,6 +458,8 @@ function materializeAuditOutlineSkeleton(
     result.push(section)
   }
 
+  const usedSources = new Set<number>()
+
   for (const item of skeleton) {
     if (item.isNew) {
       place(item, {
@@ -219,7 +469,7 @@ function materializeAuditOutlineSkeleton(
       continue
     }
 
-    const source = findSourceSectionForSkeletonItem(item, sourceSections)
+    const source = findSourceSectionForSkeletonItem(item, sourceSections, usedSources)
     place(item, {
       title: item.title,
       body: source?.body?.trim()
@@ -709,18 +959,40 @@ export function extractSourceH1(markdown: string, fallbackTitle: string): string
 
 export function findMatchingSourceSection(
   sectionTitle: string,
-  sourceSections: OutlineSection[]
+  sourceSections: OutlineSection[],
+  used: Set<number> = new Set(),
+  isNew = false
 ): OutlineSection | undefined {
   const target = sectionTitle.trim().toLowerCase()
   if (!target) return undefined
 
-  const exact = sourceSections.find((item) => item.title.trim().toLowerCase() === target)
-  if (exact) return exact
+  const exactIndex = sourceSections.findIndex(
+    (item, index) => !used.has(index) && item.title.trim().toLowerCase() === target
+  )
+  if (exactIndex >= 0) {
+    used.add(exactIndex)
+    return sourceSections[exactIndex]
+  }
 
-  return sourceSections.find((item) => {
+  const includesIndex = sourceSections.findIndex((item, index) => {
+    if (used.has(index)) return false
     const source = item.title.trim().toLowerCase()
     return source.includes(target) || target.includes(source)
   })
+  if (includesIndex >= 0) {
+    used.add(includesIndex)
+    return sourceSections[includesIndex]
+  }
+
+  const found = findSourceSectionForSkeletonItem(
+    { title: sectionTitle, isNew },
+    sourceSections,
+    used
+  )
+  if (!found) return undefined
+  const index = sourceSections.indexOf(found)
+  if (index >= 0) used.add(index)
+  return found
 }
 
 export type OptimizeSectionEditAction = 'write_new' | 'content_revise' | 'text_polish'
@@ -769,6 +1041,21 @@ function detectOutlineEditSignals(outlineBody: string): {
   }
 }
 
+function findAuditSkeletonItem(
+  audit: string,
+  title: string,
+  sourceSections: OutlineSection[]
+): AuditOutlineSkeletonItem | undefined {
+  const key = title.trim().toLowerCase()
+  const contract = parseOptimizeSectionContract(audit, sourceSections)
+  if (contract.length >= 2) {
+    return contract.find((item) => item.title.trim().toLowerCase() === key)
+  }
+  const numbered = parseAuditOutlineSkeleton(audit)
+  const pool = numbered.length >= 2 ? numbered : parseAuditH2Index(audit)
+  return pool.find((item) => item.title.trim().toLowerCase() === key)
+}
+
 /**
  * Pair an optimize-outline section with the source outline before drafting,
  * then decide: write new / content add-remove / text polish only.
@@ -776,13 +1063,28 @@ function detectOutlineEditSignals(outlineBody: string): {
 export function pairOutlineSectionWithSource(
   outlineSection: OutlineSection,
   sourceSections: OutlineSection[],
-  audit: string
+  audit: string,
+  used: Set<number> = new Set()
 ): OptimizeSectionPairing {
   const outlineTitle = outlineSection.title.trim()
-  const exact = sourceSections.find(
-    (item) => item.title.trim().toLowerCase() === outlineTitle.toLowerCase()
+  const markedNew =
+    /NEW \(audit\)/i.test(outlineSection.body) ||
+    isAuditRecommendedNewSection(outlineTitle, audit)
+  const skeletonItem = findAuditSkeletonItem(audit, outlineTitle, sourceSections) ?? {
+    title: outlineTitle,
+    isNew: markedNew
+  }
+  const exactIndex = sourceSections.findIndex(
+    (item, index) =>
+      !skeletonItem.isNew &&
+      !used.has(index) &&
+      item.title.trim().toLowerCase() === outlineTitle.toLowerCase()
   )
-  const fuzzy = exact ? undefined : findMatchingSourceSection(outlineTitle, sourceSections)
+  const exact = exactIndex >= 0 ? sourceSections[exactIndex] : undefined
+  const fuzzy = exact
+    ? undefined
+    : findSourceSectionForSkeletonItem(skeletonItem, sourceSections, used)
+  if (exactIndex >= 0) used.add(exactIndex)
   const matched = exact ?? fuzzy
   const match: OptimizeSectionPairing['match'] = exact ? 'exact' : fuzzy ? 'fuzzy' : 'none'
 
@@ -986,7 +1288,12 @@ export function buildAnchoredOutline(
 ): string {
   const sourceSections = parseSourceSections(sourceMarkdown)
   const auditText = `${audit}\n${skillsText}`.toLowerCase()
-  const skeleton = parseAuditOutlineSkeleton(audit)
+  let skeleton = parseOptimizeSectionContract(audit, sourceSections)
+  if (skeleton.length < 2) skeleton = parseAuditOutlineSkeleton(audit)
+  if (skeleton.length < 2) {
+    const h2Index = parseAuditH2Index(audit)
+    if (h2Index.length >= 2) skeleton = h2Index
+  }
 
   let sections: OutlineSection[]
 

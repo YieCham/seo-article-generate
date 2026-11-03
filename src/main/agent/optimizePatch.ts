@@ -12,6 +12,8 @@ export interface OptimizePatchApplyOptions {
   allowedOps?: OptimizePatchOpName[]
   /** text_polish: reject replacements longer than a short sentence. */
   shortReplaceOnly?: boolean
+  /** Reject patches that leave a step marker empty or silently lose an image. */
+  preserveStructuralIntegrity?: boolean
 }
 
 export type OptimizePatchResult =
@@ -84,6 +86,95 @@ function isNearlyWholeSection(source: string, find: string): boolean {
   const findLen = collapseWhitespace(find).length
   if (sourceLen === 0) return false
   return findLen >= sourceLen * 0.85
+}
+
+interface StepMarker {
+  number: number
+  hasBody: boolean
+}
+
+function parseStepMarkers(markdown: string): StepMarker[] {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  const result: StepMarker[] = []
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const plain = lines[index]
+      .trim()
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/[*_`]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const match = plain.match(/^step\s*(\d+)\s*[.)：:]?\s*(.*)$/i)
+    if (!match) continue
+
+    let hasBody = Boolean(match[2].trim())
+    if (!hasBody) {
+      for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+        const next = lines[cursor].trim()
+        if (!next) continue
+        if (
+          /^(?:#{1,6}\s+|(?:[-*_]\s*){3,}$)/.test(next) ||
+          /^step\s*\d+/i.test(next.replace(/[*_`]/g, '').trim())
+        ) {
+          break
+        }
+        hasBody = true
+        break
+      }
+    }
+
+    result.push({ number: Number(match[1]), hasBody })
+  }
+
+  return result
+}
+
+function imageTargets(markdown: string): string[] {
+  const targets: string[] = []
+  for (const match of markdown.matchAll(/!\[[^\]]*]\(([^)\s]+)(?:\s+["'][^)]*)?\)/g)) {
+    targets.push(match[1])
+  }
+  return targets
+}
+
+function emptyHeadingCount(markdown: string): number {
+  return markdown
+    .split(/\r?\n/)
+    .filter((line) => /^#{1,6}\s*(?:[*_`]|\s)*$/.test(line.trim())).length
+}
+
+export function validateOptimizeSectionIntegrity(
+  source: string,
+  result: string,
+  ops: OptimizePatchOp[]
+): string | null {
+  const beforeSteps = parseStepMarkers(source)
+  const afterSteps = parseStepMarkers(result)
+  const occurrence = new Map<number, number>()
+
+  for (const step of afterSteps) {
+    const ordinal = occurrence.get(step.number) ?? 0
+    occurrence.set(step.number, ordinal + 1)
+    if (step.hasBody) continue
+    const beforeSame = beforeSteps.filter((item) => item.number === step.number)[ordinal]
+    if (!beforeSame || beforeSame.hasBody) {
+      return `补丁导致 Step ${step.number} 只剩编号、没有步骤正文`
+    }
+  }
+
+  if (emptyHeadingCount(result) > emptyHeadingCount(source)) {
+    return '补丁产生了空标题'
+  }
+
+  const afterImages = new Set(imageTargets(result))
+  const explicitlyEdited = ops.map((op) => op.find).join('\n')
+  for (const target of imageTargets(source)) {
+    if (!afterImages.has(target) && !explicitlyEdited.includes(target)) {
+      return `补丁意外移除了图片：${target}`
+    }
+  }
+
+  return null
 }
 
 export function parseOptimizePatch(raw: string): { ok: true; ops: OptimizePatchOp[] } | { ok: false; error: string } {
@@ -180,7 +271,13 @@ export function applyOptimizePatch(
     return { ok: false, error: '补丁删空了本节' }
   }
 
-  return { ok: true, ops, text: repairBrokenAtxHeadings(text) }
+  const repaired = repairBrokenAtxHeadings(text)
+  if (options?.preserveStructuralIntegrity) {
+    const integrityError = validateOptimizeSectionIntegrity(source, repaired, ops)
+    if (integrityError) return { ok: false, error: integrityError }
+  }
+
+  return { ok: true, ops, text: repaired }
 }
 
 export function resolveOptimizePatch(
@@ -193,16 +290,44 @@ export function resolveOptimizePatch(
   return applyOptimizePatch(source, parsed.ops, options)
 }
 
+/** Apply each op independently so one bad `find` does not drop the rest. */
+export function applyOptimizePatchBestEffort(
+  source: string,
+  ops: OptimizePatchOp[],
+  options?: OptimizePatchApplyOptions
+): { text: string; applied: OptimizePatchOp[]; skipped: number } {
+  let text = source
+  const applied: OptimizePatchOp[] = []
+  let skipped = 0
+  for (const op of ops) {
+    const result = applyOptimizePatch(text, [op], options)
+    if (result.ok) {
+      text = result.text
+      applied.push(op)
+    } else {
+      skipped += 1
+    }
+  }
+  return { text, applied, skipped }
+}
+
 export function patchOptionsForAction(
   action: 'text_polish' | 'content_revise' | 'delete_only'
 ): OptimizePatchApplyOptions {
   if (action === 'text_polish') {
-    return { allowedOps: ['replace'], shortReplaceOnly: true }
+    return {
+      allowedOps: ['replace'],
+      shortReplaceOnly: true,
+      preserveStructuralIntegrity: true
+    }
   }
   if (action === 'delete_only') {
-    return { allowedOps: ['delete'] }
+    return { allowedOps: ['delete'], preserveStructuralIntegrity: true }
   }
-  return { allowedOps: ['replace', 'insert_after', 'delete'] }
+  return {
+    allowedOps: ['replace', 'insert_after', 'delete'],
+    preserveStructuralIntegrity: true
+  }
 }
 
 export function buildSectionPatchSystemPrompt(action: 'text_polish' | 'content_revise'): string {
@@ -218,6 +343,8 @@ export function buildSectionPatchSystemPrompt(action: 'text_polish' | 'content_r
     'find 必须是底稿里能唯一匹配的连续原文，优先整句引用，不要改写 find 本身。',
     opRule,
     'with 只放替换或插入的 Markdown 正文，不要包含本节 ## 标题，不要解释。',
+    '若编辑 Step N 步骤，必须保留该步骤的实质说明；禁止留下只有 “Step N.” 的空步骤。删除失效步骤时，find 必须同时包含步骤编号与完整步骤正文。',
+    '不得无意删除原文图片；确需随失效内容删除图片时，find 必须完整包含该图片 Markdown。',
     '禁止把标题写成列表或行内代码：不要输出 `- ## 标题` 或 `` `## 标题` ``。'
   ].join('\n')
 }
@@ -228,5 +355,16 @@ export function buildDeleteOnlyPatchSystemPrompt(): string {
     '只输出 JSON：{"ops":[{"op":"delete","find":"要删除的原文原句"}]}',
     'find 必须是正文中能唯一匹配的原句。禁止 replace、禁止 insert_after、禁止改标题、禁止重写段落。',
     '不要删除整节，不要删除仍可用的操作步骤。若没有安全可删的句子，输出 {"ops":[]}。'
+  ].join('\n')
+}
+
+export function buildInsertAfterPatchSystemPrompt(): string {
+  return [
+    '你是文章长度编辑。本节偏短，只允许在原句之后插入实质内容。',
+    '只输出 JSON：{"ops":[{"op":"insert_after","find":"本节中能唯一匹配的原句","with":"要插入的新段落"}]}',
+    'find 必须是本节正文里的连续原文，优先整句引用，不要改写 find 本身。',
+    'with 是 1–3 句对读者有用的补充（操作细节、例子、注意点、适用场景），禁止空话、禁止重复已有句子。',
+    '禁止 delete、禁止 replace、禁止改标题、禁止输出 ## 标题、禁止改动表格和 [Image: …] 占位符、禁止改 how-to 步骤编号。',
+    '没有合适位置则 {"ops":[]}。'
   ].join('\n')
 }

@@ -86,7 +86,46 @@ const GENERIC_ANCHOR_TOKENS = new Set([
   'tutorial',
   'device',
   'devices',
-  'software'
+  'software',
+  'offline',
+  'online',
+  'premium',
+  'official',
+  'available'
+])
+
+const WEAK_ANCHOR_TOKENS = new Set([
+  'play',
+  'playing',
+  'listen',
+  'listening',
+  'open',
+  'opening',
+  'opened',
+  'make',
+  'made',
+  'get',
+  'got',
+  'use',
+  'used',
+  'using',
+  'work',
+  'works',
+  'working',
+  'operate',
+  'operates',
+  'operating',
+  'clean',
+  'easy',
+  'simple',
+  'fast',
+  'quick',
+  'full',
+  'new',
+  'via',
+  'from',
+  'into',
+  'onto'
 ])
 
 const STOP_WORDS = new Set([
@@ -102,7 +141,17 @@ const STOP_WORDS = new Set([
   'a',
   'an',
   'how',
-  'your'
+  'your',
+  'without',
+  'within',
+  'than',
+  'then',
+  'that',
+  'this',
+  'when',
+  'also',
+  'just',
+  'only'
 ])
 
 export function hostKey(url: string): string {
@@ -268,10 +317,16 @@ export function scoreInternalLink(
   const q = query.trim().toLowerCase()
   let score = 0
 
+  let distinctiveHits = 0
   for (const token of tokens) {
-    if (title.includes(token)) score += token === q ? 8 : 4
-    if (slug.includes(token)) score += 2
+    const inTitle = title.includes(token)
+    const inSlug = slug.includes(token)
+    if (inTitle) score += token === q ? 8 : 4
+    if (inSlug) score += 2
+    if ((inTitle || inSlug) && isDistinctiveToken(token)) distinctiveHits += 1
   }
+
+  if (distinctiveHits === 0) return 0
 
   for (const hint of searchHints) {
     const key = hint.trim().toLowerCase()
@@ -391,8 +446,30 @@ function orderedContentTokens(text: string): string[] {
   return tokens
 }
 
-function windowIsSpecific(tokens: string[]): boolean {
-  return tokens.some((token) => !GENERIC_ANCHOR_TOKENS.has(token) && token.length >= 3)
+function isDistinctiveToken(token: string): boolean {
+  if (token.length < 3) return false
+  if (/^\d+$/.test(token)) return false
+  if (STOP_WORDS.has(token) || GENERIC_ANCHOR_TOKENS.has(token) || WEAK_ANCHOR_TOKENS.has(token)) {
+    return false
+  }
+  return token.length >= 4 || /[\u4e00-\u9fff]/.test(token)
+}
+
+function distinctiveDocTokens(doc: InternalLinkDoc): string[] {
+  const fromSlug = orderedContentTokens(doc.slug.replace(/[-_]/g, ' ')).filter(isDistinctiveToken)
+  if (fromSlug.length > 0) return [...new Set(fromSlug)]
+  return [...new Set(orderedContentTokens(doc.title).filter(isDistinctiveToken))]
+}
+
+function windowCoversTopic(window: string[], distinctive: Set<string>): boolean {
+  return window.some((token) => distinctive.has(token))
+}
+
+function windowIsSpecific(tokens: string[], distinctive: Set<string>): boolean {
+  if (!windowCoversTopic(tokens, distinctive)) return false
+  const strong = tokens.filter((token) => distinctive.has(token))
+  if (tokens.length >= 3 && strong.length > 0) return true
+  return strong.some((token) => token.length >= 4 || /[\u4e00-\u9fff]/.test(token))
 }
 
 function phraseRegExp(tokens: string[]): RegExp {
@@ -433,14 +510,17 @@ function hasTokenBoundary(text: string, start: number, end: number): boolean {
 
 function findTokenPhrase(
   paragraph: string,
-  tokens: string[]
-): { start: number; end: number; tokenCount: number } | null {
-  if (tokens.length < 2) return null
+  tokens: string[],
+  distinctive: Set<string>
+): { start: number; end: number; tokenCount: number; distinctiveCount: number } | null {
+  if (tokens.length < 2 || distinctive.size === 0) return null
   const masked = maskRanges(paragraph)
+  let best: { start: number; end: number; tokenCount: number; distinctiveCount: number } | null = null
   for (let size = tokens.length; size >= 2; size -= 1) {
     for (let index = 0; index + size <= tokens.length; index += 1) {
       const window = tokens.slice(index, index + size)
-      if (!windowIsSpecific(window)) continue
+      if (!windowIsSpecific(window, distinctive)) continue
+      const distinctiveCount = window.filter((token) => distinctive.has(token)).length
       const re = phraseRegExp(window)
       for (const match of paragraph.matchAll(re)) {
         const start = match.index ?? 0
@@ -448,17 +528,29 @@ function findTokenPhrase(
         if (!hasTokenBoundary(paragraph, start, end)) continue
         if (overlapsRange(start, end, masked)) continue
         if (match[0].trim().length < 8 && !/[\u4e00-\u9fff]/.test(match[0])) continue
-        return { start, end, tokenCount: size }
+        const candidate = { start, end, tokenCount: size, distinctiveCount }
+        if (
+          !best ||
+          candidate.distinctiveCount > best.distinctiveCount ||
+          (candidate.distinctiveCount === best.distinctiveCount && candidate.tokenCount > best.tokenCount) ||
+          (candidate.distinctiveCount === best.distinctiveCount &&
+            candidate.tokenCount === best.tokenCount &&
+            candidate.end - candidate.start > best.end - best.start)
+        ) {
+          best = candidate
+        }
       }
     }
+    if (best) return best
   }
-  return null
+  return best
 }
 
 function findCjkPhrase(
   paragraph: string,
-  title: string
-): { start: number; end: number; tokenCount: number } | null {
+  title: string,
+  distinctive: Set<string>
+): { start: number; end: number; tokenCount: number; distinctiveCount: number } | null {
   const chunks = title.match(/[\u4e00-\u9fff]{2,}/g) ?? []
   if (chunks.length === 0) return null
   const masked = maskRanges(paragraph)
@@ -484,7 +576,14 @@ function findCjkPhrase(
       from = start + 1
       if (!hasTokenBoundary(paragraph, start, end)) continue
       if (overlapsRange(start, end, masked)) continue
-      return { start, end, tokenCount: Math.max(2, phrase.length) }
+      const distinctiveCount = [...distinctive].filter((token) => phrase.includes(token)).length
+      if (distinctive.size > 0 && distinctiveCount === 0) continue
+      return {
+        start,
+        end,
+        tokenCount: Math.max(2, phrase.length),
+        distinctiveCount: Math.max(1, distinctiveCount)
+      }
     }
   }
   return null
@@ -605,18 +704,22 @@ export function insertInlineInternalLinks(
   }
 
   const placements: Placement[] = []
+  const haystack = markdown.toLowerCase()
   for (const doc of documents) {
     const urlKey = doc.url.replace(/\/+$/, '').toLowerCase()
     if (!doc.url.trim() || excluded.has(urlKey)) continue
     if (docMatchesCurrentArticle(doc, titleKeys)) continue
+    const distinctive = new Set(distinctiveDocTokens(doc))
+    if (distinctive.size === 0) continue
+    if (![...distinctive].some((token) => haystack.includes(token))) continue
     const titleTokens = orderedContentTokens(doc.title)
     const slugTokens = orderedContentTokens(doc.slug.replace(/[-_]/g, ' '))
     spans.forEach((span, spanIndex) => {
       const text = markdown.slice(span.start, span.end)
       const anchor =
-        findTokenPhrase(text, titleTokens) ??
-        findTokenPhrase(text, slugTokens) ??
-        findCjkPhrase(text, doc.title)
+        findTokenPhrase(text, titleTokens, distinctive) ??
+        findTokenPhrase(text, slugTokens, distinctive) ??
+        findCjkPhrase(text, doc.title, distinctive)
       if (!anchor) return
       placements.push({
         url: doc.url,
@@ -624,7 +727,8 @@ export function insertInlineInternalLinks(
         localStart: anchor.start,
         localEnd: anchor.end,
         absStart: span.start + anchor.start,
-        quality: anchor.tokenCount * 1000 + (anchor.end - anchor.start)
+        quality:
+          anchor.distinctiveCount * 10000 + anchor.tokenCount * 1000 + (anchor.end - anchor.start)
       })
     })
   }

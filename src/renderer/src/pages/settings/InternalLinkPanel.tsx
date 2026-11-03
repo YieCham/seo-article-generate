@@ -134,7 +134,8 @@ export default function InternalLinkPanel({
           <h2 className="section-title">内链库</h2>
           <p className="section-desc">
             按产品存放 Sitemap 导入的已发布文章。创作时只用当前所选产品的目录，把最多 4
-            条内链嵌进已有段落，锚文本用正文里已有的短语。对不上就不插。不依赖 WordPress 账号。
+            条内链嵌进已有段落。锚文本必须是正文里已有、且能代表目标页主题的短语（例如提到
+            Suunto 才链到 Suunto 文）。对不上就不插。不依赖 WordPress 账号。
           </p>
         </div>
       </div>

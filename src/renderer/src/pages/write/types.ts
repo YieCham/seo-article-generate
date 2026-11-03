@@ -2,6 +2,7 @@ import { normalizeWriteMode, type WriteMode } from '../../constants/writeMode'
 import type { PipelineCheckpoint } from '../../../../shared/pipelineCheckpoint'
 import type { ResearchPack } from '../../../../shared/researchPack'
 import type { WordPressDraftBinding } from '../../../../shared/wordpress'
+import type { LengthWorkbenchState } from '../../../../shared/lengthWorkbench'
 
 export interface ReviseArticleSelection {
   start: number
@@ -43,6 +44,10 @@ export interface ChatSession {
   llmModel?: string
   updatedAt: number
   pipelineCheckpoint?: PipelineCheckpoint
+  /** Outline markdown kept after checkpoints are cleared, for the right-hand progress board. */
+  articleOutline?: string
+  /** Create-mode word-count patches shown under the progress board. */
+  lengthWorkbench?: LengthWorkbenchState
   /** Survives successful runs; reused on regenerate to skip Tavily/Firecrawl. */
   researchPack?: ResearchPack
   wordpressDraft?: WordPressDraftBinding

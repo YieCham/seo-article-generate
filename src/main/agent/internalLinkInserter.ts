@@ -45,7 +45,7 @@ export async function insertInlineInternalLinksIntoArticle(
       markdown: options.markdown,
       matched: 0,
       inserted: 0,
-      skippedReason: '正文没有可自然对应的短语'
+      skippedReason: '正文没有能代表目标页主题的短语'
     }
   }
 

@@ -4,6 +4,10 @@ import { getArticleUserDataDir } from '../paths'
 import type { PipelineCheckpoint } from '../../shared/pipelineCheckpoint'
 import type { ResearchPack } from '../../shared/researchPack'
 import {
+  normalizeLengthWorkbench,
+  type LengthWorkbenchState
+} from '../../shared/lengthWorkbench'
+import {
   normalizeWordPressDraftBinding,
   type WordPressDraftBinding
 } from '../../shared/wordpress'
@@ -21,6 +25,8 @@ export interface StoredChatMessage {
   role: 'user' | 'assistant' | 'status' | 'research' | 'planning'
   content: string
   status?: 'streaming' | 'revising' | 'pendingApply' | 'done' | 'error' | 'interrupted'
+  revisionBaseline?: string
+  revisionUserMessageId?: string
 }
 
 export type StoredListStatus = 'active' | 'completed'
@@ -43,6 +49,8 @@ export interface StoredChatSession {
   llmModel?: string
   updatedAt: number
   pipelineCheckpoint?: PipelineCheckpoint
+  articleOutline?: string
+  lengthWorkbench?: LengthWorkbenchState
   researchPack?: ResearchPack
   wordpressDraft?: WordPressDraftBinding
 }
@@ -106,9 +114,26 @@ export async function loadChatStore(): Promise<ChatStoreData> {
         llmModel: typeof session.llmModel === 'string' ? session.llmModel : undefined,
         updatedAt: session.updatedAt || Date.now(),
         pipelineCheckpoint: session.pipelineCheckpoint,
+        articleOutline:
+          typeof session.articleOutline === 'string' && session.articleOutline.trim()
+            ? session.articleOutline
+            : undefined,
+        lengthWorkbench: normalizeLengthWorkbench(session.lengthWorkbench),
         researchPack: session.researchPack,
         wordpressDraft: normalizeWordPressDraftBinding(session.wordpressDraft),
-        messages: Array.isArray(session.messages) ? session.messages : []
+        messages: Array.isArray(session.messages)
+          ? session.messages.map((message) => ({
+              ...message,
+              revisionBaseline:
+                typeof message.revisionBaseline === 'string' && message.revisionBaseline.trim()
+                  ? message.revisionBaseline
+                  : undefined,
+              revisionUserMessageId:
+                typeof message.revisionUserMessageId === 'string'
+                  ? message.revisionUserMessageId
+                  : undefined
+            }))
+          : []
       }))
 
     const activeSessionId =

@@ -168,6 +168,7 @@ export default function TokenLogPanel({ onStatus }: TokenLogPanelProps) {
                   <th>步骤</th>
                   <th>模型</th>
                   <th>输入</th>
+                  <th>缓存命中</th>
                   <th>输出</th>
                   <th>合计</th>
                   <th>主题</th>
@@ -184,6 +185,19 @@ export default function TokenLogPanel({ onStatus }: TokenLogPanelProps) {
                     </td>
                     <td title={record.model}>{truncate(record.model, 28)}</td>
                     <td>{formatTokens(record.promptTokens)}</td>
+                    <td
+                      title={
+                        record.cachedPromptTokens != null
+                          ? `缓存命中 ${formatTokens(record.cachedPromptTokens)} / 输入 ${formatTokens(record.promptTokens)}`
+                          : '接口未返回缓存信息'
+                      }
+                    >
+                      {record.cachedPromptTokens != null && record.promptTokens > 0
+                        ? `${formatTokens(record.cachedPromptTokens)} (${Math.round(
+                            (record.cachedPromptTokens / record.promptTokens) * 100
+                          )}%)`
+                        : '—'}
+                    </td>
                     <td>{formatTokens(record.completionTokens)}</td>
                     <td>
                       <strong>{formatTokens(record.totalTokens)}</strong>

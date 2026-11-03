@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import type { WriteMode } from '../../constants/writeMode'
 import type { ChatMessage, ReviseArticleSelection } from './types'
+import type { LengthWorkbenchState } from '../../../../shared/lengthWorkbench'
 import type { WordPressDraftBinding } from '../../../../shared/wordpress'
 import ChatMessageItem from './ChatMessageItem'
 import MessageContextMenu from './MessageContextMenu'
@@ -20,6 +21,8 @@ interface ChatThreadProps {
   onReviseSelectionChange?: (selection: ReviseArticleSelection | null) => void
   onDeleteMessage?: (messageId: string) => void
   insertIllustrationsDisabled?: boolean
+  lengthWorkbench?: LengthWorkbenchState
+  aiVoiceMarks?: Array<{ id: string; quote: string }>
 }
 
 export default function ChatThread({
@@ -36,7 +39,9 @@ export default function ChatThread({
   reviseSelection = null,
   onReviseSelectionChange,
   onDeleteMessage,
-  insertIllustrationsDisabled = false
+  insertIllustrationsDisabled = false,
+  lengthWorkbench,
+  aiVoiceMarks = []
 }: ChatThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ messageId: string; x: number; y: number } | null>(
@@ -93,7 +98,9 @@ export default function ChatThread({
     <>
       <div className="chat-thread">
         <div className="chat-thread-inner">
-          {visibleMessages.map((message) => (
+          {visibleMessages.map((message) => {
+            const lastAssistantId = [...visibleMessages].reverse().find((item) => item.role === 'assistant')?.id
+            return (
             <ChatMessageItem
               key={message.id}
               message={message}
@@ -120,8 +127,11 @@ export default function ChatThread({
               }
               onReviseSelectionChange={onReviseSelectionChange}
               insertIllustrationsDisabled={insertIllustrationsDisabled}
+              lengthWorkbench={message.role === 'assistant' ? lengthWorkbench : undefined}
+              aiVoiceMarks={message.id === lastAssistantId ? aiVoiceMarks : undefined}
             />
-          ))}
+            )
+          })}
           <div ref={bottomRef} />
         </div>
       </div>

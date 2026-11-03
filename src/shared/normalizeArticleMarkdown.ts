@@ -1,3 +1,4 @@
+import { reorderFaqBeforeConclusion } from './articleModules'
 import { insertInPageNav, renumberPartHeadings } from './inPageNav'
 
 /** Remove a single outer ```markdown / ``` fence when the model wraps the whole article. */
@@ -16,12 +17,12 @@ export function stripLeadingSectionHeading(body: string, sectionTitle: string): 
   if (!trimmed || !sectionTitle.trim()) return trimmed
 
   const normalize = (value: string): string =>
-    value
-      .trim()
+    sanitizeHeadingTitle(value)
       .toLowerCase()
-      .replace(/^#+\s*/, '')
+      .replace(/[`*_]+/g, '')
       .replace(/[.。:：]+$/g, '')
       .replace(/\s+/g, ' ')
+      .trim()
 
   const expected = normalize(sectionTitle)
   const lines = trimmed.split('\n')
@@ -39,28 +40,122 @@ export function stripLeadingSectionHeading(body: string, sectionTitle: string): 
   return lines.slice(index).join('\n').trim()
 }
 
-/** Strip wrapping emphasis/code markers around a heading title (not the hashes). */
-function unwrapTitleEmphasis(title: string): string {
-  let t = title.trim()
-  for (let i = 0; i < 4; i += 1) {
-    const next = t
-      .replace(/^\*{1,3}\s*([\s\S]*?)\s*\*{1,3}$/, '$1')
-      .replace(/^_{1,3}\s*([\s\S]*?)\s*_{1,3}$/, '$1')
-      .replace(/^`+\s*([\s\S]*?)\s*`+$/, '$1')
-      .trim()
-    if (next === t) break
-    t = next
-  }
-  return t.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '').trim()
-}
-
 /** Drop a leaked in-page link tail: `Title](#slug)` or `[## Title](#slug)`. */
 function stripAnchorLeak(title: string): string {
-  let t = title.trim()
-  t = t.replace(/^\[([\s\S]+)\]\(#[^)]*\)\s*$/, '$1')
-  t = t.replace(/\]\(#[^)]*\)\s*$/, '')
-  t = t.replace(/^\[+/, '').replace(/\]+$/, '')
-  return t.trim()
+  return title
+    .trim()
+    .replace(/^\[([\s\S]+)\]\(#[^)]*\)\s*$/, '$1')
+    .replace(/\]\(#[^)]*\)\s*$/, '')
+    .trim()
+}
+
+interface DelimiterRun {
+  index: number
+  canOpen: boolean
+  canClose: boolean
+}
+
+function markerRuns(text: string, marker: '*' | '_' | '`', length: number): DelimiterRun[] {
+  const runs: DelimiterRun[] = []
+  const token = marker.repeat(length)
+  for (let index = 0; index <= text.length - length; ) {
+    const ownRun =
+      text.startsWith(token, index) &&
+      text[index + length] !== marker &&
+      (index === 0 || text[index - 1] !== marker)
+    if (!ownRun) {
+      index += 1
+      continue
+    }
+    const before = index === 0 ? undefined : text[index - 1]
+    const after = text[index + length]
+    const beforeSpace = before === undefined || /\s/.test(before)
+    const afterSpace = after === undefined || /\s/.test(after)
+    let canOpen = !afterSpace
+    let canClose = !beforeSpace
+    if (marker === '_') {
+      const insideWord =
+        before !== undefined && /\w/.test(before) && after !== undefined && /\w/.test(after)
+      if (insideWord) {
+        canOpen = false
+        canClose = false
+      }
+    }
+    runs.push({ index, canOpen, canClose })
+    index += length
+  }
+  return runs
+}
+
+function matchRuns(runs: DelimiterRun[]): { pairs: Array<{ open: number; close: number }>; unmatched: DelimiterRun[] } {
+  const pairs: Array<{ open: number; close: number }> = []
+  const stack: DelimiterRun[] = []
+  const closed = new Set<number>()
+  for (const run of runs) {
+    if (run.canClose && stack.length > 0) {
+      const open = stack.pop()
+      if (!open) continue
+      pairs.push({ open: open.index, close: run.index })
+      closed.add(open.index)
+      closed.add(run.index)
+      continue
+    }
+    if (run.canOpen) stack.push(run)
+  }
+  const unmatched = [
+    ...stack,
+    ...runs.filter((run) => !closed.has(run.index) && !stack.includes(run))
+  ]
+  return { pairs, unmatched }
+}
+
+/**
+ * Heading titles keep valid inline markdown.
+ * A delimiter pair that wraps the entire title is removed, because the heading
+ * style already provides emphasis. One unmatched closer gets its opener back.
+ * One stray backtick is removed. Balanced spans such as `**Q** 4.` stay.
+ */
+function balanceHeadingDelimiters(title: string): string {
+  let text = title
+  for (let pass = 0; pass < 4; pass += 1) {
+    const next = balanceMarker(balanceBackticks(text), '*', 2)
+    const underscored = balanceMarker(next, '_', 2)
+    if (underscored === text) return text
+    text = underscored
+  }
+  return text
+}
+
+function balanceMarker(text: string, marker: '*' | '_', length: number): string {
+  const token = marker.repeat(length)
+  const { pairs, unmatched } = matchRuns(markerRuns(text, marker, length))
+  const wrapped = pairs.find((pair) => pair.open === 0 && pair.close + length === text.length)
+  if (wrapped) return text.slice(length, text.length - length).trim()
+
+  if (pairs.length === 0 && unmatched.length === 1) {
+    const run = unmatched[0]
+    if (run.canClose && !run.canOpen && run.index > 0) return `${token}${text}`
+    if (run.canOpen && !run.canClose && run.index === 0) return `${text}${token}`
+  }
+  return text
+}
+
+function balanceBackticks(text: string): string {
+  const indexes: number[] = []
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '`') indexes.push(index)
+  }
+  if (indexes.length === 0) return text
+  if (indexes.length % 2 === 0) {
+    const open = indexes[0]
+    const close = indexes[indexes.length - 1]
+    if (indexes.length === 2 && open === 0 && close === text.length - 1) {
+      return text.slice(1, -1).trim()
+    }
+    return text
+  }
+  const stray = indexes[indexes.length - 1]
+  return `${text.slice(0, stray)}${text.slice(stray + 1)}`
 }
 
 /**
@@ -86,21 +181,13 @@ export function stripHeadingPlacement(raw: string): string {
   return stripped.replace(/\s+/g, ' ').trim()
 }
 
-/** Peel list markers, nested ATX markers, and a code-wrapped step label off a heading. */
+/** Peel structural junk off a heading. Inline markdown is balanced, not stripped. */
 export function sanitizeHeadingTitle(raw: string): string {
   let t = stripHeadingPlacement(raw)
   for (let i = 0; i < 6; i += 1) {
     let next = stripHeadingPlacement(stripAnchorLeak(t))
     next = next.replace(/^(?:[-*+]|\d{1,2}[.)])\s+/, '').trim()
-    next = next.replace(/^\[+\s*/, '').trim()
-    next = unwrapTitleEmphasis(next)
-    const labeled = next.match(/^`([^`\n]{1,48})`\s+(\S[\s\S]*)$/)
-    if (labeled && !looksLikeCodeToken(labeled[1])) {
-      next = `${labeled[1]} ${labeled[2]}`.trim()
-    }
-    const strayStep = next.match(/^((?:step|part)\s+\d+[.:]?)\s*`\s*(\S[\s\S]*)$/i)
-    if (strayStep) next = `${strayStep[1]} ${strayStep[2]}`.trim()
-    next = next.replace(/^[`*_]+|[`*_]+$/g, '').trim()
+    next = balanceHeadingDelimiters(next)
     next = next.replace(/^#{1,6}\s+/, '').trim()
     next = next.replace(/\s+/g, ' ').trim()
     if (!next || next === t) return next || t
@@ -116,8 +203,8 @@ function cleanHeadingTitle(title: string): string {
 function looksLikeCodeToken(inner: string): boolean {
   const text = inner.trim()
   if (!text || text.length > 120) return true
-  if (/[=(){}[\]\\/]/.test(text)) return true
   if (!/\s/.test(text)) return true
+  if (/[=\\]/.test(text)) return true
   const words = text.split(/\s+/).filter(Boolean)
   const allLower = words.every((word) => word === word.toLowerCase())
   if (allLower && words.length <= 4 && !text.includes(':')) return true
@@ -448,5 +535,5 @@ export function finalizeArticleMarkdown(
   const normalized = collapseDuplicateHeadings(normalizeArticleMarkdown(content))
   if (!normalized.trim()) return normalized
   const prepared = options?.preserveStructure ? normalized : renumberPartHeadings(normalized)
-  return insertInPageNav(prepared, { stripForeignToc: true })
+  return insertInPageNav(reorderFaqBeforeConclusion(prepared), { stripForeignToc: true })
 }

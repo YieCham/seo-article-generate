@@ -49,6 +49,25 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  // A failed or slow renderer (dead dev server, broken build) would otherwise
+  // leave the window hidden forever and look like the app never started.
+  const revealWindow = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return
+    mainWindow.show()
+  }
+  const revealTimer = setTimeout(revealWindow, 8000)
+  mainWindow.once('closed', () => clearTimeout(revealTimer))
+  mainWindow.webContents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return
+      console.error(
+        `[ai-article-agent] renderer failed to load: ${errorCode} ${errorDescription} ${validatedURL}`
+      )
+      revealWindow()
+    }
+  )
+
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {

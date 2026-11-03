@@ -14,6 +14,7 @@ import {
   normalizeImageGenConfig,
   normalizeNetworkProxy,
   normalizeWordPressSettings,
+  normalizeAiTraceConfig,
   resolveLlmConfigFromSelection,
   type AppConfig,
   type LlmConfig,
@@ -57,7 +58,8 @@ function mergeWithDefaults(partial: ConfigPartial): AppConfig {
     windowClose: normalizeWindowClose(partial.windowClose ?? DEFAULT_CONFIG.windowClose),
     imageGen: normalizeImageGenConfig(partial.imageGen ?? DEFAULT_CONFIG.imageGen),
     networkProxy: normalizeNetworkProxy(partial.networkProxy ?? DEFAULT_CONFIG.networkProxy),
-    wordpress: normalizeWordPressSettings(partial.wordpress ?? DEFAULT_CONFIG.wordpress)
+    wordpress: normalizeWordPressSettings(partial.wordpress ?? DEFAULT_CONFIG.wordpress),
+    aiTrace: normalizeAiTraceConfig(partial.aiTrace ?? DEFAULT_CONFIG.aiTrace)
   }
 }
 
@@ -184,7 +186,11 @@ export async function saveConfig(partial: Partial<AppConfig>): Promise<AppConfig
     enabledSkills: mergeModeEnabledSkills(current.enabledSkills, partial.enabledSkills),
     quickPicks: partial.quickPicks
       ? normalizeQuickPicks({ ...current.quickPicks, ...partial.quickPicks })
-      : current.quickPicks
+      : current.quickPicks,
+    aiTrace: normalizeAiTraceConfig({
+      ...current.aiTrace,
+      ...partial.aiTrace
+    })
   }
 
   if (partial.llmPresets || partial.activeLlmPresetId) {

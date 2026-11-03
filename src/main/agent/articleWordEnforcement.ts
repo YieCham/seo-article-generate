@@ -1,30 +1,23 @@
-import { chatCompletion, createRateLimitRetryStatus, type LlmConfig } from './llmClient'
+import { chatCompletion, type LlmConfig } from './llmClient'
+import { guardArticleRewrite } from './articleRewriteGuard'
+import { isAbortError } from './articleRunRegistry'
+import { calibrateArticleLengthBySection } from './articleLengthPatch'
 import {
   buildDeleteOnlyPatchSystemPrompt,
   patchOptionsForAction,
   resolveOptimizePatch
 } from './optimizePatch'
-import {
-  LENGTH_EDIT_SCOPE_RULE,
-  PRESERVE_MARKDOWN_HEADINGS_RULE
-} from './articleStructurePreserve'
-import {
-  getArticleLengthBounds,
-  countArticleWords,
-  getArticleLengthPromptBlock
-} from './articleLength'
+import { getArticleLengthBounds, countArticleWords } from './articleLength'
 import type { GenerateProgressEvent } from './articleAgent'
 import { normalizeArticleMarkdown } from '../../shared/normalizeArticleMarkdown'
+import type { LengthWorkbenchState } from '../../shared/lengthWorkbench'
 import type { ArticleType } from '../../shared/domainPacks'
 
 import {
-  getOptimizeLengthPromptBlock,
-  getOptimizePromptBlocks,
   OPTIMIZE_LENGTH_SKIP_MAX,
   OPTIMIZE_LENGTH_SKIP_MIN,
   resolveOptimizeQualityShorten,
-  shouldSkipOptimizeLengthAdjust,
-  type OptimizeWordRange
+  shouldSkipOptimizeLengthAdjust
 } from './optimizeStructure'
 
 interface ArticleLanguageContext {
@@ -38,127 +31,22 @@ interface WordCountBounds {
   label: string
 }
 
-async function runWordCountAdjustment(
-  llm: LlmConfig,
-  article: string,
-  topicLabel: string,
-  articleLang: ArticleLanguageContext,
-  bounds: WordCountBounds,
-  maxTokens: number | undefined,
-  emit: (event: GenerateProgressEvent) => void,
-  onChunk: (text: string) => void,
-  options?: {
-    optimizeMode?: boolean
-    sourcePreview?: string
-    skillsText?: string
-    format?: ArticleType
-    qualityShorten?: boolean
-  }
-): Promise<string> {
-  let result = article.trim()
-  let count = countArticleWords(result)
+export interface WordCountEnforcementResult {
+  article: string
+  workbench: LengthWorkbenchState
+}
 
-  if (count >= bounds.min && count <= bounds.max) {
-    return result
-  }
-
-  // Quality deletion: allow finishing under min; only trim if still over max.
-  if (options?.optimizeMode && options.qualityShorten && count < bounds.min) {
-    if (count <= bounds.max) {
-      return result
-    }
-  }
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    count = countArticleWords(result)
-    if (count >= bounds.min && count <= bounds.max) break
-    if (options?.optimizeMode && options.qualityShorten && count < bounds.min && count <= bounds.max) {
-      break
-    }
-
-    const expand = count < bounds.min
-    if (options?.optimizeMode && options.qualityShorten && expand) {
-      break
-    }
-
-    emit({
-      type: 'status',
-      step: 'length',
-      message: `⑨ 词数校准：程序计数 ${count} 词 → 目标 ${bounds.label}…`
-    })
-
-    const lengthStatusMessage = `⑨ 词数校准：程序计数 ${count} 词 → 目标 ${bounds.label}…`
-
-    const adjusted = normalizeArticleMarkdown(
-      await chatCompletion(
-        llm,
-        [
-          {
-            role: 'system',
-            content: [
-              options?.optimizeMode
-                ? '你是文章长度编辑。在**保守优化**前提下微调词数：保留原有结构与绝大部分原句，禁止整篇重写。终稿词数宜落在原文 ±20% 区间内，但质量优先于字数。'
-                : '你是文章长度编辑。根据程序测定的词数，在**保留全部章节标题**的前提下微调正文长度。',
-              articleLang.lock,
-              PRESERVE_MARKDOWN_HEADINGS_RULE,
-              options?.optimizeMode ? '' : LENGTH_EDIT_SCOPE_RULE,
-              options?.optimizeMode
-                ? getOptimizePromptBlocks()
-                : getArticleLengthPromptBlock(options?.skillsText, undefined, options?.format),
-              options?.optimizeMode ? getOptimizeLengthPromptBlock(bounds as OptimizeWordRange) : ''
-            ]
-              .filter(Boolean)
-              .join('\n\n')
-          },
-          {
-            role: 'user',
-            content: [
-              `主题/页面：${topicLabel}`,
-              `程序计词结果：**${count}** English words（系统会再次程序计数${options?.optimizeMode ? '' : '，输出须落在区间内'}）`,
-              `目标区间：**${bounds.min}–${bounds.max}** words（${bounds.label}）`,
-              expand
-                ? options?.optimizeMode
-                  ? [
-                      `- 当前偏短：在**不改变章节结构与 H2 标题**的前提下，于相关章节插入诊断/竞品中的**缺失要点**`,
-                      '- **禁止水字数**；**禁止**恢复已被删减的过时步骤/失效教程；**禁止**整节重写'
-                    ].join('\n')
-                  : `- 当前过短：在保留结构与关键信息的前提下，补充**与主题相关且对读者有帮助**的实质内容（实用示例、操作细节、常见误区、使用场景等），至少达到 ${bounds.min} 词；**禁止**用重复句、同义反复、空话套话等方式水字数`
-                : options?.optimizeMode
-                  ? `- 当前偏长：删减重复与低价值表述，保留结构与关键信息；若因删减过时内容而略低于下限也可接受`
-                  : `- 当前过长：删减重复与低价值表述，保留结构与关键信息，不超过 ${bounds.max} 词`,
-              '- 保留 Markdown 结构（H1/H2/H3 标题文字逐字不变、FAQ/表格/[Image: …] 占位符）',
-              '- **禁止**重命名、合并或重排 ## 章节',
-              '- 不要输出词数说明或修改过程，直接输出完整 Markdown 正文',
-              '- 不要用 ```markdown 代码围栏包裹正文',
-              options?.sourcePreview
-                ? ['', '--- 原页面参考（勿偏离核心信息与结构）---', options.sourcePreview.slice(0, 3500)].join(
-                    '\n'
-                  )
-                : '',
-              '',
-              result
-            ]
-              .filter(Boolean)
-              .join('\n')
-          }
-        ],
-        {
-          temperature: options?.optimizeMode ? 0.2 : 0.35,
-          maxTokens,
-          step: 'length',
-          label: '词数校准',
-          onRateLimitRetry: createRateLimitRetryStatus(lengthStatusMessage, (message) =>
-            emit({ type: 'status', step: 'length', message })
-          )
-        }
-      )
-    )
-
-    onChunk(adjusted)
-    result = adjusted
-  }
-
-  return result
+/**
+ * Full-article length rewrites often stop at Part 1. Never replace a complete
+ * draft with a truncated continuation — restore missing sections or keep the
+ * original text.
+ */
+export function acceptLengthAdjustedMarkdown(
+  previous: string,
+  next: string,
+  finishReason?: string
+): { article: string; discarded: boolean; recovered: boolean; reason?: string } {
+  return guardArticleRewrite(previous, next, finishReason)
 }
 
 export async function enforceArticleWordCount(
@@ -172,19 +60,21 @@ export async function enforceArticleWordCount(
   skillsText?: string,
   enabledSkillIds?: string[],
   format?: ArticleType
-): Promise<string> {
+): Promise<WordCountEnforcementResult> {
   const bounds = getArticleLengthBounds(skillsText, enabledSkillIds, format)
-  return runWordCountAdjustment(
+  const result = await calibrateArticleLengthBySection({
     llm,
     article,
     topicLabel,
     articleLang,
-    { min: bounds.min, max: bounds.max, label: bounds.label },
+    bounds: { min: bounds.min, max: bounds.max, label: bounds.label },
     maxTokens,
-    emit,
-    onChunk,
-    { skillsText, format }
-  )
+    emit
+  })
+  if (result.article.trim() !== article.trim()) {
+    onChunk(result.article)
+  }
+  return result
 }
 
 export async function enforceOptimizeArticleWordCount(
@@ -247,6 +137,7 @@ export async function enforceOptimizeArticleWordCount(
     message: `⑨ 词数校准：程序计数 ${count} 词，高于 ${bounds.max}，仅删除重复句…`
   })
 
+  let patchError = ''
   const raw = await chatCompletion(
     llm,
     [
@@ -269,7 +160,20 @@ export async function enforceOptimizeArticleWordCount(
       step: 'length',
       label: '词数删减补丁'
     }
-  )
+  ).catch((error: unknown) => {
+    if (isAbortError(error)) throw error
+    patchError = error instanceof Error ? error.message : '未知错误'
+    return null
+  })
+
+  if (raw == null) {
+    emit({
+      type: 'status',
+      step: 'length',
+      message: `⑨ 词数校准调用失败（${patchError || '未知错误'}），已保留校准前正文`
+    })
+    return trimmed
+  }
 
   const resolved = resolveOptimizePatch(raw, trimmed, patchOptionsForAction('delete_only'))
   if (!resolved.ok) {

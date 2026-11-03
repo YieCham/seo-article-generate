@@ -96,112 +96,105 @@ flowchart TB
 
 ### 文章创作流程
 
+当前步骤以状态栏编号为准。领域包决定 Skill 组合；文风由创作页下拉传入。调研结果可复用，避免重复调用 Tavily / Firecrawl。
+
 ```mermaid
 flowchart TD
-  Start(["用户提交主题"]) --> SyncSkill[同步领域包 / 文章类型 Skills]
-  SyncSkill --> SkillType{文章类型}
+  Start(["用户提交主题"]) --> Skills["① 加载 Skills<br/>领域包 + 文章类型 + 文风"]
+  Skills --> Reuse{有可复用调研包?}
 
-  SkillType -->|how-to| S1[streaming-audio-domain<br/>+ compliance]
-  SkillType -->|review| S2[product-review]
-  SkillType -->|top-rank| S3[domain + compliance<br/>+ streaming-top]
+  Reuse -->|是| ReusePack["② 复用上次调研"]
+  Reuse -->|否| Research{已配置 Tavily + Firecrawl?}
 
-  S1 --> LoadSkill[加载 Skill 文本注入 Prompt]
-  S2 --> LoadSkill
-  S3 --> LoadSkill
+  Research -->|是| Expand["② 搜索意图分析<br/>领域包搜索提示 / 排除词"]
+  Expand --> Search["③ 搜索并抓取 Top 页面"]
+  Search --> Eeat["④ E-E-A-T 萃取"]
+  Eeat --> Brief["④b 写作简报 WritingBrief"]
 
-  LoadSkill --> Research{竞品调研<br/>Tavily + Firecrawl 已配置?}
+  Research -->|否| Skip["跳过调研，降级文本"]
+  Skip --> Brief
+  ReusePack --> Brief
 
-  Research -->|是| R1[搜索意图扩展]
-  R1 --> R2[Tavily 多查询搜索]
-  R2 --> R3[Firecrawl 抓取 Top 页面]
-  R3 --> R4[E-E-A-T 竞品洞察提取]
-  R4 --> R5[生成写作简报 WritingBrief]
+  Brief --> Plan["⑤ 分析与规划<br/>搜索意图 / FAQ / 大纲构思"]
+  Plan --> Outline["⑥ 差异化大纲"]
+  Outline --> Draft["⑦ 按 H2 分段撰写"]
 
-  Research -->|否| R6[跳过调研，使用降级文本]
-  R6 --> Plan
+  Draft --> CP{{每完成一节<br/>保存 checkpoint}}
+  CP -->|还有章节| Draft
+  CP -->|全部完成| Struct["⑧ 结构性检查<br/>失败则保留正文"]
 
-  R5 --> Plan[内部策略规划]
-  Plan --> Outline[差异化大纲]
-  Outline --> Draft[按 H2 章节逐段撰写]
+  Struct --> Struct2["⑨ 再次校验章节结构"]
+  Struct2 --> Links["内链：匹配短语并插入"]
+  Links --> Meta["⑩ SEO Meta"]
+  Meta --> Done(["终稿"])
 
-  Draft --> CP1{{每完成一章<br/>保存 checkpoint}}
-  CP1 -->|还有章节| Draft
-  CP1 -->|全部完成| Polish
-
-  Polish[润色降 AI 味] --> Length[词数校准 / 结构检查]
-  Length --> Meta[生成 SEO Meta]
-  Meta --> Done(["输出完整文章"])
-
-  Draft -.->|用户中断| Interrupt(["checkpoint 保存"])
-  Interrupt -.->|article:resume| LoadSkill
+  Draft -.->|中断| Resume["article:resume 从 checkpoint 续跑"]
+  Resume -.-> Skills
 ```
 
 | 阶段 | 核心函数 | 说明 |
 |------|----------|------|
-| Skills | `skillPipeline` / `getSkillsTextForStep` | 按领域包与文章类型启用 Skill；各阶段注入节选 |
-| 调研 | `searchWithQueries` | Tavily 搜索 + Firecrawl 抓取 |
-| 提取 | `extractEeatInsights` | 竞品 E-E-A-T 洞察 |
-| 规划 | `generateArticlePlan` | 内部策略规划 |
-| 大纲 | `generateDifferentiatedOutline` | 按类型生成差异化骨架 |
-| 撰写 | `draftBySections` | 每章节一次 LLM 调用 |
-| 后处理 | polish → length → meta | 润色 → 词数 / 结构检查 → SEO 元信息 |
+| Skills | `getCreateSkillBundles` | 按领域包、文章类型、文风组装；`skillPipeline` 按步骤节选 |
+| 调研 | `analyzeAndExpandSearchQueries` → `searchWithQueries` | 可走 `reuseResearch` 跳过外网 |
+| 提取 | `extractEeatInsights` / `generateWritingBrief` | 洞察后再出写作简报 |
+| 规划 / 大纲 | `generateArticlePlan` / `generateDifferentiatedOutline` | 规划完成后即写 checkpoint |
+| 撰写 | `draftBySections` | 每节一次 LLM，未完成节可续写 |
+| 后处理 | `runCreateStructureCheck` → 内链 → `generateSeoMeta` | ⑧⑨ 是结构校验，不再单独做全文润色 LLM |
 
-终稿还可进入字数工作台、AI 痕迹阅读、插图 / 内链、WordPress 发布。提示词来源见 [`docs/prompts/`](./docs/prompts/)。
+终稿还可进入字数工作台、AI 痕迹阅读、WordPress 发布。提示词来源见 [`docs/prompts/`](./docs/prompts/)。
 
 编排入口：`src/main/agent/articleAgent.ts` → `generateArticle()`
 
 ### 文章优化流程
 
+优化不再按「章节数 ≤ 1 则全文单次」分支，一律按诊断大纲分段撰写。终稿校对会保留分节补丁，并用 H2 合同对齐大纲，而不是再跑一轮 ±20% 词数 LLM。
+
 ```mermaid
 flowchart TD
-  Start(["用户提交 URL"]) --> Scrape[Firecrawl 抓取原文]
-  Scrape --> Validate{正文有效?}
-  Validate -->|否| Fail(["报错终止"])
-  Validate -->|是| Parse[解析原文章节]
+  Start(["用户提交 URL"]) --> Skills["① 加载 article-optimizer"]
+  Skills --> ScrapeReuse{有可复用抓取?}
 
-  Parse --> LoadSkill[加载 article-optimizer Skill]
-  LoadSkill --> Research{竞品调研已配置?}
+  ScrapeReuse -->|是| ReusePage["② 复用上次正文"]
+  ScrapeReuse -->|否| Scrape["② Firecrawl 抓取并校验"]
+  Scrape --> Parse[解析原文章节]
+  ReusePage --> Parse
 
-  Research -->|是| R1[搜索意图扩展]
-  R1 --> R2["竞品搜索（排除源 URL）"]
-  R2 --> R3[竞品缺口分析]
+  Parse --> CompReuse{有可复用竞品调研?}
+  CompReuse -->|是| ReuseComp["③ 复用竞品洞察"]
+  CompReuse -->|否| Research{调研已配置?}
+
+  Research -->|是| Expand["③ 拆解竞品搜索词"]
+  Expand --> Search["④ 竞品搜索与抓取<br/>排除源 URL"]
+  Search --> Gap["⑤ 竞品缺口分析"]
 
   Research -->|否| Audit
-  R3 --> Audit["原页诊断<br/>KEEP / ADD / REMOVE / NEW H2"]
+  ReuseComp --> Audit
+  Gap --> Audit["⑥ 诊断原页 SEO/GEO<br/>KEEP / ADD / REMOVE"]
 
-  Audit --> Outline[锚定大纲 buildAnchoredOutline]
-  Outline --> Enrich[丰富章节编辑要点]
-  Enrich --> Sanitize[清洗无效章节]
+  Audit --> Outline["⑦ 按诊断骨架生成大纲"]
+  Outline --> Sanitize["大纲消毒<br/>resolveOptimizeDraftSections"]
+  Sanitize --> Draft["⑧ 按大纲分段优化<br/>先配对原文再撰写"]
 
-  Sanitize --> Branch{原文章节数 ≤ 1?}
+  Draft --> CP{{每完成一节 checkpoint}}
+  CP -->|还有章节| Draft
+  CP -->|全部完成| Patch["⑨ 跳过全文校对<br/>保留分节补丁 + H2 合同 + 重排"]
 
-  Branch -->|是| Single[全文单次优化]
-  Branch -->|否| Section[按章节就地优化]
-
-  Section --> CP2{{每完成一章<br/>保存 checkpoint}}
-  CP2 -->|还有章节| Section
-  CP2 -->|全部完成| Polish
-
-  Single --> Polish[终稿校对]
-  Polish --> LengthCheck{词数 1100–2500?}
-
-  LengthCheck -->|是| Meta
-  LengthCheck -->|否| Length["±20% 词数校准"]
-  Length --> Meta[生成 SEO Meta]
+  Patch --> H2["⑩ 再次执行 H2 合同"]
+  H2 --> Meta["⑪ SEO Meta"]
   Meta --> Done(["输出优化文章"])
 
-  Section -.->|用户中断| Interrupt(["checkpoint 保存"])
-  Interrupt -.->|article:resume| LoadSkill
+  Draft -.->|中断| Resume["article:resume"]
+  Resume -.-> Skills
 ```
 
 | 阶段 | 核心函数 | 与创作的区别 |
 |------|----------|--------------|
-| 抓取 | `scrapeToMarkdown` | 以 URL 原文为输入，非主题 |
-| Skill | `article-optimizer` | 仅启用优化 Skill |
-| 诊断 | `auditSourcePage` | 评估原文，给出 KEEP/ADD/REMOVE |
-| 大纲 | `buildAnchoredOutline` | 保留原 H2 顺序，增量补充模块 |
-| 撰写 | 单章 or 逐章 | 就地编辑，保留优质原文；可走 `optimizePatch` |
-| 词数 | ±20% 源文词数 | 1100–2500 词时跳过校准 |
+| 抓取 | `scrapeToMarkdown` | 输入是 URL 原文；可复用上次抓取 |
+| 调研 | `extractCompetitorGapInsights` | 排除源 URL；失败时仍保存页面抓取包 |
+| 诊断 | `auditSourcePage` | 输出 KEEP/ADD/REMOVE，写入规划卡 |
+| 大纲 | `generateOptimizedOutline` + `resolveOptimizeDraftSections` | 按诊断骨架生成，再消毒无效节 |
+| 撰写 | `draftOptimizedSections` | 每节先配对原文，就地补丁，不整篇重写 |
+| 收尾 | `acceptOptimizedDraft` / `applyOutlineH2Contract` | ⑨ 不另做全文校对 LLM；⑩ 再锁 H2 |
 
 编排入口：`src/main/agent/articleOptimizer.ts` → `optimizeArticle()`
 
@@ -211,13 +204,13 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Start(["批量提交 URL 列表"]) --> Loop[为每个 URL 创建独立会话]
-  Loop --> Scrape[Firecrawl 抓取正文]
-  Scrape --> Validate{正文有效?}
-  Validate -->|否| Fail(["该会话报错，继续下一页"])
-  Validate -->|是| Skill[加载 page-batch-optimizer]
-  Skill --> Draft[单次 LLM 输出完整优化稿]
-  Draft --> Normalize[normalizeArticleMarkdown]
+  Start(["批量提交 URL 列表"]) --> Loop[每个 URL 独立会话]
+  Loop --> Skills["① 加载 page-batch-optimizer"]
+  Skills --> Scrape["② Firecrawl 抓取并校验"]
+  Scrape --> Valid{正文有效?}
+  Valid -->|否| Fail(["该会话报错"])
+  Valid -->|是| Draft["③ 单次 LLM 输出完整优化稿"]
+  Draft --> Normalize["normalizeArticleMarkdown<br/>+ finalizeArticleMarkdown"]
   Normalize --> Done(["写入该会话终稿"])
 ```
 
@@ -233,27 +226,27 @@ flowchart TD
 flowchart LR
   subgraph Create["创作 Create"]
     direction TB
-    C1[主题输入] --> C2[从零规划]
-    C2 --> C3[差异化大纲]
-    C3 --> C4[逐章新写]
-    C4 --> C5[润色 + 词数 + Meta]
+    C1[领域包 + 主题] --> C2[调研或复用]
+    C2 --> C3[简报 / 规划 / 差异化大纲]
+    C3 --> C4[逐节新写]
+    C4 --> C5[结构校验 + 内链 + Meta]
   end
 
   subgraph Optimize["优化 Optimize"]
     direction TB
-    O1[URL 抓取] --> O2[原页诊断]
-    O2 --> O3[锚定大纲]
-    O3 --> O4[就地增量编辑]
-    O4 --> O5[校对 + 词数 + Meta]
+    O1[URL 抓取或复用] --> O2[竞品缺口 + 原页诊断]
+    O2 --> O3[诊断大纲并消毒]
+    O3 --> O4[逐节配对原文补丁]
+    O4 --> O5[H2 合同 + Meta]
   end
 
   subgraph Shared["共用能力"]
     direction TB
-    S1[LLM chatCompletion]
-    S2[Tavily + Firecrawl 调研]
+    S1[角色路由后的 LLM]
+    S2[Tavily + Firecrawl / 调研包复用]
     S3[Checkpoint 断点续跑]
-    S4[reviseArticle 追问修改]
-    S5[article:progress 流式进度]
+    S4[reviseArticle 追问]
+    S5[进度看板 article:progress]
   end
 
   Create --> Shared
@@ -262,17 +255,17 @@ flowchart LR
 
 ### 生成后追问修改
 
-两条主流程完成后，用户可在 Composer 继续追问：
+两条主流程完成后，用户可在 Composer 继续追问。有选区走局部改写，否则替换全文；结果先进入确认栏，再决定是否写回会话。
 
 ```mermaid
 flowchart LR
-  Done(["文章已生成"]) --> FollowUp{修改范围}
+  Done(["文章已生成"]) --> FollowUp{有选中片段?}
 
-  FollowUp -->|全文| Full["reviseFullArticle<br/>一次 LLM 替换全文"]
-  FollowUp -->|选中片段| Select["reviseSelectedFragment<br/>局部改写后合并"]
+  FollowUp -->|是| Select["reviseSelectedFragment<br/>局部改写后合并"]
+  FollowUp -->|否| Full["reviseFullArticle<br/>一次替换全文"]
 
-  Full --> Apply["用户确认应用 / 取消"]
-  Select --> Apply
+  Select --> Bar["RevisionConfirmBar<br/>应用或取消"]
+  Full --> Bar
 ```
 
 ---
